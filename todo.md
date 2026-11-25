@@ -30,8 +30,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 
 ### Decisions
 - [x] **(D)** Public engine repo, private scope packs (D-003) ✔ 2026-11-24
-- [ ] **(D)** Search backend for discovery: self-hosted SearXNG vs. a paid search API vs. both — run a 200-query comparison
-- [ ] **(D)** Raw storage: filesystem vs. MinIO
+- [x] **(D)** Search backend for discovery: self-hosted SearXNG (D-004) ✔ 2026-11-25
+- [x] **(D)** Raw storage: content-addressed filesystem blob store, MinIO optional later (D-005) ✔ 2026-11-25
 - [ ] Record the above in `docs/decisions.md`
 
 ### Repo & infra
