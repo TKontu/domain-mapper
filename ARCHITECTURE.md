@@ -197,6 +197,8 @@ Output: `candidate(name, url, country_hint, segment_hint, channel, query, found_
   ```python
   class Fetcher(Protocol):
       def fetch(self, url: str, *, render_js: bool = False) -> FetchResult: ...
+
+
   # FetchResult: final_url, status, content_type, body_bytes, headers, fetched_at
   ```
 - Per-entity crawl policy from the scope pack: max pages, priority URL patterns (`/services`, `/about`, `/terms`, `/quality`, PDFs), languages.
