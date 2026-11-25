@@ -1,0 +1,8 @@
+# Illustrative weighting profiles (public). Keys are rubric topic or criterion ids.
+profiles:
+  - id: balanced
+    label: Balanced
+    weights: {certification: 1.0, terms: 1.0}
+  - id: compliance_first
+    label: Compliance first
+    weights: {iso17100: 3.0, public_terms: 1.0}

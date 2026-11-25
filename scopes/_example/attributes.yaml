@@ -1,0 +1,15 @@
+# Illustrative structured attributes (public).
+attributes:
+  - id: headcount
+    label: Headcount
+    type: int
+    applies_to: [agency]
+  - id: language_pairs
+    label: Language pairs offered
+    type: int
+    unit: pairs
+  - id: pricing_model
+    label: Pricing model
+    type: enum
+    values: [per_word, per_page, per_hour]
+    applies_to: [agency, freelancer_network]

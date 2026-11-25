@@ -60,7 +60,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [x] **SP-01** → [docs/items/SP-01.md](docs/items/SP-01.md) Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views ✔ 2026-11-25 (PR #10; seen: `load_scope_pack('scopes/_example')` on main dc3ae93 → 2 segments, 3 layers, 2 topics; unwired until `landscape validate`)
 - [x] **SP-02** → [docs/items/SP-02.md](docs/items/SP-02.md) `landscape validate --scope ...` command ✔ 2026-11-25 (PR #13; seen: `uv run landscape validate --scope scopes/_example` on main 0789345 → scope example, 2 segments, 3 layers, 2 topics, 2 criteria, exit 0)
 - [x] **SP-03** → [docs/items/SP-03.md](docs/items/SP-03.md) JSON Schema export for editor autocompletion ✔ 2026-11-25 (PR #16; seen: `uv run landscape schema --out <tmp>` and `--file rubric.yaml` on main bc81dfa → 7 draft 2020-12 schemas, exit 0)
-- [ ] `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities)
+- [ ] **SP-04** → [docs/items/SP-04.md](docs/items/SP-04.md) `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities) — partial 2026-11-25: all pack files + 3 seed entities validate (seen: `uv run landscape validate --scope scopes/_example` on task/sp-04-example-pack, exit 0); validate summary does not yet print optional-file counts (needs `core/cli.py`, outside SP-04 scope)
 
 **Milestone M0:** `landscape validate` passes on `scopes/_example/`; adapters return data for one test URL and one PDF.
 

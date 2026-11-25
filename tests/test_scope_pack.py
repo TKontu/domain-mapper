@@ -15,8 +15,44 @@ class ExamplePackTest(unittest.TestCase):
         self.assertEqual(len(pack.scope.segments), 2)
         self.assertEqual(len(pack.scope.layers), 3)
         self.assertEqual(len(pack.rubric.topics), 2)
-        self.assertEqual(pack.sources.sources, [])
-        self.assertEqual(pack.views.views, [])
+        for section in (
+            pack.vocabulary.entries,
+            pack.sources.sources,
+            pack.attributes.attributes,
+            pack.profiles.profiles,
+            pack.views.views,
+        ):
+            self.assertTrue(section)
+
+    def test_example_cross_references_resolve(self) -> None:
+        pack = load_scope_pack(EXAMPLE)
+        segments = {s.id for s in pack.scope.segments}
+        countries = {c for la in pack.scope.layers for c in la.countries}
+        weighted = {t.id for t in pack.rubric.topics} | {
+            c.id for t in pack.rubric.topics for c in t.criteria
+        }
+        for e in pack.vocabulary.entries:
+            self.assertLessEqual(set(e.segments), segments)
+        for a in pack.attributes.attributes:
+            self.assertLessEqual(set(a.applies_to), segments)
+        for p in pack.profiles.profiles:
+            self.assertTrue(p.weights)
+            self.assertLessEqual(set(p.weights), weighted)
+        for s in pack.sources.sources:
+            self.assertLessEqual(set(s.countries), countries)
+
+    def test_example_seed_entities(self) -> None:
+        import yaml
+
+        data = yaml.safe_load((EXAMPLE / "seed" / "entities.yaml").read_text(encoding="utf-8"))
+        entities = data["entities"]
+        self.assertEqual(len(entities), 3)
+        segments = {s.id for s in load_scope_pack(EXAMPLE).scope.segments}
+        self.assertEqual(len({e["id"] for e in entities}), 3)
+        for e in entities:
+            self.assertIn(e["segment"], segments)
+            self.assertIn(e["country"], {"XA", "XB", "XC"})
+            self.assertTrue(e["website"].split("/")[2].endswith(".example"))
 
 
 class MalformedPackTest(unittest.TestCase):
