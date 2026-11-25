@@ -1,0 +1,21 @@
+# Illustrative source catalogue (public). Fictional sources on reserved .example domains.
+sources:
+  - id: example_directory
+    role: discovery
+    adapter: web_search
+    countries: [XA, XB, XC]
+    access: public
+    params: {base_url: "https://directory.example/"}
+  - id: example_trade_register
+    role: register
+    adapter: register_csv
+    countries: [XA]
+    access: public
+    licence: open (fictional)
+    params: {base_url: "https://register.example/"}
+  - id: certification_register
+    role: verification
+    adapter: web_page
+    countries: ["*"]
+    access: public
+    params: {base_url: "https://certs.example/"}

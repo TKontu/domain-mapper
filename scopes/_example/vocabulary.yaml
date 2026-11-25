@@ -1,0 +1,10 @@
+# Illustrative search vocabulary (public). Terms per language feed discovery queries.
+entries:
+  - id: agency_terms
+    segments: [agency]
+    terms:
+      en: [translation agency, translation company, certified translation]
+  - id: network_terms
+    segments: [freelancer_network]
+    terms:
+      en: [translator network, translator cooperative, freelance translators]

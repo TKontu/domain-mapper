@@ -1,0 +1,9 @@
+# Illustrative output views (public).
+views:
+  - id: overview_table
+    label: Overview table
+    kind: table
+    options: {profile: balanced}
+  - id: country_map
+    label: Providers by country
+    kind: map

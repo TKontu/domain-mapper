@@ -1,0 +1,17 @@
+# Fictional seed entities (public). Not yet loaded by the engine; wired by the Discover/Resolve row.
+entities:
+  - id: alpha_lingua
+    name: Alpha Lingua Ltd (fictional)
+    segment: agency
+    country: XA
+    website: https://alpha-lingua.example/
+  - id: beta_words
+    name: Beta Words (fictional)
+    segment: agency
+    country: XB
+    website: https://beta-words.example/
+  - id: gamma_collective
+    name: Gamma Translators Collective (fictional)
+    segment: freelancer_network
+    country: XC
+    website: https://gamma-collective.example/
