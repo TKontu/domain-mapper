@@ -102,6 +102,51 @@ def test_precomputed_equals_plain(quote: str) -> None:
     assert ground_and_locate_precomputed(quote, CONTENT, maps) == ground_and_locate(quote, CONTENT)
 
 
+EXPANDING = "İİİ x y z target"
+
+
+def test_expanding_lowercase_keeps_span_plain() -> None:
+    r = ground_and_locate("target", EXPANDING)
+    assert r.match_tier == 1
+    assert r.source_offset is not None and r.source_end is not None
+    assert EXPANDING[r.source_offset : r.source_end] == "target"
+    assert r.matched_span == "target"
+
+
+def test_expanding_lowercase_keeps_span_precomputed() -> None:
+    maps = precompute_content_maps(EXPANDING)
+    r = ground_and_locate_precomputed("target", EXPANDING, maps)
+    assert r.match_tier == 1
+    assert r.source_offset is not None and r.source_end is not None
+    assert EXPANDING[r.source_offset : r.source_end] == "target"
+    assert r.matched_span == "target"
+
+
+def test_expanding_lowercase_quote_keeps_span() -> None:
+    r = ground_and_locate("İİİ X Y", EXPANDING)
+    assert r.match_tier == 1
+    assert r.source_offset is not None and r.source_end is not None
+    assert EXPANDING[r.source_offset : r.source_end] == "İİİ x y"
+
+
+def test_expanding_lowercase_tier2_span() -> None:
+    content = "İİİ x, y: lantern"
+    r = ground_and_locate("x y lantern", content)
+    assert r.match_tier == 2
+    assert r.source_offset is not None and r.source_end is not None
+    assert content[r.source_offset : r.source_end] == "x, y: lantern"
+
+
+def test_expanding_lowercase_tier3_span() -> None:
+    content = "İİİ note\n\nsee the [lobby guide](http://example.test/g) for details"
+    r = ground_and_locate("lobby guide for details", content)
+    assert r.match_tier == 3
+    assert r.source_offset is not None and r.source_end is not None
+    span = content[r.source_offset : r.source_end]
+    assert span.startswith("lobby guide")
+    assert span.endswith("for details")
+
+
 def test_verify_quote_in_source_tiers() -> None:
     src = "The river boat, painted green, leaves at noon.\nTickets cost two coins."
     assert verify_quote_in_source("the RIVER boat,  painted", src) == 1.0
