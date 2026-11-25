@@ -54,7 +54,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] **AD-01** → [docs/items/AD-01.md](docs/items/AD-01.md) `LLM` adapter: OpenAI-compatible (vLLM) + Anthropic; JSON-schema/guided output — partial 2026-11-25: merged (PR #17); seen only with fake transports (pytest on main bc81dfa); unwired until the Screen/Assess rows; needs one live call per backend against a real gateway/key, and per-model cost rates (build_llm passes 0)
 - [ ] `Embedder` + `Reranker` adapters (local GPU service)
 - [ ] Adapter interfaces: `BusinessRegister`, `AccreditationRegister`, `ProfessionalRegister`, `TenderSource`, `PublicationSource` (ARCHITECTURE §10)
-- [ ] **AD-02** → [docs/items/AD-02.md](docs/items/AD-02.md) `source` catalogue table seeded from a scope pack's `sources.yaml` (roles, access class, licence) — partial 2026-11-25: branch `task/ad-02-source-catalogue` (SQLite: 9 passed, 1 skipped); unwired until the Discover row; Postgres path unexercised
+- [ ] **AD-02** → [docs/items/AD-02.md](docs/items/AD-02.md) `source` catalogue table seeded from a scope pack's `sources.yaml` (roles, access class, licence) — partial 2026-11-25: PR #20 (SQLite: 9 passed, 1 skipped); unwired until the Discover row; Postgres path unexercised
 
 ### Scope pack schema
 - [x] **SP-01** → [docs/items/SP-01.md](docs/items/SP-01.md) Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views ✔ 2026-11-25 (PR #10; seen: `load_scope_pack('scopes/_example')` on main dc3ae93 → 2 segments, 3 layers, 2 topics; unwired until `landscape validate`)
