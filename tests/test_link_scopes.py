@@ -129,5 +129,53 @@ class LinkScopesTest(unittest.TestCase):
         self.assertTrue((lane / "scopes" / "alpha").is_symlink())
 
 
+class NotACheckoutTest(unittest.TestCase):
+    """LW-02: a missing or non-git directory gives one stderr line and exit 2, no traceback."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+
+    def run_script(self, *argv):
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "link_scopes.py"), *argv],
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode, proc.stderr
+
+    def assert_one_line(self, rc, err, expected):
+        self.assertEqual(rc, 2)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(err.splitlines(), [expected])
+
+    def test_nonexistent_worktree(self):
+        missing = self.base / "missing"
+        rc, err = self.run_script("--worktree", str(missing))
+        self.assert_one_line(rc, err, f"link_scopes: {missing} does not exist")
+
+    def test_plain_directory_worktree(self):
+        plain = self.base / "plain"
+        plain.mkdir()
+        rc, err = self.run_script("--worktree", str(plain))
+        self.assert_one_line(rc, err, f"link_scopes: {plain} is not a git checkout")
+
+    def test_non_git_source(self):
+        worktree = self.base / "wt"
+        worktree.mkdir()
+        source = self.base / "src"
+        (source / "scopes" / "alpha").mkdir(parents=True)
+        rc, err = self.run_script("--worktree", str(worktree), "--source", str(source))
+        self.assert_one_line(rc, err, f"link_scopes: {source} is not a git checkout")
+
+    def test_nonexistent_source(self):
+        worktree = self.base / "wt"
+        worktree.mkdir()
+        source = self.base / "nosrc"
+        rc, err = self.run_script("--worktree", str(worktree), "--source", str(source))
+        self.assert_one_line(rc, err, f"link_scopes: {source} does not exist")
+
+
 if __name__ == "__main__":
     unittest.main()

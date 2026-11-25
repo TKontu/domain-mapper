@@ -11,6 +11,10 @@ links stay untracked in the worktree. One line per scope name is printed:
 - with ``--unlink``: ``unlinked`` / ``would unlink`` for links this tool would create,
   ``kept (not our link)`` for anything else, ``absent`` when nothing is there.
 
+A missing ``--worktree``/``--source``, or one that is not a git checkout (the worktree only needs
+to be one when ``--source`` is omitted), prints ``link_scopes: <dir> does not exist`` /
+``... is not a git checkout`` on stderr and exits 2.
+
 ``--source`` defaults to the main checkout of the worktree's repository. Caller: the planner
 when provisioning a lane worktree (docs/items/LW-01.md). Stdlib only.
 """
@@ -24,6 +28,20 @@ import sys
 from pathlib import Path
 
 EXCLUDED = {"_example"}
+
+
+class NotACheckout(Exception):
+    """A path given on the command line is missing or not inside a git checkout."""
+
+
+def check_checkout(path: Path) -> None:
+    if not path.exists():
+        raise NotACheckout(f"{path} does not exist")
+    probe = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--git-dir"], capture_output=True, text=True
+    )
+    if probe.returncode != 0:
+        raise NotACheckout(f"{path} is not a git checkout")
 
 
 def main_checkout(worktree: Path) -> Path:
@@ -53,7 +71,10 @@ def private_scopes(source: Path) -> list[str]:
     return sorted(
         p.name
         for p in root.iterdir()
-        if p.is_dir() and not p.is_symlink() and p.name not in EXCLUDED and not tracked(source, p.name)
+        if p.is_dir()
+        and not p.is_symlink()
+        and p.name not in EXCLUDED
+        and not tracked(source, p.name)
     )
 
 
@@ -69,6 +90,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--unlink", action="store_true", help="remove links this tool would create")
     args = ap.parse_args(argv)
 
+    try:
+        if not args.worktree.exists():
+            raise NotACheckout(f"{args.worktree} does not exist")
+        if args.source is None:
+            check_checkout(args.worktree)
+        else:
+            check_checkout(args.source)
+    except NotACheckout as exc:
+        print(f"link_scopes: {exc}", file=sys.stderr)
+        return 2
     worktree = args.worktree.resolve()
     source = (args.source or main_checkout(worktree)).resolve()
     if source == worktree:
