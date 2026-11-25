@@ -54,7 +54,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] `source` catalogue table seeded from a scope pack's `sources.yaml` (roles, access class, licence)
 
 ### Scope pack schema
-- [ ] Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views
+- [ ] **SP-01** → [docs/items/SP-01.md](docs/items/SP-01.md) Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views
 - [ ] `landscape validate --scope ...` command
 - [ ] JSON Schema export for editor autocompletion
 - [ ] `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities)
