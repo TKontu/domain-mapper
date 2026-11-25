@@ -26,7 +26,10 @@ nested too deeply (``RecursionError`` from ``json.loads``), a missing/invalid
 ``data`` object, ``success`` that is not ``true`` (with the ``error`` text,
 truncated), a missing or non-string ``rawHtml``, a ``rawHtml`` that is not
 encodable as UTF-8 (a lone surrogate), or ``rawHtml`` over ``max_bytes`` raise
-:class:`~adapters.fetcher.FetchError`. Messages never contain the response body
+:class:`~adapters.fetcher.FetchError`. A transport exception and transport
+status 408, 429 or 500-599 raise the retryable
+:class:`~adapters.fetcher.TransientFetchError` subclass instead; every other
+error stays a plain ``FetchError``. Messages never contain the response body
 or the base URL; ``repr`` hides the base URL.
 
 HTTP goes through an injected POST transport
@@ -56,7 +59,13 @@ from collections.abc import Callable, Mapping
 from typing import Any, Final
 from urllib.parse import urlsplit
 
-from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, FetchResult
+from adapters.fetcher import (
+    DEFAULT_MAX_BYTES,
+    Fetcher,
+    FetchError,
+    FetchResult,
+    TransientFetchError,
+)
 
 __all__ = ["DEFAULT_TIMEOUT_MS", "FirecrawlFetcher", "Transport"]
 
@@ -70,6 +79,7 @@ _ENV_VAR: Final = "FIRECRAWL_URL"
 _RESPONSE_ENVELOPE_BYTES: Final = 64 * 1024
 _MAX_ERROR_CHARS: Final = 200
 _DEFAULT_CONTENT_TYPE: Final = "text/html; charset=utf-8"
+_TRANSIENT_STATUSES: Final = frozenset({408, 429})
 
 
 def _is_http_url(value: object) -> bool:
@@ -155,8 +165,10 @@ class FirecrawlFetcher:
         except FetchError:
             raise
         except Exception as exc:
-            raise FetchError(f"transport failed: {type(exc).__name__}") from None
+            raise TransientFetchError(f"transport failed: {type(exc).__name__}") from None
         if not 200 <= status < 300:
+            if status in _TRANSIENT_STATUSES or 500 <= status <= 599:
+                raise TransientFetchError(f"HTTP {status}")
             raise FetchError(f"HTTP {status}")
         if len(response) > self._response_cap:
             raise FetchError(f"response exceeds {self._response_cap} bytes")

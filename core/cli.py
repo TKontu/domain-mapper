@@ -17,6 +17,9 @@ Each URL goes through the robots.txt check (CR-02), per-host rate limit,
 ``RAW_STORE_DIR`` and the entity's id as ``entity_id``. URLs run sequentially, one body in memory
 at a time. A fetched response whose status is outside 200-299 writes nothing; it prints
 ``skipped <url> status=<code>``, is not a failure, and the crawl continues with the next URL.
+A transient fetcher transport error prints ``retry <url> <ErrorName>: <detail>``, sleeps
+:data:`CRAWL_RETRY_BACKOFF_S`, waits on the per-host limiter and fetches the URL once more; the
+second outcome is handled as above (or as an error).
 
 ``web-search`` (DS-01) runs one query against SearXNG (``SEARXNG_URL``) and prints
 ``<rank>\t<url>\t<title>`` per result. With ``--save`` (DS-02) each result is also written as one
@@ -36,7 +39,7 @@ import json
 import os
 import time
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from itertools import chain, islice
 from pathlib import Path
@@ -50,7 +53,7 @@ from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 
 from adapters.blob_store import FilesystemBlobStore, raw_store_root
 from adapters.crawl_policy import HostRateLimiter, RobotsPolicy
-from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError
+from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFetchError
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
@@ -101,6 +104,8 @@ UrlOpt = Annotated[
 USER_AGENT = "domain-mapper/0.1 (polite research crawler)"
 CRAWL_MIN_INTERVAL_S = 1.0
 """Minimum spacing between requests to one host; a robots ``Crawl-delay`` can only raise it."""
+CRAWL_RETRY_BACKOFF_S = 5.0
+"""Seconds slept before the single retry of a transient fetcher transport error."""
 _HTTP_TIMEOUT_S = 60.0
 _ROBOTS_TIMEOUT_S = 15.0
 _SOURCE_KIND = "web"
@@ -296,12 +301,22 @@ class _Crawler:
 
     Each URL goes through the same robots check, per-host wait and ``ingest_page`` call. A target
     failure is printed and recorded in :attr:`failed` and does not stop the rest. A non-2xx
-    status is printed as a skip, writes nothing and is not recorded in :attr:`failed`.
+    status is printed as a skip, writes nothing and is not recorded in :attr:`failed`. A
+    transient fetcher transport error is retried once after :data:`CRAWL_RETRY_BACKOFF_S` and a
+    fresh limiter wait; a second failure takes the normal error path. ``sleep`` is injected so
+    tests never wait.
     """
 
-    def __init__(self, engine: Engine, fetcher: Fetcher) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        fetcher: Fetcher,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.engine = engine
         self.fetcher = fetcher
+        self._sleep = sleep
         self.limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
         limiter = self.limiter
 
@@ -326,15 +341,13 @@ class _Crawler:
             if delay is not None:
                 self.limiter.set_interval(host, delay)
             self.limiter.wait(url)
-            result = ingest_page(
-                self.engine,
-                fetcher=self.fetcher,
-                parser=self.parser,
-                url=url,
-                entity_id=entity_id,
-                source_kind=_SOURCE_KIND,
-                blob_store=self.blob_store,
-            )
+            try:
+                result = self._ingest(url, entity_id)
+            except TransientFetchError as exc:
+                typer.echo(f"retry {url} {type(exc).__name__}: {exc}")
+                self._sleep(CRAWL_RETRY_BACKOFF_S)
+                self.limiter.wait(url)
+                result = self._ingest(url, entity_id)
         except NonSuccessStatusError as exc:
             typer.echo(f"skipped {url} status={exc.status}")
             return None
@@ -348,6 +361,17 @@ class _Crawler:
             f"raw={result.raw_digest}"
         )
         return result
+
+    def _ingest(self, url: str, entity_id: int | None) -> IngestResult:
+        return ingest_page(
+            self.engine,
+            fetcher=self.fetcher,
+            parser=self.parser,
+            url=url,
+            entity_id=entity_id,
+            source_kind=_SOURCE_KIND,
+            blob_store=self.blob_store,
+        )
 
 
 def run_resolve(scope: Path, apply: bool = False) -> None:

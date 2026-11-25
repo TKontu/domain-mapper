@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError
+from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFetchError
 from adapters.firecrawl import DEFAULT_TIMEOUT_MS, FirecrawlFetcher
 
 BASE = "http://firecrawl.invalid"
@@ -192,6 +192,20 @@ def test_non_2xx_transport_status_rejected(status: int) -> None:
         run(status=status)
 
 
+@pytest.mark.parametrize("status", [408, 429, 500, 503])
+def test_transient_transport_status_raises_transient_error(status: int) -> None:
+    with pytest.raises(TransientFetchError, match=str(status)) as info:
+        run(status=status)
+    assert isinstance(info.value, FetchError)
+
+
+@pytest.mark.parametrize("status", [301, 400, 404, 422])
+def test_non_transient_transport_status_raises_plain_error(status: int) -> None:
+    with pytest.raises(FetchError, match=str(status)) as info:
+        run(status=status)
+    assert not isinstance(info.value, TransientFetchError)
+
+
 def test_success_false_includes_error_text() -> None:
     body = json.dumps({"success": False, "error": "site blocked scraping"}).encode()
     with pytest.raises(FetchError, match="site blocked scraping"):
@@ -289,6 +303,27 @@ def test_transport_exception_is_wrapped_without_message() -> None:
     with pytest.raises(FetchError, match="OSError") as info:
         FirecrawlFetcher(BASE, boom).fetch(TARGET)
     assert "secret" not in str(info.value)
+
+
+def test_transport_exception_is_transient() -> None:
+    def boom(url: str, body: bytes, headers: Mapping[str, str]) -> tuple[int, bytes]:
+        raise TimeoutError("timed out")
+
+    with pytest.raises(TransientFetchError, match="transport failed: TimeoutError"):
+        FirecrawlFetcher(BASE, boom).fetch(TARGET)
+
+
+def test_invalid_json_is_not_transient() -> None:
+    with pytest.raises(FetchError) as info:
+        run(b"not json")
+    assert not isinstance(info.value, TransientFetchError)
+
+
+def test_success_false_is_not_transient() -> None:
+    body = json.dumps({"success": False, "error": "site blocked scraping"}).encode()
+    with pytest.raises(FetchError) as info:
+        run(body)
+    assert not isinstance(info.value, TransientFetchError)
 
 
 def test_from_env_unset_raises(monkeypatch: pytest.MonkeyPatch) -> None:
