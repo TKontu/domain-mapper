@@ -51,7 +51,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] `Fetcher` adapter around own web scraping tool (document its API, JS rendering, PDF download)
 - [ ] `Parser` adapter: HTML → Markdown; PDF → MinerU → Markdown with page numbers
 - [ ] `Search` adapter
-- [ ] `LLM` adapter: OpenAI-compatible (vLLM) + Anthropic; JSON-schema/guided output
+- [ ] **AD-01** → [docs/items/AD-01.md](docs/items/AD-01.md) `LLM` adapter: OpenAI-compatible (vLLM) + Anthropic; JSON-schema/guided output — partial 2026-11-25: merged (PR #17); seen only with fake transports (pytest on main bc81dfa); unwired until the Screen/Assess rows; needs one live call per backend against a real gateway/key, and per-model cost rates (build_llm passes 0)
 - [ ] `Embedder` + `Reranker` adapters (local GPU service)
 - [ ] Adapter interfaces: `BusinessRegister`, `AccreditationRegister`, `ProfessionalRegister`, `TenderSource`, `PublicationSource` (ARCHITECTURE §10)
 - [ ] `source` catalogue table seeded from a scope pack's `sources.yaml` (roles, access class, licence)
@@ -59,7 +59,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 ### Scope pack schema
 - [x] **SP-01** → [docs/items/SP-01.md](docs/items/SP-01.md) Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views ✔ 2026-11-25 (PR #10; seen: `load_scope_pack('scopes/_example')` on main dc3ae93 → 2 segments, 3 layers, 2 topics; unwired until `landscape validate`)
 - [x] **SP-02** → [docs/items/SP-02.md](docs/items/SP-02.md) `landscape validate --scope ...` command ✔ 2026-11-25 (PR #13; seen: `uv run landscape validate --scope scopes/_example` on main 0789345 → scope example, 2 segments, 3 layers, 2 topics, 2 criteria, exit 0)
-- [ ] JSON Schema export for editor autocompletion
+- [x] **SP-03** → [docs/items/SP-03.md](docs/items/SP-03.md) JSON Schema export for editor autocompletion ✔ 2026-11-25 (PR #16; seen: `uv run landscape schema --out <tmp>` and `--file rubric.yaml` on main bc81dfa → 7 draft 2020-12 schemas, exit 0)
 - [ ] `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities)
 
 **Milestone M0:** `landscape validate` passes on `scopes/_example/`; adapters return data for one test URL and one PDF.
