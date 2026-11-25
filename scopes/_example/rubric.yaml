@@ -1,0 +1,35 @@
+status_scale:
+  - {id: strong,   label: Strong,         value: 3,    color: green}
+  - {id: standard, label: Standard,       value: 2,    color: grey}
+  - {id: weak,     label: Weak,           value: 1,    color: orange}
+  - {id: red_flag, label: Red flag,       value: 0,    color: red}
+  - {id: silent,   label: Not stated,     value: null, color: white}
+  - {id: na,       label: Does not apply, value: null, color: hatched}
+
+topics:
+  - id: certification
+    label: Certification & quality
+    criteria:
+      - id: iso17100
+        question: Is the provider certified to ISO 17100 by an accredited certification body?
+        applies_to: [agency]
+        statuses:
+          strong:   Certified; certificate found in the certification body's public register.
+          standard: Certified; certificate referenced but register entry not public.
+          weak:     Claims certification without a certificate reference.
+          red_flag: Claims certification that cannot be found, or it is withdrawn.
+        retrieval_hints: ["ISO 17100", "certified", "certificate"]
+        verify_with: certification_register
+        evidence_min: 1
+  - id: terms
+    label: Terms & commercial
+    criteria:
+      - id: public_terms
+        question: Are general terms of service publicly available?
+        applies_to: [agency, freelancer_network]
+        statuses:
+          strong:   Full terms published, dated, covering liability and confidentiality.
+          standard: Terms published but incomplete or undated.
+          weak:     Terms only on request.
+        retrieval_hints: ["terms", "conditions", "liability", "confidentiality"]
+        evidence_min: 1

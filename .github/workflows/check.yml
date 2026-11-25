@@ -1,0 +1,23 @@
+# Minimal backstop. The real gate runs locally (.agent/config.toml [verification]); CI only
+# re-runs the offline unit tests and a whitespace check. No live sources, models or secrets here.
+name: check
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests
+      - run: git diff --check HEAD^ HEAD || git diff --check $(git hash-object -t tree /dev/null) HEAD

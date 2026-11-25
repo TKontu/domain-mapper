@@ -1,0 +1,22 @@
+# Reconcile-loop project configuration (adapted from config.example.toml).
+[project]
+architecture = "ARCHITECTURE.md"
+backlog = "todo.md"              # sole plan/status registry
+item_details = "docs/items"      # one file per executable item (templates/item.md)
+decisions = "docs/decisions.md"  # append-only
+default_branch = "main"
+
+[verification]
+# Until the product stack exists, the gate is the workflow tooling's own tests.
+# Replace with the real gate (pytest, ruff, mypy) once item PF-01 lands.
+command = ["python3", "-m", "unittest", "discover", "-s", "tests"]
+environment = "offline; no network services, no paid APIs"
+
+[policy]
+# Delegated standing by the operator (D-002): the planner merges without asking.
+merge_authority = "planner, standing delegation D-002: merge only via scripts/merge_guard.py a PR whose current head passed independent review-round and the configured gate and is mergeable; operator only for PRs that change docs/decisions.md, ARCHITECTURE.md, .agent/config.toml, .claude/* or scripts/merge_guard.py, or that decide a (D)/(H) item; executors never self-merge"
+human_tasks = "(D) decisions and (H) items belong to the operator/domain expert; agents prepare, never decide"
+
+[supervisor]
+# Herdr names are global across repos; keeps the planner at round-planner-domain-mapper
+name = "domain-mapper"

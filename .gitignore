@@ -1,0 +1,55 @@
+# Reconcile-loop round state and per-session handoff
+.agent-runs/
+HANDOFF.md
+
+# Secrets (endpoints, Claude API key, register API keys)
+.env
+.env.*
+!.env.example
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Pipeline data: raw snapshots, parsed chunks, exports, local stores (never committed)
+data/
+raw/
+snapshots/
+output/
+exports/
+minio/
+pgdata/
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+dist/
+build/
+*.egg-info/
+
+# Frontend
+node_modules/
+.vite/
+coverage/
+*.log
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Private scope packs (D-003): only the illustrative example is public
+scopes/*
+!scopes/README.md
+!scopes/_example/

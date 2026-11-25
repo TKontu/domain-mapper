@@ -1,0 +1,81 @@
+{
+  "$comment": "Stack-neutral defaults. Raw gh pr merge is denied; planners merge only through scripts/merge_guard.py (D-002, docs/decisions.md). Project-local additions go in settings.local.json.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path // empty' | { read -r f || exit 0; case \"$f\" in *.py) ;; *) exit 0 ;; esac; r=\"$CLAUDE_PROJECT_DIR/.venv/bin/ruff\"; [ -x \"$r\" ] || r=$(command -v ruff) || exit 0; \"$r\" check --fix --quiet \"$f\"; \"$r\" format --quiet \"$f\"; } 2>/dev/null || true",
+            "statusMessage": "ruff (edited file)"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(file:*)",
+      "Bash(which:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)",
+      "Bash(diff:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(awk:*)",
+      "Bash(sed -n:*)",
+      "Bash(jq:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git blame:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git remote -v)",
+      "Bash(git fetch origin)",
+      "Bash(git pull origin *)",
+      "Bash(git checkout -b *)",
+      "Bash(git add *)",
+      "Bash(git commit -m *)",
+      "Bash(git push -u origin *)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr create --title * --body *)",
+      "Bash(gh pr comment * --body-file *)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(python3 scripts/merge_guard.py:*)",
+      "Bash(python3 -m unittest:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff check:*)",
+      "Bash(uv run ruff format:*)",
+      "Bash(uv run mypy:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker images:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker inspect:*)",
+      "Bash(docker compose ps:*)",
+      "Bash(docker compose logs:*)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -fd*)",
+      "Bash(gh pr merge:*)"
+    ]
+  }
+}

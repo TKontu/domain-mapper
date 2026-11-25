@@ -1,0 +1,21 @@
+# Copy to .agent/config.toml; preserve your project's actual paths and policies.
+[project]
+architecture = "architecture/target.md"
+backlog = "backlog/frontier.md"
+item_details = "backlog/items"
+decisions = "architecture/decisions"
+default_branch = "main"
+
+[verification]
+# Example only: replace with your actual local gate and safe environment instructions.
+command = ["python3", "-m", "unittest", "discover", "-s", "tests"]
+environment = "offline; no mutable services"
+
+[policy]
+merge_authority = "designated reviewer/operator; executor never self-merges"
+# Point to existing policy/runbooks when this short description is insufficient.
+
+# Optional: only read by scripts/round_supervisor.py (see .agent/supervisor.md).
+# [supervisor]
+# name = "my-repo"          # Herdr name slug; defaults to the checkout's directory name
+# permission_mode = "auto"   # unattended sessions cannot answer approval dialogs

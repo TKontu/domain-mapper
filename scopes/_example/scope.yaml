@@ -1,0 +1,23 @@
+# Illustrative scope pack (public). Shape only; the schema is defined by item "Scope pack schema".
+id: example
+version: 0.0.1
+title: Translation agency landscape (illustrative)
+purpose: internal_evaluation
+perspective: >
+  Organisation buying certified translation for regulated documents.
+
+segments:
+  - id: agency
+    label: Agencies
+    definition: Companies selling translation with in-house project management.
+  - id: freelancer_network
+    label: Freelancer networks
+    definition: Platforms or cooperatives brokering independent translators.
+
+layers:
+  - {id: home,   countries: [XA],         discovery_target: exhaustive,      rubric_depth: full}
+  - {id: region, countries: [XA, XB, XC], discovery_target: near_exhaustive, rubric_depth: full}
+  - {id: global, countries: ["*"],        discovery_target: notable,         rubric_depth: core}
+
+languages:
+  default: [en]
