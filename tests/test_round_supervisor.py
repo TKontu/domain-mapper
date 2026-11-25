@@ -53,7 +53,9 @@ class PolicyTests(unittest.TestCase):
         done = {"outcome": "continue"}
         self.assertEqual(rs.decide(CFG, tracker(), obs(60, sentinel=done)).kind, "next")
         t = tracker()
-        self.assertEqual(rs.decide(CFG, t, obs(60, sentinel=done, status="working")).kind, "wait")
+        self.assertEqual(
+            rs.decide(CFG, t, obs(60, sentinel=done, status="working")).kind, "wait"
+        )
         late = obs(60 + CFG.settle_s, sentinel=done, status="working")
         self.assertEqual(rs.decide(CFG, t, late).kind, "next")
 
@@ -124,7 +126,9 @@ class PolicyTests(unittest.TestCase):
             rs.with_overrides(CFG, ["nope=1"])
 
     def test_phase_shows_a_dead_supervisor_and_a_halt(self):
-        self.assertEqual(rs.phase_of(halt=None, alive=False, stopping=False)[0], "SUPERVISOR DOWN")
+        self.assertEqual(
+            rs.phase_of(halt=None, alive=False, stopping=False)[0], "SUPERVISOR DOWN"
+        )
         self.assertEqual(
             rs.phase_of(halt={"reason": "r"}, alive=False, stopping=False), ("HALTED", "r")
         )
@@ -295,11 +299,7 @@ class RepoNameTests(unittest.TestCase):
         lane = Path(tmp.name) / ".agent-runs" / "lanes" / "sweep"
         lane.mkdir(parents=True)
         (lane / "runner.rc").write_text("0\n")
-        record = {
-            "lane": "sweep",
-            "label": rs.LANE_PREFIX + "sweep",
-            "rc_file": str(lane / "runner.rc"),
-        }
+        record = {"lane": "sweep", "label": rs.LANE_PREFIX + "sweep", "rc_file": str(lane / "runner.rc")}
         (lane / "lane.json").write_text(json.dumps(record))
         idle = {"name": rs.LANE_PREFIX + "sweep", "agent_status": "idle"}
         with mock.patch.object(rs, "ROOT", Path(tmp.name)):
@@ -356,9 +356,8 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_up_opens_the_loop_tab_in_the_supervisors_workspace(self):
         calls, run = self.record()
-        with (
-            mock.patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "w1D"}),
-            mock.patch.object(rs.time, "sleep", lambda _s: None),
+        with mock.patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "w1D"}), mock.patch.object(
+            rs.time, "sleep", lambda _s: None
         ):
             rs.up([], rs.Herdr(run))
         create = next(c for c in calls if c[1:3] == ["tab", "create"])

@@ -104,13 +104,9 @@ def compose_violations(compose: str) -> list[str]:
     if not re.fullmatch(r"pgvector/pgvector:\d+\.\d+\.\d+-pg16", image):
         problems.append(f"db.image: expected a pinned pgvector pg16 tag, found {image!r}")
     if "./deploy/postgres/init:/docker-entrypoint-initdb.d:ro" not in db:
-        problems.append(
-            "db.init: init scripts not mounted read-only at /docker-entrypoint-initdb.d"
-        )
+        problems.append("db.init: init scripts not mounted read-only at /docker-entrypoint-initdb.d")
     if "POSTGRES_PASSWORD: ${DM_POSTGRES_PASSWORD:?" not in db:
-        problems.append(
-            "db.password: POSTGRES_PASSWORD must come from ${DM_POSTGRES_PASSWORD:?...}"
-        )
+        problems.append("db.password: POSTGRES_PASSWORD must come from ${DM_POSTGRES_PASSWORD:?...}")
     for line in db.splitlines():
         match = re.match(r"\s+POSTGRES_(?:DB|USER|PASSWORD):[ \t]*(.*)$", line)
         if match and not match.group(1).startswith("${"):
@@ -135,17 +131,13 @@ def compose_violations(compose: str) -> list[str]:
     if "MINIO_ROOT_USER: ${DM_MINIO_ROOT_USER:?" not in minio:
         problems.append("minio.user: MINIO_ROOT_USER must come from ${DM_MINIO_ROOT_USER:?...}")
     if "MINIO_ROOT_PASSWORD: ${DM_MINIO_ROOT_PASSWORD:?" not in minio:
-        problems.append(
-            "minio.password: MINIO_ROOT_PASSWORD must come from ${DM_MINIO_ROOT_PASSWORD:?...}"
-        )
+        problems.append("minio.password: MINIO_ROOT_PASSWORD must come from ${DM_MINIO_ROOT_PASSWORD:?...}")
     default = default_image(image_of(services["minio"]))
-    pinned = re.fullmatch(r"[^:]+:20\d{2}\.\d{1,2}\.\d{1,2}-debian-12-r\d+", default) or re.search(
-        r"@sha256:[0-9a-f]{64}$", default
-    )
+    pinned = re.fullmatch(
+        r"[^:]+:20\d{2}\.\d{1,2}\.\d{1,2}-debian-12-r\d+", default
+    ) or re.search(r"@sha256:[0-9a-f]{64}$", default)
     if not pinned:
-        problems.append(
-            f"minio.image: minio image is not pinned, found {image_of(services['minio'])!r}"
-        )
+        problems.append(f"minio.image: minio image is not pinned, found {image_of(services['minio'])!r}")
 
     return problems
 
@@ -157,11 +149,7 @@ def dockerignore_violations(ignore: str) -> list[str]:
         if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!")
     }
     required = [".env", ".env.*", ".git", ".agent-runs", "scopes", "snapshots"]
-    return [
-        f"dockerignore: {pattern!r} is not excluded from the build context"
-        for pattern in required
-        if pattern not in entries
-    ]
+    return [f"dockerignore: {pattern!r} is not excluded from the build context" for pattern in required if pattern not in entries]
 
 
 def dockerfile_violations(dockerfile: str) -> list[str]:
@@ -291,12 +279,8 @@ class ComposeGuardNegativeControlTests(unittest.TestCase):
         self.assert_flags(compose_violations(broken), "minio.image")
 
     def test_detects_secret_in_build_context(self) -> None:
-        self.assert_flags(
-            dockerignore_violations(self.ignore.replace(".env\n", "", 1)), "dockerignore"
-        )
-        self.assert_flags(
-            dockerignore_violations(self.ignore.replace("scopes\n", "", 1)), "dockerignore"
-        )
+        self.assert_flags(dockerignore_violations(self.ignore.replace(".env\n", "", 1)), "dockerignore")
+        self.assert_flags(dockerignore_violations(self.ignore.replace("scopes\n", "", 1)), "dockerignore")
 
     def test_detects_floating_python_base(self) -> None:
         broken = self.dockerfile.replace("FROM python:3.12-slim", "FROM python:latest")
@@ -308,9 +292,7 @@ class ComposeGuardNegativeControlTests(unittest.TestCase):
         self.assert_flags(dockerfile_violations(broken), "dockerfile.secret")
 
     def test_detects_secret_value_in_env_example(self) -> None:
-        broken = self.env_example.replace(
-            "DM_POSTGRES_PASSWORD=\n", "DM_POSTGRES_PASSWORD=hunter2\n"
-        )
+        broken = self.env_example.replace("DM_POSTGRES_PASSWORD=\n", "DM_POSTGRES_PASSWORD=hunter2\n")
         self.assertNotEqual(broken, self.env_example)
         self.assert_flags(env_example_violations(broken), "env.example")
 

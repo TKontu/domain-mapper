@@ -243,7 +243,9 @@ class SchemaTests(RunnerTestCase):
         self.assertEqual(RUNNING, "running")
 
 
-@unittest.skipUnless(POSTGRES_URL, "DM_TEST_DATABASE_URL is not set; PostgreSQL path not exercised")
+@unittest.skipUnless(
+    POSTGRES_URL, "DM_TEST_DATABASE_URL is not set; PostgreSQL path not exercised"
+)
 class PostgresRunnerTests(unittest.TestCase):
     """Optional: proves the same schema and runner work on PostgreSQL 16.
 

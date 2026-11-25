@@ -80,9 +80,7 @@ class MergeGuardTests(unittest.TestCase):
             self.assertEqual(gh.merge_calls(), [], path)
 
     def test_allows_ordinary_records(self):
-        gh = FakeGh(
-            files=[{"path": "todo.md"}, {"path": "DATASOURCES.md"}, {"path": "providers.csv"}]
-        )
+        gh = FakeGh(files=[{"path": "todo.md"}, {"path": "DATASOURCES.md"}, {"path": "providers.csv"}])
         self.assertEqual(mg.guard(7, HEAD, run=gh), 0)
 
     def test_requires_a_full_head_sha(self):
