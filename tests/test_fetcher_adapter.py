@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -91,6 +91,25 @@ def test_max_body_bound() -> None:
 def test_invalid_max_bytes() -> None:
     with pytest.raises(FetchError):
         InMemoryFetcher({}, max_bytes=0)
+
+
+def test_fetched_at_defaults_to_aware_utc() -> None:
+    r = FetchResult("https://a.example/", 200, "text/html", b"")
+    assert r.fetched_at.tzinfo is not None
+    assert r.fetched_at.utcoffset() == timedelta(0)
+
+
+def test_naive_fetched_at_raises() -> None:
+    with pytest.raises(FetchError):
+        FetchResult("https://a.example/", 200, "text/html", b"", fetched_at=datetime(2026, 1, 1))
+
+
+def test_aware_non_utc_fetched_at_kept_as_given() -> None:
+    tz = timezone(timedelta(hours=2))
+    when = datetime(2026, 1, 1, 12, tzinfo=tz)
+    r = FetchResult("https://a.example/", 200, "text/html", b"", fetched_at=when)
+    assert r.fetched_at is when
+    assert r.fetched_at.utcoffset() == timedelta(hours=2)
 
 
 def test_result_frozen_and_headers_immutable() -> None:

@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 from urllib.parse import urlsplit
@@ -37,16 +37,23 @@ class FetchError(ValueError):
 
 @dataclass(frozen=True)
 class FetchResult:
-    """One fetched response; headers are stored as a read-only copy."""
+    """One fetched response; headers are stored as a read-only copy.
+
+    ``fetched_at`` must be timezone-aware; it defaults to the current UTC time
+    (aware non-UTC values are kept as given).
+    """
 
     final_url: str
     status: int
     content_type: str
     body_bytes: bytes
     headers: Mapping[str, str] = field(default_factory=dict)
-    fetched_at: datetime = field(default_factory=datetime.now)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
+        tzinfo = self.fetched_at.tzinfo
+        if tzinfo is None or tzinfo.utcoffset(self.fetched_at) is None:
+            raise FetchError(f"fetched_at must be timezone-aware: {self.fetched_at!r}")
         object.__setattr__(self, "headers", MappingProxyType(dict(self.headers)))
 
     @property
