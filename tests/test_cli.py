@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,9 +63,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertNotIn("db-secret", result.output)
         self.assertIn("database_url", result.output)
-        self.assertIn(
-            "postgresql+psycopg://domain_mapper:***@db:5432/domain_mapper", result.output
-        )
+        self.assertIn("postgresql+psycopg://domain_mapper:***@db:5432/domain_mapper", result.output)
 
     def test_unparsable_database_url_prints_no_url(self) -> None:
         os.environ["DM_DATABASE_URL"] = "not a url with db-secret"
@@ -97,3 +96,38 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ValidateTest(unittest.TestCase):
+    """``landscape validate`` (SP-02)."""
+
+    def setUp(self) -> None:
+        self.runner = CliRunner()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def invoke(self, *args: str):
+        return self.runner.invoke(app, list(args))
+
+    def test_valid_pack_prints_summary_and_exits_0(self) -> None:
+        result = self.invoke("validate", "--scope", EXAMPLE_SCOPE)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("scope: ", result.stdout)
+        for label in ("segments: 2", "layers: 3", "topics: 2", "criteria: "):
+            self.assertIn(label, result.stdout)
+
+    def test_invalid_pack_names_file_and_exits_1(self) -> None:
+        broken = Path(self.tmp.name) / "broken"
+        shutil.copytree(EXAMPLE_SCOPE, broken)
+        scope_yaml = broken / "scope.yaml"
+        scope_yaml.write_text(scope_yaml.read_text() + "\nunexpected_field: 1\n")
+        result = self.invoke("validate", "--scope", str(broken))
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("scope.yaml", result.stderr)
+        self.assertIn("unexpected_field", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_missing_directory_exits_2(self) -> None:
+        result = self.invoke("validate", "--scope", str(Path(self.tmp.name) / "nope"))
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("not found", result.stderr)
