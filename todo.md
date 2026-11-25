@@ -35,7 +35,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Record the above in `docs/decisions.md`
 
 ### Repo & infra
-- [ ] **PF-01** Python project skeleton (uv), ruff, mypy, pytest, pre-commit → [docs/items/PF-01.md](docs/items/PF-01.md)
+- [x] **PF-01** Python project skeleton (uv), ruff, mypy, pytest, pre-commit → [docs/items/PF-01.md](docs/items/PF-01.md) ✔ 2026-11-25 (PR #1; gate switch in `.agent/config.toml` owed to operator)
+- [ ] **PF-02** Make `tests/test_round_supervisor.py` hermetic: `RepoNameTests.test_dashboard_lists_only_this_repos_lanes` reads live lane records when `ROUND_SUPERVISOR_ROOT` is set (fails inside supervised sessions)
 - [ ] docker compose: Postgres 16 + pgvector, (MinIO), app container
 - [ ] Config: `.env` for endpoints (vLLM gateway, embedding/reranker service, cloud LLM key), budgets; `.env.example` tracked
 - [ ] Typer CLI skeleton: `landscape <stage> --scope --layer --limit --dry-run`
