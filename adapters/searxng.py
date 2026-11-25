@@ -25,14 +25,16 @@ pattern, GET variant defined here); the default uses only :mod:`urllib.request`.
 Bound: one response body in memory; at most ``query.limit`` results; page 1 only.
 No pagination, retries, rate limiting or caching.
 
-The module is **unwired by design**: the first production caller is the Phase 1
-Discover row (search channel).
+``from_env()`` reads ``SEARXNG_URL`` (mirrors ``FirecrawlFetcher.from_env``).
+The first production caller is the CLI ``web-search`` command (DS-01); Discover
+stage wiring is a later row.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -47,6 +49,7 @@ __all__ = ["HttpResponse", "SearxngSearch", "Transport", "urllib_get_transport"]
 
 BACKEND: Final = "searxng"
 DEFAULT_TIMEOUT_SECONDS: Final = 10.0
+_ENV_VAR: Final = "SEARXNG_URL"
 
 
 class Transport(Protocol):
@@ -98,6 +101,18 @@ class SearxngSearch:
         self._base = base_url.rstrip("/")
         self._transport: Transport = urllib_get_transport if transport is None else transport
         self._timeout = _validate_timeout(timeout)
+
+    @classmethod
+    def from_env(
+        cls, *, transport: Transport | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    ) -> SearxngSearch:
+        """Build from ``SEARXNG_URL``; ``ValueError`` names the variable, never its value."""
+        base_url = os.environ.get(_ENV_VAR, "").strip()
+        if not base_url:
+            raise ValueError(f"{_ENV_VAR} is not set; set it to the SearXNG base URL")
+        if not _is_http_url(base_url):
+            raise ValueError(f"{_ENV_VAR} must be an http(s) URL")
+        return cls(base_url, transport=transport, timeout=timeout)
 
     def __repr__(self) -> str:  # never expose the instance URL
         return "SearxngSearch(<base_url hidden>)"
