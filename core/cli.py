@@ -148,10 +148,14 @@ def run_crawl(
     except Exception as exc:  # noqa: BLE001 - never echo the database URL
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
-    robots = RobotsPolicy(
-        lambda u: get_robots(u, user_agent=USER_AGENT, timeout_s=_ROBOTS_TIMEOUT_S), USER_AGENT
-    )
     limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
+
+    def fetch_robots(robots_url: str) -> tuple[int, bytes]:
+        # Called only when RobotsPolicy actually fetches (not cached): one wait per real GET.
+        limiter.wait(robots_url)
+        return get_robots(robots_url, user_agent=USER_AGENT, timeout_s=_ROBOTS_TIMEOUT_S)
+
+    robots = RobotsPolicy(fetch_robots, USER_AGENT)
     blob_store = FilesystemBlobStore(raw_store_root(os.environ))
     parser = HtmlParser()
     failed = False
@@ -159,7 +163,6 @@ def run_crawl(
         for url in urls:
             try:
                 host = urlsplit(url).hostname or ""
-                limiter.wait(url)  # robots.txt fetch counts as a request to the host
                 if not robots.allowed(url):
                     typer.echo(f"skipped {url} robots")
                     continue

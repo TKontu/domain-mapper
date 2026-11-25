@@ -8,7 +8,9 @@
   with the policy's user agent that reads at most :data:`~adapters.crawl_policy.MAX_ROBOTS_BYTES`
   (CR-02 ignores rules beyond the cap anyway).
 
-Non-2xx responses return ``(status, b"")`` instead of raising, so callers apply their own status
+Redirects are never followed (a redirect target would bypass the robots check and the per-host
+limiter): a 3xx is returned as its status like any other non-2xx. Non-2xx responses return
+``(status, b"")`` instead of raising, so callers apply their own status
 rules. Only http(s) URLs are accepted. Error messages carry the exception type, never the URL.
 
 Production caller: the CLI ``crawl`` stage (:mod:`core.cli`).
@@ -34,10 +36,20 @@ def _check_http(url: str) -> None:
         raise FetchError("transport accepts http(s) URLs only")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect so the 3xx surfaces as an ``HTTPError``."""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _request(request: urllib.request.Request, timeout_s: float, limit: int) -> tuple[int, bytes]:
     """Open ``request``; return ``(status, at most limit bytes)``; non-2xx bodies are dropped."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
+        with _OPENER.open(request, timeout=timeout_s) as response:
             return int(response.status), response.read(limit)
     except urllib.error.HTTPError as exc:
         exc.close()

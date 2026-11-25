@@ -174,6 +174,34 @@ class CrawlStageTest(unittest.TestCase):
         self.assertNotIn("firecrawl-secret", result.output)
         self.assertNotIn(str(self.db), result.output)
 
+    def _count_waits(self) -> list[str]:
+        waits: list[str] = []
+        real = cli.HostRateLimiter.wait
+
+        def counting(limiter: object, url: str) -> None:
+            waits.append(url)
+            real(limiter, url)  # type: ignore[arg-type]
+
+        patcher = mock.patch.object(cli.HostRateLimiter, "wait", counting)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return waits
+
+    def test_limiter_waits_once_per_real_request(self) -> None:
+        waits = self._count_waits()
+        first, second = self.base + "/page", self.base + "/other"
+        result = self.crawl(first, second)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.robots_hits, 1)
+        # first URL: robots GET + page fetch; second (robots cached): page fetch only
+        self.assertEqual(len(waits), 3)
+
+    def test_robots_disallowed_cached_url_never_waits(self) -> None:
+        waits = self._count_waits()
+        result = self.crawl(self.base + "/page", self.base + "/private/x")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(waits), 2)
+
     def test_dry_run_unchanged(self) -> None:
         result = self.runner.invoke(app, ["crawl", "--scope", EXAMPLE_SCOPE, "--dry-run"])
         self.assertEqual(result.exit_code, 0, result.output)

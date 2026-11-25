@@ -22,15 +22,29 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         _Handler.seen = {"body": self.rfile.read(length), "ctype": self.headers["Content-Type"]}
         size = int(self.path.rsplit("/", 1)[-1]) if self.path.startswith("/size/") else 2
+        if self.path == "/redirect":
+            self._redirect()
+            return
         status = 500 if self.path == "/fail" else 200
         self._send(status, b"x" * size)
 
     def do_GET(self) -> None:  # noqa: N802
         _Handler.seen = {"ua": self.headers["User-Agent"]}
-        if self.path == "/missing/robots.txt":
+        if self.path == "/moved/robots.txt":
+            self._redirect()
+        elif self.path == "/target":
+            _Handler.seen = {"followed": True}
+            self._send(200, b"User-agent: *\nAllow: /\n")
+        elif self.path == "/missing/robots.txt":
             self._send(404, b"nope")
         else:
             self._send(200, b"a" * (600 * 1024))
+
+    def _redirect(self) -> None:
+        self.send_response(302)
+        self.send_header("Location", "/target")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send(self, status: int, body: bytes) -> None:
         self.send_response(status)
@@ -82,3 +96,16 @@ def test_robots_get_caps_body_and_sends_user_agent(base: str) -> None:
 
 def test_robots_get_404_status(base: str) -> None:
     assert get_robots(base + "/missing/robots.txt", user_agent="ua", timeout_s=5)[0] == 404
+
+
+def test_post_does_not_follow_redirect(base: str) -> None:
+    post = make_post_transport(max_bytes=10, timeout_s=5)
+    _Handler.seen = {}
+    assert post(base + "/redirect", b"", {}) == (302, b"")
+    assert "followed" not in _Handler.seen
+
+
+def test_robots_get_does_not_follow_redirect(base: str) -> None:
+    _Handler.seen = {}
+    assert get_robots(base + "/moved/robots.txt", user_agent="ua", timeout_s=5) == (302, b"")
+    assert "followed" not in _Handler.seen
