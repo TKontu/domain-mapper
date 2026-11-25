@@ -185,12 +185,14 @@ class OpenAITests(LlmAdapterTestCase):
         self.assertNotIn("Authorization", transport.calls[0].headers)
 
     def test_schema_uses_response_format_json_schema(self) -> None:
-        transport = FakeTransport(json_response(openai_payload('{"status": "in"}'),))
+        transport = FakeTransport(
+            json_response(
+                openai_payload('{"status": "in"}'),
+            )
+        )
         llm = self.openai(transport)
 
-        result = llm.complete(
-            PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA
-        )
+        result = llm.complete(PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA)
 
         body = json.loads(transport.calls[0].body)
         self.assertEqual(body["response_format"]["type"], "json_schema")
@@ -200,12 +202,14 @@ class OpenAITests(LlmAdapterTestCase):
         self.assertEqual(result.text, '{"status": "in"}')
 
     def test_schema_can_use_vllm_guided_json(self) -> None:
-        transport = FakeTransport(json_response(openai_payload('{"status": "in"}'),))
+        transport = FakeTransport(
+            json_response(
+                openai_payload('{"status": "in"}'),
+            )
+        )
         llm = self.openai(transport, schema_mode="guided_json")
 
-        result = llm.complete(
-            PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA
-        )
+        result = llm.complete(PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA)
 
         body = json.loads(transport.calls[0].body)
         self.assertEqual(body["guided_json"], SCHEMA)
@@ -244,9 +248,7 @@ class OpenAITests(LlmAdapterTestCase):
 
     def test_http_failure_raises_status_and_writes_one_error_row(self) -> None:
         stream = self.configure_logging_for_test()
-        transport = FakeTransport(
-            HttpResponse(status=500, body=RESPONSE_BODY.encode("utf-8"))
-        )
+        transport = FakeTransport(HttpResponse(status=500, body=RESPONSE_BODY.encode("utf-8")))
         llm = self.openai(transport, api_key="sk-local-secret")
 
         with self.assertRaises(LlmError) as caught:
@@ -301,7 +303,9 @@ class OpenAITests(LlmAdapterTestCase):
             self.assertNotIn(PROMPT, str(getattr(row, column.key)), column.key)
 
     def test_usage_computes_cost_from_optional_rates(self) -> None:
-        transport = FakeTransport(json_response(openai_payload("hi", tokens_in=1000, tokens_out=500)))
+        transport = FakeTransport(
+            json_response(openai_payload("hi", tokens_in=1000, tokens_out=500))
+        )
         llm = self.openai(transport, cost_per_mtok_in=2.0, cost_per_mtok_out=8.0)
 
         result = llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
@@ -396,16 +400,19 @@ class AnthropicTests(LlmAdapterTestCase):
                 anthropic_payload(
                     [
                         {"type": "text", "text": "ok"},
-                        {"type": "tool_use", "id": "t1", "name": "emit_result", "input": {"status": "in"}},
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "emit_result",
+                            "input": {"status": "in"},
+                        },
                     ]
                 )
             )
         )
         llm = self.anthropic(transport)
 
-        result = llm.complete(
-            PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA
-        )
+        result = llm.complete(PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA)
 
         body = json.loads(transport.calls[0].body)
         self.assertEqual(body["tools"][0]["name"], "emit_result")
@@ -502,13 +509,13 @@ class FactoryTests(LlmAdapterTestCase):
     def test_vllm_and_openai_aliases_select_the_compatible_client(self) -> None:
         for backend in ("vllm", "openai", "openai-compatible"):
             with self.subTest(backend=backend):
-                llm = build_llm(
-                    self.settings(), backend, db=self.engine, transport=FakeTransport()
-                )
+                llm = build_llm(self.settings(), backend, db=self.engine, transport=FakeTransport())
                 self.assertIsInstance(llm, OpenAICompatibleLLM)
 
     def test_cloud_backend_uses_anthropic_with_the_cloud_model(self) -> None:
-        transport = FakeTransport(json_response(anthropic_payload([{"type": "text", "text": "hi"}])))
+        transport = FakeTransport(
+            json_response(anthropic_payload([{"type": "text", "text": "hi"}]))
+        )
         llm = build_llm(
             self.settings(cloud_api_key="sk-cloud"),
             "cloud",
@@ -562,9 +569,7 @@ class LoggingBoundaryTests(LlmAdapterTestCase):
     def test_manual_helper_and_adapter_are_distinct_paths(self) -> None:
         # Guards against the adapter bypassing ``log_llm_call``: a direct helper
         # call still produces exactly its own row.
-        with log_llm_call(
-            self.engine, run_id=self.run_id, model="x", purpose="test", prompt="p"
-        ):
+        with log_llm_call(self.engine, run_id=self.run_id, model="x", purpose="test", prompt="p"):
             pass
         self.assertEqual(len(self.rows()), 1)
 
