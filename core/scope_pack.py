@@ -1,7 +1,7 @@
 """Scope pack models and loader (ARCHITECTURE.md §3).
 
-`load_scope_pack` is unwired by design; its production caller is the
-`landscape validate` row (todo.md Phase 0 › Scope pack schema).
+`load_scope_pack` is called by `landscape validate` (SP-02); `scope_pack_json_schemas` is called
+by `landscape schema` (SP-03).
 """
 
 from __future__ import annotations
@@ -169,6 +169,23 @@ _OPTIONAL: dict[str, type[_Model]] = {
     "profiles": Profiles,
     "views": Views,
 }
+
+
+_FILE_MODELS: dict[str, type[_Model]] = {
+    "scope.yaml": Scope,
+    "rubric.yaml": Rubric,
+    **{f"{name}.yaml": model for name, model in _OPTIONAL.items()},
+}
+
+_JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+
+def scope_pack_json_schemas() -> dict[str, dict[str, Any]]:
+    """Return a JSON Schema (draft 2020-12) for each scope-pack YAML file, keyed by file name."""
+    return {
+        file: {"$schema": _JSON_SCHEMA_DIALECT, **model.model_json_schema()}
+        for file, model in _FILE_MODELS.items()
+    }
 
 
 def _read(path: Path, required: bool) -> dict[str, Any] | None:

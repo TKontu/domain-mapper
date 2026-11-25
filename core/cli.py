@@ -2,12 +2,14 @@
 
 Each pipeline stage (ARCHITECTURE.md §4) is a subcommand sharing the same options. Stage bodies
 are unwired by design until their own todo.md rows; ``--dry-run`` prints the resolved plan.
-``validate`` (SP-02) is not a stage: it loads and summarizes a scope pack.
+``validate`` (SP-02) and ``schema`` (SP-03) are not stages: they load/summarize a scope pack and
+export its JSON Schemas.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -16,7 +18,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from core.config import load_settings
-from core.scope_pack import ScopePackError, load_scope_pack
+from core.scope_pack import ScopePackError, load_scope_pack, scope_pack_json_schemas
 
 STAGES: tuple[str, ...] = (
     "discover",
@@ -110,6 +112,31 @@ def validate(scope: ScopeOpt) -> None:
     typer.echo(f"layers: {len(pack.scope.layers)}")
     typer.echo(f"topics: {len(topics)}")
     typer.echo(f"criteria: {sum(len(t.criteria) for t in topics)}")
+
+
+@app.command(name="schema", help="Export scope-pack JSON Schemas for editor autocompletion.")
+def schema(
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Write <file stem>.schema.json files here.")
+    ] = None,
+    file: Annotated[
+        str, typer.Option("--file", help="Pack file to print when --out is not given.")
+    ] = "scope.yaml",
+) -> None:
+    """Write every schema to ``out``, or print the one for ``file``; unknown file exits 2."""
+    schemas = scope_pack_json_schemas()
+    if out is None:
+        if file not in schemas:
+            known = ", ".join(schemas)
+            typer.echo(f"error: unknown scope-pack file: {file} (known: {known})", err=True)
+            raise typer.Exit(2)
+        typer.echo(json.dumps(schemas[file], indent=2))
+        return
+    out.mkdir(parents=True, exist_ok=True)
+    for name, body in schemas.items():
+        target = out / f"{Path(name).stem}.schema.json"
+        target.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        typer.echo(str(target))
 
 
 def main() -> None:
