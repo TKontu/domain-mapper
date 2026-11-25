@@ -10,11 +10,13 @@ including its one-retry path, end to end over real loopback sockets::
 Endpoints (bound to ``127.0.0.1`` only):
 
 * ``POST /v1/scrape`` with ``{"url": ...}`` answers a Firecrawl success envelope.
-  The page's ``<h1>`` is the requested URL's path; the page for ``/`` links ``/a``
-  and ``/b`` on the requested URL's own host. With ``fail_first`` the first scrape
-  of each distinct URL answers that status with an empty body and later scrapes
-  succeed, so the caller's retry seam is exercised over a real socket.
-* ``GET /robots.txt`` answers an allow-all policy, because the CLI fetches robots
+  The page's ``<h1>`` is the requested URL's path; the page for ``/`` links, in
+  document order, ``/a``, ``/a/`` and ``/b`` on the requested URL's own host (the
+  ``/a`` pair exercises the crawl's trailing-slash seen-key folding). With
+  ``fail_first`` the first scrape of each distinct URL answers that status with an
+  empty body and later scrapes succeed, so the caller's retry seam is exercised over a real socket.
+* ``GET /robots.txt`` answers an allow-all policy (with ``crawl_delay`` it also
+  announces ``Crawl-delay: <seconds>``), because the CLI fetches robots
   directly from the target host rather than through the fetcher.
 * every other path or method answers 404; a ``/v1/scrape`` body that is not a JSON
   object with an http(s) ``url`` answers 400.
@@ -32,6 +34,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import sys
 import threading
 from collections.abc import Sequence
@@ -55,6 +58,25 @@ def _fail_status(value: int | None) -> int | None:
     return value
 
 
+def _crawl_delay(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError("crawl_delay must be a finite number of seconds > 0")
+    return float(value)
+
+
+def _robots(crawl_delay: float | None) -> bytes:
+    if crawl_delay is None:
+        return _ROBOTS
+    return f"User-agent: *\nCrawl-delay: {crawl_delay!r}\nAllow: /\n".encode("ascii")
+
+
 def _port(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 65535:
         raise ValueError("port must be an integer in 0..65535")
@@ -66,8 +88,9 @@ class FakeFirecrawlServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, port: int, fail_first: int | None) -> None:
+    def __init__(self, port: int, fail_first: int | None, crawl_delay: float | None = None) -> None:
         self.fail_first = _fail_status(fail_first)
+        self.robots_body = _robots(_crawl_delay(crawl_delay))
         self._lock = threading.Lock()
         self._scrapes: dict[str, int] = {}
         super().__init__((_HOST, _port(port)), _Handler)
@@ -80,9 +103,11 @@ class FakeFirecrawlServer(ThreadingHTTPServer):
             return ordinal
 
 
-def make_server(port: int = 0, fail_first: int | None = None) -> FakeFirecrawlServer:
+def make_server(
+    port: int = 0, fail_first: int | None = None, crawl_delay: float | None = None
+) -> FakeFirecrawlServer:
     """Build (but do not start) a server on ``127.0.0.1``; ``port=0`` picks one."""
-    return FakeFirecrawlServer(port, fail_first)
+    return FakeFirecrawlServer(port, fail_first, crawl_delay)
 
 
 def _scrape_body(url: str) -> bytes:
@@ -92,7 +117,10 @@ def _scrape_body(url: str) -> bytes:
     origin = f"{parts.scheme}://{parts.netloc}"
     links = ""
     if path == "/":
-        links = f'<a href="{origin}/a">a</a> <a href="{origin}/b">b</a>'
+        links = " ".join(
+            f'<a href="{origin}{target}">{label}</a>'
+            for target, label in (("/a", "a"), ("/a/", "a slash"), ("/b", "b"))
+        )
     raw_html = (
         "<!doctype html><html><head><title>fake page</title></head>"
         f"<body><h1>{html.escape(path)}</h1>{links}<p>Local fixture page.</p></body></html>"
@@ -115,7 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
         if urlsplit(self.path).path == "/robots.txt":
-            self._send(200, _ROBOTS, "text/plain; charset=utf-8")
+            self._send(200, self.server.robots_body, "text/plain; charset=utf-8")
         else:
             self._not_found()
 
@@ -199,9 +227,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="STATUS",
         help="first scrape per distinct URL answers this HTTP error status (400..599)",
     )
+    parser.add_argument(
+        "--crawl-delay",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="announce this Crawl-delay (finite, > 0) in robots.txt",
+    )
     args = parser.parse_args(argv)
     try:
-        server = make_server(port=args.port, fail_first=args.fail_first)
+        server = make_server(
+            port=args.port, fail_first=args.fail_first, crawl_delay=args.crawl_delay
+        )
     except ValueError as exc:
         parser.error(str(exc))
     host, port = server.server_address[:2]

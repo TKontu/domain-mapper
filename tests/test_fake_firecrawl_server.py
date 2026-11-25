@@ -11,6 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import re
+
+from adapters.crawl_policy import RobotsPolicy
 from adapters.fake_firecrawl_server import FakeFirecrawlServer, main, make_server
 from adapters.fetcher import TransientFetchError
 from adapters.firecrawl import FirecrawlFetcher
@@ -25,8 +28,10 @@ def start() -> Iterator[StartServer]:
     """Start servers on port 0; shut every one down after the test."""
     servers: list[FakeFirecrawlServer] = []
 
-    def _start(*, fail_first: int | None = None) -> tuple[FakeFirecrawlServer, str]:
-        server = make_server(port=0, fail_first=fail_first)
+    def _start(
+        *, fail_first: int | None = None, crawl_delay: float | None = None
+    ) -> tuple[FakeFirecrawlServer, str]:
+        server = make_server(port=0, fail_first=fail_first, crawl_delay=crawl_delay)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
         return server, f"http://127.0.0.1:{server.server_address[1]}"
@@ -154,3 +159,44 @@ def test_main_rejects_a_non_error_fail_first(capsys: pytest.CaptureFixture[str])
         main(["--fail-first", "200"])
     assert exc.value.code == 2
     assert "400..599" in capsys.readouterr().err
+
+
+def test_root_links_a_its_trailing_slash_variant_and_b_in_order(start: StartServer) -> None:
+    _, base = start()
+    body = fetcher(base).fetch(base + "/").body_bytes.decode()
+    assert re.findall(r'href="([^"]+)"', body) == [base + "/a", base + "/a/", base + "/b"]
+
+
+def _robots_policy(base: str) -> RobotsPolicy:
+    return RobotsPolicy(
+        lambda robots_url: get_robots(robots_url, user_agent="test-agent", timeout_s=5),
+        "test-agent",
+    )
+
+
+def test_crawl_delay_is_announced_and_parsed_as_a_decimal(start: StartServer) -> None:
+    _, base = start(crawl_delay=1.5)
+    status, body = get_robots(base + "/robots.txt", user_agent="test-agent", timeout_s=5)
+    assert status == 200
+    assert body == b"User-agent: *\nCrawl-delay: 1.5\nAllow: /\n"
+    policy = _robots_policy(base)
+    assert policy.allowed(base + "/a")
+    assert policy.crawl_delay(base + "/a") == 1.5
+
+
+def test_no_crawl_delay_keeps_robots_unchanged(start: StartServer) -> None:
+    _, base = start()
+    assert _robots_policy(base).crawl_delay(base + "/") is None
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1, float("nan"), float("inf"), True, "1.5"])
+def test_make_server_rejects_an_invalid_crawl_delay(bad: object) -> None:
+    with pytest.raises(ValueError, match="crawl_delay"):
+        make_server(port=0, crawl_delay=bad)  # type: ignore[arg-type]
+
+
+def test_main_rejects_an_invalid_crawl_delay(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--crawl-delay", "0"])
+    assert exc.value.code == 2
+    assert "crawl_delay" in capsys.readouterr().err
