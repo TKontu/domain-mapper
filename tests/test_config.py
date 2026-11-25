@@ -43,6 +43,10 @@ class DefaultsTests(SettingsTestCase):
         self.assertEqual(settings.reranker_url, "http://localhost:8002/v1")
         self.assertEqual(settings.cloud_llm_model, "cloud-model")
         self.assertEqual(settings.llm_budget_usd, 0.0)
+        self.assertEqual(settings.local_cost_per_mtok_in, 0.0)
+        self.assertEqual(settings.local_cost_per_mtok_out, 0.0)
+        self.assertEqual(settings.cloud_cost_per_mtok_in, 0.0)
+        self.assertEqual(settings.cloud_cost_per_mtok_out, 0.0)
         self.assertEqual(settings.max_crawl_concurrency, 2)
 
     def test_missing_optional_cloud_key_is_none(self) -> None:
@@ -151,6 +155,34 @@ class DotenvTests(SettingsTestCase):
         self.assertEqual(settings.cloud_llm_model, "cloud-test")
         self.assertEqual(settings.llm_budget_usd, 12.5)
 
+    def test_cost_rates_load_from_a_dotenv_file(self) -> None:
+        env_file = self.env_file(
+            "DM_LOCAL_COST_PER_MTOK_IN=0.5",
+            "DM_LOCAL_COST_PER_MTOK_OUT=1.5",
+            "DM_CLOUD_COST_PER_MTOK_IN=3.0",
+            "DM_CLOUD_COST_PER_MTOK_OUT=15.0",
+        )
+
+        settings = load_settings(env_file)
+
+        self.assertEqual(settings.local_cost_per_mtok_in, 0.5)
+        self.assertEqual(settings.local_cost_per_mtok_out, 1.5)
+        self.assertEqual(settings.cloud_cost_per_mtok_in, 3.0)
+        self.assertEqual(settings.cloud_cost_per_mtok_out, 15.0)
+
+    def test_cost_rates_come_from_the_environment(self) -> None:
+        os.environ["DM_LOCAL_COST_PER_MTOK_IN"] = "2"
+        os.environ["DM_LOCAL_COST_PER_MTOK_OUT"] = "4"
+        os.environ["DM_CLOUD_COST_PER_MTOK_IN"] = "6"
+        os.environ["DM_CLOUD_COST_PER_MTOK_OUT"] = "8"
+
+        settings = load_settings(self.absent_env_file())
+
+        self.assertEqual(settings.local_cost_per_mtok_in, 2.0)
+        self.assertEqual(settings.local_cost_per_mtok_out, 4.0)
+        self.assertEqual(settings.cloud_cost_per_mtok_in, 6.0)
+        self.assertEqual(settings.cloud_cost_per_mtok_out, 8.0)
+
     def test_malformed_dotenv_line_fails_fast(self) -> None:
         env_file = self.env_file("DM_LOCAL_MODEL")
 
@@ -182,6 +214,35 @@ class ValidationTests(SettingsTestCase):
 
         with self.assertRaisesRegex(ValueError, "DM_LLM_BUDGET_USD"):
             load_settings(self.absent_env_file())
+
+    def test_negative_cost_rate_is_rejected(self) -> None:
+        for name in (
+            "LOCAL_COST_PER_MTOK_IN",
+            "LOCAL_COST_PER_MTOK_OUT",
+            "CLOUD_COST_PER_MTOK_IN",
+            "CLOUD_COST_PER_MTOK_OUT",
+        ):
+            with self.subTest(name=name):
+                os.environ[f"DM_{name}"] = "-0.01"
+                self.addCleanup(os.environ.pop, f"DM_{name}", None)
+                with self.assertRaisesRegex(ValueError, f"DM_{name}"):
+                    load_settings(self.absent_env_file())
+                os.environ.pop(f"DM_{name}", None)
+
+    def test_non_finite_cost_rate_is_rejected(self) -> None:
+        for name in (
+            "LOCAL_COST_PER_MTOK_IN",
+            "LOCAL_COST_PER_MTOK_OUT",
+            "CLOUD_COST_PER_MTOK_IN",
+            "CLOUD_COST_PER_MTOK_OUT",
+        ):
+            for value in ("nan", "inf"):
+                with self.subTest(name=name, value=value):
+                    os.environ[f"DM_{name}"] = value
+                    self.addCleanup(os.environ.pop, f"DM_{name}", None)
+                    with self.assertRaisesRegex(ValueError, f"DM_{name}"):
+                        load_settings(self.absent_env_file())
+                    os.environ.pop(f"DM_{name}", None)
 
     def test_concurrency_below_one_is_rejected(self) -> None:
         os.environ["DM_MAX_CRAWL_CONCURRENCY"] = "0"
