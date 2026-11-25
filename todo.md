@@ -81,6 +81,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Crawl: per-entity policy (max pages, priority paths, PDFs), robots.txt, rate limit, snapshots
 - [ ] Parse: HTML + MinerU, heading-aware chunks with provenance
   - [ ] **CH-01** → [docs/items/CH-01.md](docs/items/CH-01.md) `chunk_document` heading-aware Markdown chunker keeping page, heading path and char offsets — partial 2026-11-25: merged (PR #42); seen offline on main c9dde55 (pytest 412 passed, 3 Postgres skips; a 902-word doc → 3 chunks, paths (A),(A,B),(A,B), 600+360 words with 60-word overlap); unwired until the Phase 1 Parse & chunk row; needs wiring into Parse & chunk and `chunk` row persistence
+  - [ ] **CH-02** → [docs/items/CH-02.md](docs/items/CH-02.md) `parse_and_chunk` stage function: parse once with a `Parser`, yield `chunk_document` chunks; eager `ValueError`, `ParseError` propagates — in review (round 18 A1); unwired until the Parse & chunk persistence row
 - [ ] Index: embeddings + full-text + reranker; `landscape search "<query>" --entity X` for debugging
 - [ ] Assess: extractor → verbatim-quote check → verifier → cloud adjudication → review queue
 - [ ] Attributes: founded, employees band, sites, scope-defined counts
