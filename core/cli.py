@@ -63,7 +63,7 @@ from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.entity_store import EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
-from core.links import extract_links, normalise_url
+from core.links import crawl_key, extract_links
 from core.resolve import apply_resolution, group_candidates
 from core.runs import create_all
 from core.scope_pack import CrawlPolicy, ScopePackError, load_scope_pack, scope_pack_json_schemas
@@ -260,7 +260,7 @@ def _crawl_entity(crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy) -> 
     seen: set[str] = set()
     frontier: deque[str] = deque()
     for url, _ in _entity_targets(entity, policy):
-        key = normalise_url(url) or url
+        key = crawl_key(url) or url
         if key not in seen:
             seen.add(key)
             frontier.append(url)
@@ -276,8 +276,9 @@ def _crawl_entity(crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy) -> 
         for link in extract_links(html, base_url=result.final_url, host=host):
             if len(seen) >= policy.max_pages:
                 break
-            if link not in seen:
-                seen.add(link)
+            key = crawl_key(link) or link
+            if key not in seen:
+                seen.add(key)
                 frontier.append(link)
 
 

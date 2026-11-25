@@ -51,6 +51,19 @@ def normalise_url(url: str) -> str | None:
     return urlunsplit((scheme, netloc, parts.path or "/", "", ""))
 
 
+def crawl_key(url: str) -> str | None:
+    """Seen-set key for one entity crawl (CR-10): :func:`normalise_url` with the scheme set to
+    ``https`` and one trailing ``/`` dropped from a non-root path; None if unusable."""
+    norm = normalise_url(url)
+    if norm is None:
+        return None
+    parts = urlsplit(norm)
+    path = parts.path
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    return urlunsplit(("https", parts.netloc, path, "", ""))
+
+
 def extract_links(
     html: str, *, base_url: str, host: str, cap: int = MAX_HREFS_PER_PAGE
 ) -> list[str]:

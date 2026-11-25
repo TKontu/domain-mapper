@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.links import MAX_HREFS_PER_PAGE, extract_links, normalise_url
+from core.links import MAX_HREFS_PER_PAGE, crawl_key, extract_links, normalise_url
 
 HOST = "alpha.example.com"
 BASE = "https://alpha.example.com/dir/page"
@@ -69,3 +69,12 @@ def test_normalise_url() -> None:
     assert normalise_url("HTTPS://Alpha.Example.com") == "https://alpha.example.com/"
     assert normalise_url("https://alpha.example.com/x?a#b") == "https://alpha.example.com/x"
     assert normalise_url("mailto:x@example.com") is None
+
+
+def test_crawl_key_folds_scheme_and_one_trailing_slash() -> None:
+    for url in ("http://example.com/a", "https://example.com/a/", "HTTPS://Example.com/a"):
+        assert crawl_key(url) == "https://example.com/a"
+    assert crawl_key("http://example.com") == "https://example.com/"
+    assert crawl_key("https://example.com/") == "https://example.com/"
+    assert crawl_key("ftp://example.com/a") is None
+    assert crawl_key("not a url") is None
