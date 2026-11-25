@@ -376,6 +376,25 @@ class EntityCrawlCliTest(unittest.TestCase):
         self.assertEqual(self.state.scrapes, expected)
         self.assertEqual(self.snapshots(), [(eid, url) for url in expected])
 
+    def test_scheme_and_trailing_slash_variants_fetched_once(self) -> None:
+        self.seed([(SCOPE_ID, "alpha.example.com")])
+        self.page(
+            "https://alpha.example.com/",
+            '<a href="http://alpha.example.com/a">a</a><a href="https://alpha.example.com/a/">a</a>'
+            '<a href="/a">a</a><a href="/b">b</a>',
+        )
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 4\n  discover_links: true\n")
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.state.scrapes,
+            [
+                "https://alpha.example.com/",
+                "http://alpha.example.com/a",
+                "https://alpha.example.com/b",
+            ],
+        )
+
     def test_discover_false_ignores_links(self) -> None:
         self.seed([(SCOPE_ID, "alpha.example.com")])
         self.page("https://alpha.example.com/", self.HOME_LINKS)
