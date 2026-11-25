@@ -2,6 +2,7 @@
 
 Each pipeline stage (ARCHITECTURE.md §4) is a subcommand sharing the same options. Stage bodies
 are unwired by design until their own todo.md rows; ``--dry-run`` prints the resolved plan.
+``validate`` (SP-02) is not a stage: it loads and summarizes a scope pack.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from core.config import load_settings
+from core.scope_pack import ScopePackError, load_scope_pack
 
 STAGES: tuple[str, ...] = (
     "discover",
@@ -89,6 +91,25 @@ def _register(stage: str) -> None:
 
 for _stage in STAGES:
     _register(_stage)
+
+
+@app.command(name="validate", help="Validate a scope pack and print a summary.")
+def validate(scope: ScopeOpt) -> None:
+    """Load ``scope`` with ``load_scope_pack``; exit 1 on an invalid pack, 2 if missing."""
+    if not scope.is_dir():
+        typer.echo(f"error: scope directory not found: {scope}", err=True)
+        raise typer.Exit(2)
+    try:
+        pack = load_scope_pack(scope)
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    topics = pack.rubric.topics
+    typer.echo(f"scope: {pack.scope.id}")
+    typer.echo(f"segments: {len(pack.scope.segments)}")
+    typer.echo(f"layers: {len(pack.scope.layers)}")
+    typer.echo(f"topics: {len(topics)}")
+    typer.echo(f"criteria: {sum(len(t.criteria) for t in topics)}")
 
 
 def main() -> None:
