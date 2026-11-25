@@ -34,7 +34,7 @@ policy (robots, rate limits) lives here.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import Engine
 
@@ -54,6 +54,9 @@ class IngestResult:
     chunks_written: int
     final_url: str
     raw_digest: str | None = None
+    # Additive (CR-06): the fetched body and its content type, for same-host link discovery.
+    body_bytes: bytes = field(default=b"", repr=False, compare=False)
+    content_type: str = ""
 
 
 def ingest_page(
@@ -92,4 +95,6 @@ def ingest_page(
         chunks_written=written,
         final_url=result.final_url,
         raw_digest=raw_digest,
+        body_bytes=result.body_bytes,
+        content_type=result.content_type,
     )

@@ -151,6 +151,17 @@ class CrawlPolicyTest(unittest.TestCase):
         self.assertEqual(policy.max_pages, 3)
         self.assertEqual(policy.priority_paths, ["/a", "/b"])
 
+    def test_root_priority_path_rejected(self) -> None:
+        self.assert_policy_fails('crawl: {priority_paths: ["/"]}', "crawl.priority_paths")
+
+    def test_discover_links_defaults_false_and_parses(self) -> None:
+        self.assertFalse(load_scope_pack(self.dir).scope.crawl.discover_links)
+        self.with_crawl("crawl: {discover_links: true}")
+        self.assertTrue(load_scope_pack(self.dir).scope.crawl.discover_links)
+
+    def test_discover_links_rejects_non_bool(self) -> None:
+        self.assert_policy_fails("crawl: {discover_links: maybe}", "crawl.discover_links")
+
     def test_max_pages_zero_rejected(self) -> None:
         self.assert_policy_fails("crawl: {max_pages: 0}", "crawl.max_pages")
 

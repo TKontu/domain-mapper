@@ -22,7 +22,8 @@ layers:
 languages:
   default: [en]
 
-# Illustrative per-entity crawl policy (CR-05): homepage first, then these paths.
+# Illustrative per-entity crawl policy (CR-05, CR-06): homepage, these paths, then discovered links.
 crawl:
   max_pages: 3
   priority_paths: [/about, /services]
+  discover_links: true

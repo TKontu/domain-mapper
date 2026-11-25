@@ -40,6 +40,7 @@ ROBOTS_DISALLOW_BLOCKED = b"User-agent: *\nDisallow: /blocked\n"
 class _State:
     def __init__(self) -> None:
         self.scrapes: list[str] = []
+        self.pages: dict[str, str] = {}  # URL -> rawHtml; others serve HTML
 
 
 def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
@@ -57,7 +58,10 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             else:
                 payload = {
                     "success": True,
-                    "data": {"rawHtml": HTML, "metadata": {"statusCode": 200, "url": url}},
+                    "data": {
+                        "rawHtml": state.pages.get(url, HTML),
+                        "metadata": {"statusCode": 200, "url": url},
+                    },
                 }
             body = json.dumps(payload).encode()
             self.send_response(200)
@@ -345,6 +349,85 @@ class EntityCrawlCliTest(unittest.TestCase):
         result = self.runner.invoke(app, ["crawl", "--help"])
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("entity", result.stdout.lower())
+
+    # --- CR-06: discover_links fills the remaining per-entity budget with same-host links ---
+
+    HOME_LINKS = (
+        '<a href="/b">b</a><a href="https://other.invalid/x">x</a><a href="/a">a</a>'
+        '<a href="/c#frag">c</a><a href="/d.pdf">d</a><a href="/b">b again</a>'
+    )
+
+    def page(self, url: str, body: str) -> None:
+        self.state.pages[url] = f"<html><body><h1>P</h1><p>Text.</p>{body}</body></html>"
+
+    def test_discovered_links_fill_budget_in_document_order(self) -> None:
+        (eid,) = self.seed([(SCOPE_ID, "alpha.example.com")])
+        self.page("https://alpha.example.com/", self.HOME_LINKS)
+        scope = self.scope_with_crawl(
+            "crawl:\n  max_pages: 4\n  priority_paths: [/a]\n  discover_links: true\n"
+        )
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected = [f"https://alpha.example.com{p}" for p in ("/", "/a", "/b", "/c")]
+        self.assertEqual(self.state.scrapes, expected)
+        self.assertEqual(self.snapshots(), [(eid, url) for url in expected])
+
+    def test_discover_false_ignores_links(self) -> None:
+        self.seed([(SCOPE_ID, "alpha.example.com")])
+        self.page("https://alpha.example.com/", self.HOME_LINKS)
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 4\n  discover_links: false\n")
+        self.crawl(scope=scope)
+        self.assertEqual(self.state.scrapes, ["https://alpha.example.com/"])
+
+    def test_links_from_blocked_or_failed_pages_are_not_used(self) -> None:
+        self.seed([(SCOPE_ID, "alpha.example.com"), (SCOPE_ID, "broken.example.com")])
+        self.page("https://alpha.example.com/", '<a href="/blocked">x</a><a href="/next">n</a>')
+        self.page("https://alpha.example.com/blocked", '<a href="/hidden">h</a>')
+        self.page("https://broken.example.com/", '<a href="/never">n</a>')
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 5\n  discover_links: true\n")
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("skipped https://alpha.example.com/blocked robots", result.output)
+        self.assertEqual(
+            self.state.scrapes,
+            [
+                "https://alpha.example.com/",
+                "https://alpha.example.com/next",
+                "https://broken.example.com/",
+            ],
+        )
+
+    def test_budget_is_per_entity_and_limit_counts_entities(self) -> None:
+        self.seed([(SCOPE_ID, f"{n}.example.com") for n in ("a1", "a2", "a3")])
+        for n in ("a1", "a2", "a3"):
+            self.page(f"https://{n}.example.com/", '<a href="/x">x</a><a href="/y">y</a>')
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 2\n  discover_links: true\n")
+        result = self.crawl("--limit", "2", scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.state.scrapes,
+            [
+                "https://a1.example.com/",
+                "https://a1.example.com/x",
+                "https://a2.example.com/",
+                "https://a2.example.com/x",
+            ],
+        )
+
+    def test_never_fetches_a_url_twice_and_follows_breadth_first(self) -> None:
+        self.seed([(SCOPE_ID, "alpha.example.com")])
+        self.page("https://alpha.example.com/", '<a href="/p">p</a><a href="/q">q</a>')
+        self.page(
+            "https://alpha.example.com/p", '<a href="/">h</a><a href="/q">q</a><a href="/r">r</a>'
+        )
+        scope = self.scope_with_crawl(
+            "crawl:\n  max_pages: 10\n  priority_paths: [/p]\n  discover_links: true\n"
+        )
+        self.crawl(scope=scope)
+        self.assertEqual(
+            self.state.scrapes,
+            [f"https://alpha.example.com{p}" for p in ("/", "/p", "/q", "/r")],
+        )
 
 
 if __name__ == "__main__":

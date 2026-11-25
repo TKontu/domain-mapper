@@ -34,6 +34,7 @@ import dataclasses
 import json
 import os
 import time
+from collections import deque
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from itertools import chain, islice
@@ -57,7 +58,8 @@ from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.entity_store import EntityRef, iter_entities
-from core.ingest import ingest_page
+from core.ingest import IngestResult, ingest_page
+from core.links import extract_links, normalise_url
 from core.resolve import apply_resolution, group_candidates
 from core.runs import create_all
 from core.scope_pack import CrawlPolicy, ScopePackError, load_scope_pack, scope_pack_json_schemas
@@ -218,9 +220,10 @@ def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
             return
         # Built only once there is work: no entities needs no fetcher endpoint.
         fetcher = _make_fetcher()
-        ordered = chain((first,), entities)
-        targets = chain.from_iterable(_entity_targets(entity, policy) for entity in ordered)
-        failed = _crawl_targets(engine, fetcher, targets)
+        crawler = _Crawler(engine, fetcher)
+        for entity in chain((first,), entities):
+            _crawl_entity(crawler, entity, policy)
+        failed = crawler.failed
     except SQLAlchemyError as exc:  # a page read failed: bad setup, URL never echoed
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
@@ -240,6 +243,38 @@ def _entity_targets(entity: EntityRef, policy: CrawlPolicy) -> Iterator[tuple[st
         yield url, entity.id
 
 
+def _crawl_entity(crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy) -> None:
+    """Crawl one entity: homepage and priority paths, then (if enabled) discovered links.
+
+    With ``discover_links`` the remaining ``max_pages`` budget is filled breadth-first, in
+    document order, with same-host links from this entity's successfully fetched HTML pages.
+    Every URL counts against the budget once, fetched or not, and none is attempted twice.
+    State held: at most ``max_pages`` URLs in the seen set/frontier plus one page's links.
+    """
+    seen: set[str] = set()
+    frontier: deque[str] = deque()
+    for url, _ in _entity_targets(entity, policy):
+        key = normalise_url(url) or url
+        if key not in seen:
+            seen.add(key)
+            frontier.append(url)
+    host = entity.primary_domain.lower()
+    while frontier:
+        url = frontier.popleft()
+        result = crawler.crawl(url, entity.id)
+        if not policy.discover_links or result is None or len(seen) >= policy.max_pages:
+            continue
+        if "html" not in result.content_type.lower():
+            continue
+        html = result.body_bytes.decode("utf-8", errors="replace")
+        for link in extract_links(html, base_url=result.final_url, host=host):
+            if len(seen) >= policy.max_pages:
+                break
+            if link not in seen:
+                seen.add(link)
+                frontier.append(link)
+
+
 def _homepage(entity: EntityRef) -> str:
     """The homepage URL crawled first for every entity."""
     return f"https://{entity.primary_domain}/"
@@ -248,52 +283,66 @@ def _homepage(entity: EntityRef) -> str:
 def _crawl_targets(
     engine: Engine, fetcher: Fetcher, targets: Iterable[tuple[str, int | None]]
 ) -> bool:
-    """Fetch ``(url, entity_id)`` targets sequentially; return whether any failed.
+    """Fetch ``(url, entity_id)`` targets sequentially; return whether any failed."""
+    crawler = _Crawler(engine, fetcher)
+    for url, entity_id in targets:
+        crawler.crawl(url, entity_id)
+    return crawler.failed
+
+
+class _Crawler:
+    """Sequential fetches sharing one robots policy, per-host limiter, raw store and parser.
 
     Each URL goes through the same robots check, per-host wait and ``ingest_page`` call. A target
-    failure is printed and does not stop the rest; a database read error while pulling the next
-    target propagates to the caller.
+    failure is printed and recorded in :attr:`failed` and does not stop the rest.
     """
-    limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
 
-    def fetch_robots(robots_url: str) -> tuple[int, bytes]:
-        # Called only when RobotsPolicy actually fetches (not cached): one wait per real GET.
-        limiter.wait(robots_url)
-        return get_robots(robots_url, user_agent=USER_AGENT, timeout_s=_ROBOTS_TIMEOUT_S)
+    def __init__(self, engine: Engine, fetcher: Fetcher) -> None:
+        self.engine = engine
+        self.fetcher = fetcher
+        self.limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
+        limiter = self.limiter
 
-    robots = RobotsPolicy(fetch_robots, USER_AGENT)
-    blob_store = FilesystemBlobStore(raw_store_root(os.environ))
-    parser = HtmlParser()
-    failed = False
-    for url, entity_id in targets:
+        def fetch_robots(robots_url: str) -> tuple[int, bytes]:
+            # Called only when RobotsPolicy actually fetches (not cached): one wait per real GET.
+            limiter.wait(robots_url)
+            return get_robots(robots_url, user_agent=USER_AGENT, timeout_s=_ROBOTS_TIMEOUT_S)
+
+        self.robots = RobotsPolicy(fetch_robots, USER_AGENT)
+        self.blob_store = FilesystemBlobStore(raw_store_root(os.environ))
+        self.parser = HtmlParser()
+        self.failed = False
+
+    def crawl(self, url: str, entity_id: int | None) -> IngestResult | None:
+        """Fetch and ingest ``url``; None if robots-skipped or failed."""
         try:
             host = urlsplit(url).hostname or ""
-            if not robots.allowed(url):
+            if not self.robots.allowed(url):
                 typer.echo(f"skipped {url} robots")
-                continue
-            delay = robots.crawl_delay(url)
+                return None
+            delay = self.robots.crawl_delay(url)
             if delay is not None:
-                limiter.set_interval(host, delay)
-            limiter.wait(url)
+                self.limiter.set_interval(host, delay)
+            self.limiter.wait(url)
             result = ingest_page(
-                engine,
-                fetcher=fetcher,
-                parser=parser,
+                self.engine,
+                fetcher=self.fetcher,
+                parser=self.parser,
                 url=url,
                 entity_id=entity_id,
                 source_kind=_SOURCE_KIND,
-                blob_store=blob_store,
+                blob_store=self.blob_store,
             )
         except Exception as exc:  # noqa: BLE001 - report and continue with the next URL
-            failed = True
+            self.failed = True
             detail = str(exc) if isinstance(exc, FetchError) else ""
             typer.echo(f"error {url} {type(exc).__name__}{': ' + detail if detail else ''}")
-            continue
+            return None
         typer.echo(
             f"ok {url} snapshot={result.snapshot_id} chunks={result.chunks_written} "
             f"raw={result.raw_digest}"
         )
-    return failed
+        return result
 
 
 def run_resolve(scope: Path, apply: bool = False) -> None:
