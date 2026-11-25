@@ -3,7 +3,8 @@
 ARCHITECTURE.md §5 lists ``entity(id, scope_id, group_id, name, primary_domain, status,
 created_run)``. Rows are written by :func:`core.resolve.apply_resolution`; ``(scope_id,
 primary_domain)`` is unique so a rerun reuses an existing entity instead of duplicating it.
-:func:`iter_entities` streams the rows of one scope for the crawl stage, keyset-paged by id.
+:func:`iter_entities` streams the rows of one scope for the crawl and screen stages, keyset-paged
+by id and optionally filtered by status.
 
 ``scope_id`` is the scope pack id (``scope.yaml`` ``id``). ``group_id`` (no FK: groups/GLEIF are a
 later item) and ``created_run`` are nullable. New rows start ``status = "unscreened"``.
@@ -29,10 +30,11 @@ DEFAULT_BATCH = 500
 
 @dataclass(frozen=True, slots=True)
 class EntityRef:
-    """Identity and homepage host of one entity, as read by :func:`iter_entities`."""
+    """Identity, name and homepage host of one entity, as read by :func:`iter_entities`."""
 
     id: int
     primary_domain: str
+    name: str
 
 
 class Entity(Base):
@@ -56,41 +58,45 @@ def iter_entities(
     *,
     batch: int = DEFAULT_BATCH,
     limit: int | None = None,
+    status: str | None = None,
 ) -> Iterator[EntityRef]:
     """Yield the entities of ``scope_id`` in id order, at most ``limit`` when given.
 
     Rows are read by keyset (``id > last``, ``LIMIT batch``) in short-lived sessions, so memory
-    holds one page, not the whole scope. ``batch`` and ``limit`` must be positive.
+    holds one page, not the whole scope. ``batch`` and ``limit`` must be positive. ``status``
+    restricts the page to rows with that status (``None`` yields every status).
 
     Production caller: ``landscape crawl`` (:func:`core.cli.run_crawl`); with no ``--url`` it
-    crawls one homepage per yielded entity.
+    crawls one homepage per yielded entity. ``landscape screen`` passes ``status="unscreened"``.
     """
     if batch < 1:
         raise ValueError(f"batch must be >= 1, got {batch}")
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be >= 1, got {limit}")
-    return _iter_entities(engine, scope_id, batch=batch, limit=limit)
+    return _iter_entities(engine, scope_id, batch=batch, limit=limit, status=status)
 
 
 def _iter_entities(
-    engine: Engine, scope_id: str, *, batch: int, limit: int | None
+    engine: Engine, scope_id: str, *, batch: int, limit: int | None, status: str | None
 ) -> Iterator[EntityRef]:
     last_id = 0
     remaining = limit
     while remaining is None or remaining > 0:
         page_size = batch if remaining is None else min(batch, remaining)
         stmt = (
-            sa.select(Entity.id, Entity.primary_domain)
+            sa.select(Entity.id, Entity.primary_domain, Entity.name)
             .where(Entity.scope_id == scope_id, Entity.id > last_id)
             .order_by(Entity.id)
             .limit(page_size)
         )
+        if status is not None:
+            stmt = stmt.where(Entity.status == status)
         with Session(engine) as session:
             rows = list(session.execute(stmt))
         if not rows:
             return
-        for entity_id, primary_domain in rows:
-            yield EntityRef(id=entity_id, primary_domain=primary_domain)
+        for entity_id, primary_domain, name in rows:
+            yield EntityRef(id=entity_id, primary_domain=primary_domain, name=name)
         last_id = rows[-1][0]
         if remaining is not None:
             remaining -= len(rows)

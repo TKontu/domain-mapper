@@ -31,6 +31,14 @@ second outcome is handled as above (or as an error).
 ``domains N candidates M`` and, when nonzero, ``skipped K``. With ``--apply`` (RV-02) it instead
 links them to ``entity`` rows of the scope pack's id via :func:`~core.resolve.apply_resolution`
 and prints ``created C linked L skipped K``.
+
+``screen`` (SC-02) streams the scope's ``unscreened`` entities in id order and classifies each
+with the small local model via :func:`~core.screen.screen_entity` over that entity's stored chunk
+text. One ``screen_result`` row is written and the entity status moved to ``in_scope``,
+``out_of_scope`` or ``borderline`` in one transaction per entity. It prints ``ok <id> <status>
+<confidence> <segments>``, ``skipped <id> no-text`` for an entity without chunk text, and
+``error <id> <ErrorName>: <message>`` for invalid model output or a failed call (the entity stays
+``unscreened`` and the run exits 1); the last line is ``screened S skipped K errors E``.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ import typer
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from adapters.blob_store import FilesystemBlobStore, raw_store_root
 from adapters.crawl_policy import HostRateLimiter, RobotsPolicy
@@ -59,16 +68,19 @@ from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFe
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
+from adapters.llm import LLM, DbTarget, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
-from core.entity_store import EntityRef, iter_entities
+from core.entity_store import STATUS_UNSCREENED, EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.links import crawl_key, extract_links
 from core.resolve import apply_resolution, group_candidates
-from core.runs import create_all
+from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
 from core.scope_pack import CrawlPolicy, ScopePackError, load_scope_pack, scope_pack_json_schemas
+from core.screen import ScreenError, screen_entity
+from core.screen_store import DEFAULT_MAX_CHARS, load_entity_text, record_screen_result
 
 STAGES: tuple[str, ...] = (
     "discover",
@@ -455,6 +467,100 @@ def run_resolve(scope: Path, apply: bool = False) -> None:
         typer.echo(f"skipped {summary.skipped}")
 
 
+def _make_screen_llm(settings: Settings, db: DbTarget) -> LLM:
+    """Build the small local model used for screening; the test seam for a fake adapter."""
+    return build_llm(settings, "local", db=db)
+
+
+def _open_run(engine: Engine, stage: str) -> int:
+    """Insert one ``run`` row for this invocation and return its id."""
+    with Session(engine) as session, session.begin():
+        run = Run(stage=stage, status=RUNNING, started_at=datetime.now(UTC))
+        session.add(run)
+        session.flush()
+        return run.id
+
+
+def _close_run(engine: Engine, run_id: int, status: str) -> None:
+    """Mark the invocation's run row ``finished``/``failed`` with its end time."""
+    with Session(engine) as session, session.begin():
+        run = session.get(Run, run_id)
+        if run is None:  # pragma: no cover - the row was just created
+            raise RuntimeError(f"run {run_id} disappeared")
+        run.status = status
+        run.finished_at = datetime.now(UTC)
+
+
+def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool) -> None:
+    """Screen each ``unscreened`` entity of ``scope``'s id with the small local model.
+
+    One entity at a time in id order, at most ``limit``. Prints one line per entity and the final
+    ``screened S skipped K errors E``. Exits 1 if any entity errored, 2 on bad setup.
+    """
+    settings = _load(scope)
+    if dry_run:
+        _print_plan("screen", scope, layer, limit, settings)
+        return
+    try:
+        pack = load_scope_pack(scope)
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+
+    engine = _open_engine(settings)
+    try:
+        try:
+            llm = _make_screen_llm(settings, engine)
+        except (ValueError, LlmError) as exc:  # unbuildable backend: bad setup, exit 2
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
+
+        run_id = _open_run(engine, "screen")
+        screened = skipped = errors = 0
+        try:
+            entities = iter_entities(engine, pack.scope.id, limit=limit, status=STATUS_UNSCREENED)
+            for entity in entities:
+                text = load_entity_text(engine, entity.id)
+                if not text.strip():
+                    typer.echo(f"skipped {entity.id} no-text")
+                    skipped += 1
+                    continue
+                try:
+                    result = screen_entity(
+                        llm,
+                        pack,
+                        name=entity.name,
+                        domain=entity.primary_domain,
+                        text=text,
+                        run_id=run_id,
+                        max_chars=DEFAULT_MAX_CHARS,
+                    )
+                except (ScreenError, LlmError) as exc:
+                    # Invalid output or a failed call leaves the entity unscreened for a retry.
+                    typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
+                    errors += 1
+                    continue
+                status = record_screen_result(
+                    engine, entity_id=entity.id, run_id=run_id, result=result
+                )
+                segments = ",".join(result.segments) if result.segments else "-"
+                typer.echo(f"ok {entity.id} {status} {result.confidence:.2f} {segments}")
+                screened += 1
+        except BaseException:
+            _close_run(engine, run_id, FAILED)
+            raise
+        _close_run(engine, run_id, FAILED if errors else FINISHED)
+    except SQLAlchemyError as exc:  # a paged read or write failed: bad setup, URL never echoed
+        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        engine.dispose()
+
+    typer.echo(f"screened {screened} skipped {skipped} errors {errors}")
+    if errors:
+        raise typer.Exit(1)
+
+
 def _register(stage: str) -> None:
     if stage == "crawl":
 
@@ -486,7 +592,7 @@ def _register(stage: str) -> None:
 
 
 for _stage in STAGES:
-    if _stage != "resolve":  # `resolve` has its own body below (RV-01)
+    if _stage not in ("resolve", "screen"):  # both have their own bodies below
         _register(_stage)
 
 
@@ -499,6 +605,17 @@ def resolve(
 ) -> None:
     """Group unresolved ``candidate`` rows by normalised domain; ``--apply`` links entities."""
     run_resolve(scope, apply)
+
+
+@app.command(name="screen", help="Screen unscreened entities with the small local model.")
+def screen(
+    scope: ScopeOpt,
+    layer: LayerOpt = None,
+    limit: LimitOpt = None,
+    dry_run: DryRunOpt = False,
+) -> None:
+    """Classify each ``unscreened`` entity of the scope from its stored chunk text."""
+    run_screen(scope, layer, limit, dry_run)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
