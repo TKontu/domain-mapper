@@ -40,7 +40,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] **PF-05** → [docs/items/PF-05.md](docs/items/PF-05.md) docker compose: Postgres 16 + pgvector, (MinIO), app container — partial 2026-11-25: merged (PR #8), not yet seen running; needs a `docker compose up -d db` + pgvector query and an image build on a host with docker
 - [x] **PF-03** → [docs/items/PF-03.md](docs/items/PF-03.md) Config: `.env` for endpoints (vLLM gateway, embedding/reranker service, cloud LLM key), budgets; `.env.example` tracked ✔ 2026-11-25 (PR #5; `load_settings` wired by PF-04)
 - [x] **PF-04** → [docs/items/PF-04.md](docs/items/PF-04.md) Typer CLI skeleton: `landscape <stage> --scope --layer --limit --dry-run` ✔ 2026-11-25 (PR #7; seen: `uv run landscape discover --scope scopes/_example --limit 2 --dry-run` on main 47e1242; stage bodies unwired until their rows)
-- [ ] Run/work-unit tracking table + resumable stage runner
+- [ ] Run/work-unit tracking table + resumable stage runner → [docs/items/RT-01.md](docs/items/RT-01.md)
 - [ ] Logging + `llm_call` cost/latency logging
 - [ ] Lane worktrees: helper that links private `scopes/<name>/` checkouts into a lane worktree
 

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 from core.config import load_settings
 
@@ -59,7 +61,18 @@ def run_stage(stage: str, scope: Path, layer: str | None, limit: int | None, dry
     typer.echo("settings:")
     for f in dataclasses.fields(settings):
         if f.name not in _SECRET_FIELDS:
-            typer.echo(f"  {f.name}: {getattr(settings, f.name)}")
+            value = getattr(settings, f.name)
+            if f.name == "database_url":
+                value = _mask_database_url(value)
+            typer.echo(f"  {f.name}: {value}")
+
+
+def _mask_database_url(url: str) -> str:
+    """Render ``url`` with its password hidden; never echo an unparsable value."""
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except ArgumentError:
+        return "(unparsable database URL; value hidden)"
 
 
 def _register(stage: str) -> None:

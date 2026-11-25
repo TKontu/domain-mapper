@@ -23,6 +23,9 @@ DEFAULT_RERANKER_URL = "http://localhost:8002/v1"
 DEFAULT_CLOUD_LLM_MODEL = "cloud-model"
 DEFAULT_LLM_BUDGET_USD = 0.0
 DEFAULT_MAX_CRAWL_CONCURRENCY = 2
+# Local compose `db` placeholders (host/port/user/database); the password is set
+# in .env, so it is not part of the default URL.
+DEFAULT_DATABASE_URL = "postgresql+psycopg://domain_mapper@localhost:5432/domain_mapper"
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class Settings:
     cloud_llm_model: str = DEFAULT_CLOUD_LLM_MODEL
     llm_budget_usd: float = DEFAULT_LLM_BUDGET_USD
     max_crawl_concurrency: int = DEFAULT_MAX_CRAWL_CONCURRENCY
+    database_url: str = field(default=DEFAULT_DATABASE_URL, repr=False)
 
 
 def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
@@ -68,6 +72,7 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
         max_crawl_concurrency=_parse_int(
             "MAX_CRAWL_CONCURRENCY", raw("MAX_CRAWL_CONCURRENCY"), DEFAULT_MAX_CRAWL_CONCURRENCY
         ),
+        database_url=_text(raw("DATABASE_URL"), DEFAULT_DATABASE_URL),
     )
 
 

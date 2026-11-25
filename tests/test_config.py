@@ -48,6 +48,14 @@ class DefaultsTests(SettingsTestCase):
     def test_missing_optional_cloud_key_is_none(self) -> None:
         self.assertIsNone(load_settings(self.absent_env_file()).cloud_api_key)
 
+    def test_database_url_defaults_to_the_local_compose_placeholders(self) -> None:
+        settings = load_settings(self.absent_env_file())
+
+        self.assertEqual(
+            settings.database_url,
+            "postgresql+psycopg://domain_mapper@localhost:5432/domain_mapper",
+        )
+
     def test_cloud_key_is_absent_from_repr(self) -> None:
         os.environ["DM_CLOUD_LLM_API_KEY"] = "super-secret-key"
 
@@ -56,6 +64,16 @@ class DefaultsTests(SettingsTestCase):
         self.assertEqual(settings.cloud_api_key, "super-secret-key")
         self.assertNotIn("super-secret-key", repr(settings))
         self.assertNotIn("super-secret-key", str(settings))
+
+    def test_database_url_password_is_absent_from_repr(self) -> None:
+        os.environ["DM_DATABASE_URL"] = (
+            "postgresql+psycopg://domain_mapper:db-secret@db:5432/domain_mapper"
+        )
+
+        settings = load_settings(self.absent_env_file())
+
+        self.assertNotIn("db-secret", repr(settings))
+        self.assertNotIn("db-secret", str(settings))
 
     def test_settings_are_frozen(self) -> None:
         settings = load_settings(self.absent_env_file())
@@ -104,6 +122,25 @@ class DotenvTests(SettingsTestCase):
 
         self.assertEqual(settings.local_model, "from-env")
         self.assertEqual(settings.reranker_url, "http://file.local:1/v1")
+
+    def test_database_url_comes_from_the_environment(self) -> None:
+        os.environ["DM_DATABASE_URL"] = "postgresql+psycopg://u:p@db:5432/other"
+
+        settings = load_settings(self.absent_env_file())
+
+        self.assertEqual(
+            settings.database_url, "postgresql+psycopg://u:p@db:5432/other"
+        )
+
+    def test_blank_database_url_falls_back_to_the_default(self) -> None:
+        env_file = self.env_file("DM_DATABASE_URL=")
+
+        settings = load_settings(env_file)
+
+        self.assertEqual(
+            settings.database_url,
+            "postgresql+psycopg://domain_mapper@localhost:5432/domain_mapper",
+        )
 
     def test_environment_without_dotenv(self) -> None:
         os.environ["DM_CLOUD_LLM_API_KEY"] = "test-key"

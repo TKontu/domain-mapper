@@ -54,6 +54,25 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("sk-very-secret-value", result.output)
         self.assertNotIn("cloud_api_key", result.output)
 
+    def test_database_password_never_printed(self) -> None:
+        os.environ["DM_DATABASE_URL"] = (
+            "postgresql+psycopg://domain_mapper:db-secret@db:5432/domain_mapper"
+        )
+        result = self.invoke("discover", "--scope", EXAMPLE_SCOPE, "--dry-run")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("db-secret", result.output)
+        self.assertIn("database_url", result.output)
+        self.assertIn(
+            "postgresql+psycopg://domain_mapper:***@db:5432/domain_mapper", result.output
+        )
+
+    def test_unparsable_database_url_prints_no_url(self) -> None:
+        os.environ["DM_DATABASE_URL"] = "not a url with db-secret"
+        result = self.invoke("discover", "--scope", EXAMPLE_SCOPE, "--dry-run")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("db-secret", result.output)
+        self.assertIn("database_url", result.output)
+
     def test_limit_zero_rejected(self) -> None:
         result = self.invoke("crawl", "--scope", EXAMPLE_SCOPE, "--limit", "0", "--dry-run")
         self.assertNotEqual(result.exit_code, 0)
