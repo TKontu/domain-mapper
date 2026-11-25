@@ -6,19 +6,18 @@ Do not duplicate its rules here.
 ## Project Commands
 
 Every command in `.claude/commands/` and the `tdd`/`debug`/`verify` skills resolve their tooling
-from this table. No product stack exists yet, so most keys are `n/a`; commands skip those steps and
-say so. Item PF-01 fills in the uv/pytest/ruff/mypy rows.
+from this table. Keys marked `n/a` have no tooling yet; commands skip those steps and say so.
 
 <!-- claude:commands -->
 | Key       | Command |
 | --------- | ------- |
-| install   | n/a |
-| test      | python3 -m unittest discover -s tests |
-| test-one  | python3 -m unittest {arg} |
-| lint      | n/a |
-| lint-fix  | n/a |
-| format    | n/a |
-| typecheck | n/a |
+| install   | uv sync |
+| test      | uv run pytest |
+| test-one  | uv run pytest {arg} |
+| lint      | uv run ruff check . |
+| lint-fix  | uv run ruff check --fix . |
+| format    | uv run ruff format . |
+| typecheck | uv run mypy core |
 | run       | n/a |
 | build     | n/a |
 <!-- /claude:commands -->
