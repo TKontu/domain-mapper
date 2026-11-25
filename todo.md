@@ -14,12 +14,12 @@ An item ID links to its detail in `docs/items/`.
 Git over the NFS-mounted NAS is too slow for interactive work (`git add -A` takes ~4 min and
 soft-mount timeouts leave stale `.git/index.lock` files). Finish this before any round:
 
-- [ ] Remove a stale `.git/index.lock` only if no git process runs in this checkout (`pgrep -a git`, check each `/proc/<pid>/cwd`)
-- [ ] `git add -A`; confirm nothing under `scopes/` except `scopes/README.md` and `scopes/_example/` is staged, and no `.env`, `__pycache__` or `settings.local.json`
-- [ ] Scan the staged diff for secrets (`/secrets-check`) and for private-scope leakage (D-003: no domain words, provider names or findings)
-- [ ] Run the local gate (`python3 -m unittest discover -s tests`) and `git diff --cached --check`
-- [ ] Initial commit on `main`; `gh repo create TKontu/domain-mapper --public` (without `--source`: `gh` rejects the NAS checkout's ownership), `git remote add origin …`, `git push -u origin main`
-- [ ] Check the minimal CI run passes on GitHub
+- [x] Remove a stale `.git/index.lock` only if no git process runs in this checkout (`pgrep -a git`, check each `/proc/<pid>/cwd`)
+- [x] `git add -A`; confirm nothing under `scopes/` except `scopes/README.md` and `scopes/_example/` is staged, and no `.env`, `__pycache__` or `settings.local.json`
+- [x] Scan the staged diff for secrets (`/secrets-check`) and for private-scope leakage (D-003: no domain words, provider names or findings)
+- [x] Run the local gate (`python3 -m unittest discover -s tests`) and `git diff --cached --check`
+- [x] Initial commit on `main`; `gh repo create TKontu/domain-mapper --public` (without `--source`: `gh` rejects the NAS checkout's ownership), `git remote add origin …`, `git push -u origin main`
+- [x] Check the minimal CI run passes on GitHub ✔ 2026-11-25 (run 45532598718)
 - [ ] Consider moving the working checkout to local disk (NAS as backup/remote only) so rounds and lane worktrees are not bound by NFS latency
 
 The private scope repo is already published (initial commit `d5714f3`).
