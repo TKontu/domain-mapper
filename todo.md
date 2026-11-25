@@ -45,6 +45,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Configured gate `python3 -m unittest discover -s tests` fails under bare system python (no sqlalchemy) since RT-01; it passes under `uv run`. Resolved by the operator-owned gate switch (PR #3)
 - [ ] `ruff format --check .` fails on main at a code block in ARCHITECTURE.md (operator-owned file); gates exclude it until the operator fixes or excludes it
 - [ ] `lanes.py cleanup` holds `--agent` lane tabs as "foreign" when the agent pane reports cwd `/work` instead of the lane worktree (round 4: sp-01, rt-01 tabs)
+- [ ] `landscape validate` summary prints counts for optional pack files (vocabulary, sources, attributes, profiles, views) — SP-04 residual
 - [ ] Lane worktrees: helper that links private `scopes/<name>/` checkouts into a lane worktree
 
 ### Adapters (interfaces + first implementation)
@@ -54,13 +55,13 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] **AD-01** → [docs/items/AD-01.md](docs/items/AD-01.md) `LLM` adapter: OpenAI-compatible (vLLM) + Anthropic; JSON-schema/guided output — partial 2026-11-25: merged (PR #17); seen only with fake transports (pytest on main bc81dfa); unwired until the Screen/Assess rows; needs one live call per backend against a real gateway/key, and per-model cost rates (build_llm passes 0)
 - [ ] `Embedder` + `Reranker` adapters (local GPU service)
 - [ ] Adapter interfaces: `BusinessRegister`, `AccreditationRegister`, `ProfessionalRegister`, `TenderSource`, `PublicationSource` (ARCHITECTURE §10)
-- [ ] **AD-02** → [docs/items/AD-02.md](docs/items/AD-02.md) `source` catalogue table seeded from a scope pack's `sources.yaml` (roles, access class, licence) — partial 2026-11-25: PR #20 (SQLite: 9 passed, 1 skipped); unwired until the Discover row; Postgres path unexercised
+- [ ] **AD-02** → [docs/items/AD-02.md](docs/items/AD-02.md) `source` catalogue table seeded from a scope pack's `sources.yaml` (roles, access class, licence) — partial 2026-11-25: merged (PR #20); seen on SQLite only (pytest on main e0aa9dd: 9 passed, 1 Postgres skip); unwired until the Discover row; needs a run against the compose Postgres
 
 ### Scope pack schema
 - [x] **SP-01** → [docs/items/SP-01.md](docs/items/SP-01.md) Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views ✔ 2026-11-25 (PR #10; seen: `load_scope_pack('scopes/_example')` on main dc3ae93 → 2 segments, 3 layers, 2 topics; unwired until `landscape validate`)
 - [x] **SP-02** → [docs/items/SP-02.md](docs/items/SP-02.md) `landscape validate --scope ...` command ✔ 2026-11-25 (PR #13; seen: `uv run landscape validate --scope scopes/_example` on main 0789345 → scope example, 2 segments, 3 layers, 2 topics, 2 criteria, exit 0)
 - [x] **SP-03** → [docs/items/SP-03.md](docs/items/SP-03.md) JSON Schema export for editor autocompletion ✔ 2026-11-25 (PR #16; seen: `uv run landscape schema --out <tmp>` and `--file rubric.yaml` on main bc81dfa → 7 draft 2020-12 schemas, exit 0)
-- [ ] **SP-04** → [docs/items/SP-04.md](docs/items/SP-04.md) `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities) — partial 2026-11-25: all pack files + 3 seed entities validate (seen: `uv run landscape validate --scope scopes/_example` on task/sp-04-example-pack, exit 0); validate summary does not yet print optional-file counts (needs `core/cli.py`, outside SP-04 scope)
+- [x] **SP-04** → [docs/items/SP-04.md](docs/items/SP-04.md) `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities) ✔ 2026-11-25 (PR #19; seen: `uv run landscape validate --scope scopes/_example` on main e0aa9dd → 2 segments, 3 layers, 2 topics, 2 criteria, exit 0; seed list unloaded until Discover/Resolve)
 
 **Milestone M0:** `landscape validate` passes on `scopes/_example/`; adapters return data for one test URL and one PDF.
 
