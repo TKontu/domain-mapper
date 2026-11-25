@@ -125,6 +125,10 @@ Agents start from [AGENTS.md](AGENTS.md); the protocol is [SPEC.md](SPEC.md) and
 are in `.agent/commands/`. Merges go through `scripts/merge_guard.py` under decision D-002
 ([docs/decisions.md](docs/decisions.md)). The local test gate is primary; CI is a minimal backstop.
 
+Runtime settings come from `DM_*` environment variables, optionally seeded by a gitignored `.env`
+file (copy `.env.example`; placeholders only). `core.config.load_settings()` returns a frozen,
+validated settings object and fails fast, naming the variable, on malformed values.
+
 ## 9. Status
 
 Planning. Architecture and engine backlog drafted; first item: [PF-01](docs/items/PF-01.md) (Python project skeleton).
