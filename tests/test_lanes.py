@@ -238,6 +238,26 @@ class CleanupTests(LaneTestCase):
         self.world.panes.append({"tab_id": "t1", "cwd": path, "agent_status": "idle"})
         return path
 
+    def agent_lane_reporting_parent(self, *, state="done", registered=True):
+        """A recorded --agent lane whose single pane reports the parent dir, not the worktree."""
+        record = self.start(cmd=None, agent="claude")
+        if state in ("done", "recorded"):
+            Path(record["rc_file"]).write_text("0\n2026-01-01T00:00:00Z\n")
+            if state == "recorded":
+                lanes.mark_recorded(self.root, "a1", "round 14")
+        elif state == "blocked":
+            self.world.agents[record["label"]] = "blocked"
+        elif state != "running":
+            raise AssertionError(state)
+        path = str(self.lane_dir)
+        if registered:
+            self.world.trees[path] = "lane/a1"
+            self.world.prs["lane/a1"] = ["MERGED"]
+        self.world.tabs = [{"tab_id": record["tab_id"], "label": record["label"]}]
+        self.world.panes = [{"tab_id": record["tab_id"], "cwd": "/work", "agent_status": "idle"}]
+        self.world.cwds = ["/work"]
+        return path, record
+
     def test_dry_run_changes_nothing(self):
         path = self.finished_lane()
         report = self.cleanup(go=False)
@@ -318,6 +338,62 @@ class CleanupTests(LaneTestCase):
             root=self.root, prefix=self.prefix, go=True, handoff="", seams=seams, settle=0
         )
         self.assertIn(f"hold {path} (lane/a1): busy-unknown", report)
+
+    def test_a_finished_records_tab_reporting_a_parent_cwd_is_attributed_to_its_worktree(self):
+        for state in ("done", "recorded"):
+            with self.subTest(state):
+                self.world = FakeWorld(self.root)
+                path, record = self.agent_lane_reporting_parent(state=state)
+                report = self.cleanup(go=False)
+                self.assertIn(f"would close tab {record['tab_id']} live-proj-a1", report)
+                self.assertIn(f"would remove {path} (lane/a1)", report)
+                self.assertEqual(len(self.world.tabs), 1)
+
+    def test_a_finished_record_whose_worktree_is_already_gone_still_releases_its_tab(self):
+        path, record = self.agent_lane_reporting_parent(registered=False)
+        report = self.cleanup(go=False)
+        self.assertIn(f"would close tab {record['tab_id']} live-proj-a1", report)
+        self.assertNotIn(path, "\n".join(report))
+
+    def test_an_unfinished_record_holds_its_tab_before_attribution(self):
+        for state in ("running", "blocked"):
+            with self.subTest(state):
+                self.world = FakeWorld(self.root)
+                _, record = self.agent_lane_reporting_parent(state=state)
+                report = self.cleanup(go=False)
+                self.assertIn(f"hold tab {record['tab_id']} live-proj-a1: lane a1 {state}", report)
+
+    def test_a_parent_pane_cwd_without_a_record_is_still_foreign(self):
+        self.world.tabs.append({"tab_id": "t1", "label": "live-proj-x"})
+        self.world.panes.append({"tab_id": "t1", "cwd": "/work", "agent_status": "idle"})
+        self.assertIn("hold tab t1 live-proj-x: foreign", self.cleanup(go=False))
+
+    def test_a_records_cwd_outside_the_lane_paths_is_not_attributed(self):
+        self.start(cwd=self.root, cmd=None, agent="claude")
+        Path(self.root / ".agent-runs/lanes/a1/runner.rc").write_text("0\n2026-01-01T00:00:00Z\n")
+        self.world.tabs = [{"tab_id": "t10", "label": "live-proj-a1"}]
+        self.world.panes = [{"tab_id": "t10", "cwd": "/work", "agent_status": "idle"}]
+        report = self.cleanup(go=False)
+        self.assertIn("hold tab t10 live-proj-a1: foreign", report)
+        self.assertNotIn("would close tab t10 live-proj-a1", report)
+
+    def test_a_finished_records_tab_with_no_listed_panes_is_still_foreign(self):
+        _, record = self.agent_lane_reporting_parent(registered=False)
+        self.world.panes = []
+        report = self.cleanup(go=False)
+        self.assertIn(f"hold tab {record['tab_id']} live-proj-a1: foreign", report)
+
+    def test_a_pane_reporting_another_lane_path_keeps_the_tab_foreign(self):
+        path, record = self.agent_lane_reporting_parent(registered=False)
+        self.world.panes.append({"tab_id": record["tab_id"], "cwd": path, "agent_status": "idle"})
+        report = self.cleanup(go=False)
+        self.assertIn(f"hold tab {record['tab_id']} live-proj-a1: foreign", report)
+
+    def test_a_working_pane_still_holds_its_tab_before_attribution(self):
+        _, record = self.agent_lane_reporting_parent()
+        self.world.panes[0]["agent_status"] = "working"
+        report = self.cleanup(go=False)
+        self.assertIn(f"hold tab {record['tab_id']} live-proj-a1: active: working", report)
 
 
 @unittest.skipUnless(
