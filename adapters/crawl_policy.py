@@ -22,9 +22,12 @@ fetcher and the offline tests. Robots handling is deliberately conservative:
   beyond the cap are ignored rather than buffered. Invalid UTF-8 is replaced,
   never raised.
 
-``Crawl-delay`` is read through :class:`urllib.robotparser.RobotFileParser`,
-which accepts integer seconds only, so a fractional value reads as ``None``
-(residual).
+``Crawl-delay`` is parsed from the same capped body as the rules, because
+:class:`urllib.robotparser.RobotFileParser` accepts integer seconds only.
+Integer and decimal seconds are accepted (``1`` and ``1.5``); invalid,
+negative and non-finite values read as ``None``. Groups follow the stdlib
+parser's matching: a specific group named for the agent wins over the ``*``
+group, and a matching specific group without a delay does not fall back.
 
 :class:`HostRateLimiter` spaces requests by host. It keeps only the last
 request time per host: two calls for the same host are at least
@@ -39,10 +42,11 @@ run.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Final
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 from urllib.robotparser import RobotFileParser
 
 #: Largest robots.txt body that is decoded and parsed (512 KiB).
@@ -96,15 +100,118 @@ def _origin(url: str) -> tuple[str, str, int | None, str]:
     return parts.scheme, host, port, f"{parts.scheme}://{netloc}{ROBOTS_PATH}"
 
 
+_DELAY_RE: Final = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _parse_delay(value: str) -> float | None:
+    """Parse a ``Crawl-delay`` value as non-negative finite seconds.
+
+    Only plain decimal notation is accepted: ``2``, ``1.5``, ``0.25``.
+    Scientific notation, signs, underscores and non-finite spellings are
+    invalid, as are values that overflow ``float``.
+    """
+    text = value.strip()
+    if not _DELAY_RE.fullmatch(text):
+        return None
+    seconds = float(text)
+    return seconds if math.isfinite(seconds) else None
+
+
+@dataclass(frozen=True)
+class _DelayEntry:
+    """One robots.txt group's user agents and optional ``Crawl-delay``."""
+
+    user_agents: tuple[str, ...]
+    delay: float | None = None
+    is_default: bool = False
+
+    def applies_to(self, user_agent: str) -> bool:
+        name = user_agent.split("/")[0].lower()
+        return any(agent == "*" or agent.lower() in name for agent in self.user_agents)
+
+
+@dataclass(frozen=True)
+class _DelayRules:
+    """``Crawl-delay`` values by group, matched like the stdlib parser."""
+
+    entries: tuple[_DelayEntry, ...] = ()
+
+    def crawl_delay(self, user_agent: str) -> float | None:
+        for entry in self.entries:
+            if not entry.is_default and entry.applies_to(user_agent):
+                return entry.delay
+        for entry in self.entries:
+            if entry.is_default:
+                return entry.delay
+        return None
+
+
+def _parse_crawl_delays(lines: Iterable[str]) -> _DelayRules:
+    """Collect ``Crawl-delay`` per group, mirroring the stdlib grouping.
+
+    The state machine is the one in :class:`urllib.robotparser.RobotFileParser`
+    (start, user-agent seen, rule seen), so a group means the same thing to
+    the policy's delay as it does to the parser's allow/deny rules.
+    """
+    entries: list[_DelayEntry] = []
+    user_agents: list[str] = []
+    delay: float | None = None
+    state = 0
+
+    def add_entry() -> None:
+        nonlocal user_agents, delay
+        entries.append(_DelayEntry(tuple(user_agents), delay, "*" in user_agents))
+        user_agents, delay = [], None
+
+    for line in lines:
+        if not line:
+            if state == 1:
+                user_agents, delay = [], None
+                state = 0
+            elif state == 2:
+                add_entry()
+                state = 0
+            continue
+        comment = line.find("#")
+        if comment >= 0:
+            line = line[:comment]
+        line = line.strip()
+        if not line:
+            continue
+        field, separator, value = line.partition(":")
+        if not separator:
+            continue
+        field = field.strip().lower()
+        if field == "user-agent":
+            if state == 2:
+                add_entry()
+            user_agents.append(unquote(value.strip()))
+            state = 1
+        elif field in ("allow", "disallow", "crawl-delay", "request-rate"):
+            if state == 0:
+                continue
+            if field == "crawl-delay":
+                parsed = _parse_delay(value)
+                if parsed is not None:
+                    delay = parsed
+            state = 2
+    if state == 2:
+        add_entry()
+    return _DelayRules(tuple(entries))
+
+
 @dataclass(frozen=True)
 class _HostRules:
     """One origin's robots.txt outcome: a parsed file, or a blanket decision.
 
     ``parser`` is ``None`` for the blanket cases ("no robots.txt" → everything
     allowed, any failure → nothing allowed), which carry no crawl delay.
+    ``delays`` holds the same file's ``Crawl-delay`` groups, parsed by
+    :func:`_parse_crawl_delays` because the stdlib parser drops fractions.
     """
 
     parser: RobotFileParser | None = None
+    delays: _DelayRules | None = None
     allowed: bool = True
 
     def can_fetch(self, user_agent: str, url: str) -> bool:
@@ -113,10 +220,9 @@ class _HostRules:
         return self.parser.can_fetch(user_agent, url)
 
     def crawl_delay(self, user_agent: str) -> float | None:
-        if self.parser is None:
+        if self.delays is None:
             return None
-        delay = self.parser.crawl_delay(user_agent)
-        return None if delay is None else float(delay)
+        return self.delays.crawl_delay(user_agent)
 
 
 def _allow_all() -> _HostRules:
@@ -179,11 +285,13 @@ class RobotsPolicy:
         if status in _DISALLOW_ALL_STATUSES or not 200 <= status < 300:
             return _disallow_all()
         try:
+            lines = _robots_text(body).splitlines()
             parser = RobotFileParser()
-            parser.parse(_robots_text(body).splitlines())
+            parser.parse(lines)
+            delays = _parse_crawl_delays(lines)
         except Exception:  # noqa: BLE001 - an unparsable body is "disallow"
             return _disallow_all()
-        return _HostRules(parser=parser)
+        return _HostRules(parser=parser, delays=delays)
 
 
 def _check_interval(value: object, name: str) -> float:
