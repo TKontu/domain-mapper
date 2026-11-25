@@ -21,11 +21,14 @@ is still ``running``: only its result and PR say it finished.
 worktrees at a sibling path (``<repo>-...``) or a record's cwd. One is removed with plain
 ``git worktree remove`` once the newest PR on its branch is merged or closed and none is open.
 A lane tab is closed with ``herdr tab close`` only when every pane in it is settled, its worktree
-is gone or removed in this run and its lane is not carried. Anything uncertain is held and
-reported, never forced: ``carried`` (HANDOFF.md names it), ``no-pr``, ``open-pr``, ``dirty``,
-``unpushed``, ``busy`` (a process has its cwd inside; ``busy-unknown`` without /proc),
-``lane <x> <state>`` (its record is not done or recorded), ``active`` and ``foreign`` (a pane
-outside the lane paths). Planner, loop, supervisor, manager and review-server tabs are never closed.
+is gone or removed in this run and its lane is not carried. A pane that reports a parent dir (not
+a lane path) is attributed to the tab's recorded lane worktree when the record names one and no
+pane reports a lane path. Anything uncertain is held and reported, never forced:
+``carried`` (HANDOFF.md names it), ``no-pr``, ``open-pr``, ``dirty``, ``unpushed``, ``busy`` (a
+process has its cwd inside; ``busy-unknown`` without /proc), ``lane <x> <state>`` (its record is
+not done or recorded), ``active`` and ``foreign`` (a pane outside the lane paths and no recorded
+lane worktree to attribute the tab to). Planner, loop, supervisor, manager and review-server tabs
+are never closed.
 
     start LANE --cwd DIR (--cmd SCRIPT | --agent KIND) [--branch B] | status [--json]
     recorded LANE [--note TEXT] | cleanup [--go]
@@ -481,6 +484,7 @@ def cleanup(
         paths = {c.removesuffix(DELETED) for c in raw}
         statuses = {p.get("agent_status") for p in mine}
         record = by_label.get(label)
+        hold: str | None = None
         if statuses - SETTLED:
             hold = "active: " + ",".join(sorted(str(s) for s in statuses - SETTLED))
         elif _is_carried([label, *paths, *((record["lane"],) if record else ())], carried):
@@ -490,7 +494,15 @@ def cleanup(
         elif not paths or not all(
             lane_path(c.removesuffix(DELETED)) and (c.endswith(DELETED) or c in trees) for c in raw
         ):
-            hold = "foreign"  # only a registered lane worktree, or one already deleted
+            home = str(record.get("cwd") or "") if record else ""
+            if record and lane_path(home) and raw and all(
+                c and not lane_path(c.removesuffix(DELETED)) for c in raw
+            ):
+                paths = {home}  # a pane reports a parent dir; the record names the lane worktree
+                if any(p in trees and holds.get(p) for p in paths):
+                    hold = "worktree-kept"
+            else:
+                hold = "foreign"  # a pane outside the lane paths, with no record to attribute it to
         elif any(p in trees and holds.get(p) for p in paths):
             hold = "worktree-kept"
         else:
