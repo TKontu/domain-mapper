@@ -22,6 +22,8 @@ DEFAULT_EMBEDDING_URL = "http://localhost:8001/v1"
 DEFAULT_RERANKER_URL = "http://localhost:8002/v1"
 DEFAULT_CLOUD_LLM_MODEL = "cloud-model"
 DEFAULT_LLM_BUDGET_USD = 0.0
+# Token cost rates in USD per million tokens; 0.0 keeps spend untracked.
+DEFAULT_COST_PER_MTOK = 0.0
 DEFAULT_MAX_CRAWL_CONCURRENCY = 2
 # Local compose `db` placeholders (host/port/user/database); the password is set
 # in .env, so it is not part of the default URL.
@@ -39,6 +41,10 @@ class Settings:
     cloud_api_key: str | None = field(default=None, repr=False)
     cloud_llm_model: str = DEFAULT_CLOUD_LLM_MODEL
     llm_budget_usd: float = DEFAULT_LLM_BUDGET_USD
+    local_cost_per_mtok_in: float = DEFAULT_COST_PER_MTOK
+    local_cost_per_mtok_out: float = DEFAULT_COST_PER_MTOK
+    cloud_cost_per_mtok_in: float = DEFAULT_COST_PER_MTOK
+    cloud_cost_per_mtok_out: float = DEFAULT_COST_PER_MTOK
     max_crawl_concurrency: int = DEFAULT_MAX_CRAWL_CONCURRENCY
     database_url: str = field(default=DEFAULT_DATABASE_URL, repr=False)
 
@@ -68,6 +74,26 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
         cloud_llm_model=_text(raw("CLOUD_LLM_MODEL"), DEFAULT_CLOUD_LLM_MODEL),
         llm_budget_usd=_parse_float(
             "LLM_BUDGET_USD", raw("LLM_BUDGET_USD"), DEFAULT_LLM_BUDGET_USD
+        ),
+        local_cost_per_mtok_in=_parse_float(
+            "LOCAL_COST_PER_MTOK_IN",
+            raw("LOCAL_COST_PER_MTOK_IN"),
+            DEFAULT_COST_PER_MTOK,
+        ),
+        local_cost_per_mtok_out=_parse_float(
+            "LOCAL_COST_PER_MTOK_OUT",
+            raw("LOCAL_COST_PER_MTOK_OUT"),
+            DEFAULT_COST_PER_MTOK,
+        ),
+        cloud_cost_per_mtok_in=_parse_float(
+            "CLOUD_COST_PER_MTOK_IN",
+            raw("CLOUD_COST_PER_MTOK_IN"),
+            DEFAULT_COST_PER_MTOK,
+        ),
+        cloud_cost_per_mtok_out=_parse_float(
+            "CLOUD_COST_PER_MTOK_OUT",
+            raw("CLOUD_COST_PER_MTOK_OUT"),
+            DEFAULT_COST_PER_MTOK,
         ),
         max_crawl_concurrency=_parse_int(
             "MAX_CRAWL_CONCURRENCY", raw("MAX_CRAWL_CONCURRENCY"), DEFAULT_MAX_CRAWL_CONCURRENCY

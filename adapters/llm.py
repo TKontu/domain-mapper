@@ -559,6 +559,8 @@ def _build_inner(
             db=db,
             transport=transport,
             timeout=timeout,
+            cost_per_mtok_in=settings.local_cost_per_mtok_in,
+            cost_per_mtok_out=settings.local_cost_per_mtok_out,
         )
     if name in _CLOUD_BACKENDS:
         key = settings.cloud_api_key
@@ -571,6 +573,8 @@ def _build_inner(
             db=db,
             transport=transport,
             timeout=timeout,
+            cost_per_mtok_in=settings.cloud_cost_per_mtok_in,
+            cost_per_mtok_out=settings.cloud_cost_per_mtok_out,
         )
     allowed = ", ".join(sorted(_LOCAL_BACKENDS | _CLOUD_BACKENDS))
     raise ValueError(f"unknown LLM backend {backend!r}; expected one of {allowed}")
