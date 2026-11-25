@@ -3,7 +3,8 @@
 ARCHITECTURE.md §4 (Crawl & snapshot) fixes the contract
 ``fetch(url, *, render_js=False) -> FetchResult``. This module defines only the
 interface: :class:`Fetcher` is the protocol, :class:`FetchResult` its frozen
-record and :class:`FetchError` the failure type. :class:`InMemoryFetcher` is a
+record, :class:`FetchError` the failure type and :class:`TransientFetchError`
+the retryable subset a caller may retry once. :class:`InMemoryFetcher` is a
 bounded fake for tests and the example scope.
 
 No real scraping tool, network call, robots.txt handling, rate limiting or raw
@@ -30,9 +31,22 @@ from urllib.parse import urlsplit
 
 DEFAULT_MAX_BYTES: Final = 10 * 1024 * 1024
 
+__all__ = [
+    "DEFAULT_MAX_BYTES",
+    "FetchError",
+    "FetchResult",
+    "Fetcher",
+    "InMemoryFetcher",
+    "TransientFetchError",
+]
+
 
 class FetchError(ValueError):
     """An invalid fetch request or a failed fetch."""
+
+
+class TransientFetchError(FetchError):
+    """A fetch failure worth one retry: a transport timeout or a 408/429/5xx reply."""
 
 
 @dataclass(frozen=True)
