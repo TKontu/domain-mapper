@@ -48,6 +48,12 @@ line is ``screened S skipped K errors E``.
 the ``--model``/``--batch-size``/``--limit`` options. On success it prints ``embedded <n> batches
 <m>``; on ``EmbeddingError``/``EmbedStoreError`` it prints ``error <ErrorName>: <message>`` on
 stderr, closes the run ``failed`` and exits 1.
+
+``search`` (IX-04) prints one line per BM25 hit from :func:`~core.keyword_search.search_chunks`:
+``<score> chunk <chunk_id> snapshot <snapshot_id> seq <seq>`` plus `` <heading > ...`` when the
+chunk has a heading path, or ``no hits`` on stdout when it has none. Read-only: no ``run`` row and
+nothing is written. Exit 2 on an empty or whitespace query or a ``--limit`` below 1, before the
+database is opened.
 """
 
 from __future__ import annotations
@@ -86,6 +92,7 @@ from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
+from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.resolve import apply_resolution, group_candidates
 from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
@@ -631,6 +638,34 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
         engine.dispose()
 
 
+def run_search(query: str, entity_id: int | None, limit: int) -> None:
+    """Print one line per BM25 hit of :func:`search_chunks`; read-only, exit 2 on bad input.
+
+    Validation precedes :func:`_open_engine`. ``no hits`` is printed when there are none;
+    ``Engine`` is disposed in ``finally`` whatever happens.
+    """
+    if not query.strip():
+        typer.echo("error: query must be non-blank", err=True)
+        raise typer.Exit(2)
+    if limit < 1:
+        typer.echo("error: --limit must be at least 1", err=True)
+        raise typer.Exit(2)
+    settings = load_settings()
+    engine = _open_engine(settings)
+    try:
+        hits = search_chunks(engine, query, limit=limit, entity_id=entity_id)
+    finally:
+        engine.dispose()
+    if not hits:
+        typer.echo("no hits")
+        return
+    for hit in hits:
+        line = f"{hit.score:.4f} chunk {hit.chunk_id} snapshot {hit.snapshot_id} seq {hit.seq}"
+        if hit.heading_path:
+            line = f"{line} {' > '.join(hit.heading_path)}"
+        typer.echo(line)
+
+
 def _register(stage: str) -> None:
     if stage == "crawl":
 
@@ -697,6 +732,18 @@ def index(
 ) -> None:
     """Embed pending chunks via ``embed_pending_chunks``; prints ``embedded <n> batches <m>``."""
     run_index(model, batch_size, limit)
+
+
+@app.command(name="search", help="Search stored chunks with BM25 and print one line per hit.")
+def search(
+    query: Annotated[str, typer.Argument(help="Search text.")],
+    entity_id: Annotated[
+        int | None, typer.Option("--entity", help="Restrict hits to this entity id.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Max hits to print.")] = 10,
+) -> None:
+    """Print ``score chunk C snapshot S seq N`` per hit, plus the heading tail when nonempty."""
+    run_search(query, entity_id, limit)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
