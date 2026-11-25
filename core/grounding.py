@@ -79,6 +79,9 @@ def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     """Lowercase + collapse whitespace, tracking char-to-original positions.
 
     Returns (normalized_text, offset_map) where offset_map[i] = index in original.
+    ``str.lower()`` can expand one character into several (e.g. ``"İ"`` ->
+    ``"i̇"``), so each output character gets its own entry: the map stays
+    aligned with the normalized text, never with the input.
     """
     result: list[str] = []
     offset_map: list[int] = []
@@ -92,8 +95,10 @@ def _normalize_with_map(text: str) -> tuple[str, list[int]]:
                 offset_map.append(i)
             prev_space = True
         else:
-            result.append(ch.lower())
-            offset_map.append(i)
+            lowered = ch.lower()
+            if lowered:
+                result.append(lowered)
+                offset_map.extend([i] * len(lowered))
             prev_space = False
 
     # Strip trailing space
