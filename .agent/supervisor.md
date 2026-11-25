@@ -51,8 +51,10 @@ python3 $L cleanup           # dry run; --go acts
   worktree as well. It then removes, with plain `git worktree remove`, each lane worktree (a
   sibling `<repo>-...` path or a recorded lane cwd) whose newest PR is merged or closed and none is
   open. It holds and reports anything carried, dirty, unpushed, busy, without a PR or still live.
-  Protected tabs (planner, loop, supervisor, manager, review server), other repos' tabs and tabs
-  outside the lane paths are never closed. The round carries every held lane with its reason.
+  Protected tabs (planner, loop, supervisor, manager, review server) and other repos' tabs are
+  never closed. A tab outside the lane paths is closed only when it is a finished recorded lane's
+  tab whose pane reports a parent dir: it is attributed to the record's lane worktree. Any tab that
+  cannot be attributed is never closed. The round carries every held lane with its reason.
 
 ## The no-endless-wait bound
 

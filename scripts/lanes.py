@@ -94,7 +94,9 @@ def _spawn(argv: list[str], cwd: Path, log: Path) -> None:
     """``setsid -f`` forks the detached child and returns at once."""
     with log.open("ab") as sink:
         try:
-            subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, check=True)
+            subprocess.run(
+                argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, check=True
+            )
         except FileNotFoundError as exc:
             raise LaneError(f"{exc.filename} not found; cannot detach the lane") from exc
         except (OSError, subprocess.CalledProcessError) as exc:
@@ -255,7 +257,9 @@ def start(
     if agent is not None and not herdr:
         raise LaneError("--agent needs Herdr (HERDR_ENV and herdr); use --cmd outside it")
     if herdr and not env.get("HERDR_WORKSPACE_ID"):
-        raise LaneError("HERDR_WORKSPACE_ID is unset: start lanes from a pane in the loop's workspace")
+        raise LaneError(
+            "HERDR_WORKSPACE_ID is unset: start lanes from a pane in the loop's workspace"
+        )
     if cmd is not None and not cmd.is_file():
         raise LaneError(f"launcher script not found: {cmd}")
     if not cwd.is_dir():
@@ -298,12 +302,16 @@ def start(
         raise LaneError(f"herdr tab create returned no tab/pane: {created!r}") from exc
     _save(root, record)  # saved before launching, so a failed launch still leaves a probe-able tab
     if agent is not None:
-        started = _herdr(seams, "agent", "start", label, "--kind", agent, "--pane", record["pane_id"])
+        started = _herdr(
+            seams, "agent", "start", label, "--kind", agent, "--pane", record["pane_id"]
+        )
         if not _ok(started):
             raise LaneError(f"herdr agent start {label} failed in pane {record['pane_id']}")
         record["agent"] = label
         _save(root, record)
-    elif not _ok(_herdr(seams, "pane", "run", record["pane_id"], f"bash {shlex.quote(str(wrapper))}")):
+    elif not _ok(
+        _herdr(seams, "pane", "run", record["pane_id"], f"bash {shlex.quote(str(wrapper))}")
+    ):
         raise LaneError(f"herdr pane run failed in pane {record['pane_id']}")
     return record
 
@@ -326,7 +334,11 @@ def probe(record: Mapping[str, Any], seams: Seams) -> tuple[str, str]:
         return ("done", f"rc 0 ({rc_file})") if rc == 0 else ("blocked", f"rc {rc} ({rc_file})")
     pid_file = Path(str(record["pid_file"])) if record.get("pid_file") else None
     pid = _first_int(pid_file) if pid_file else None
-    if pid is not None and pid_file and seams.pid_alive(pid, str(pid_file.parent / "live_runner.sh")):
+    if (
+        pid is not None
+        and pid_file
+        and seams.pid_alive(pid, str(pid_file.parent / "live_runner.sh"))
+    ):
         return "running", f"pid {pid}"
     if agent := str(record.get("agent") or ""):
         got = _herdr(seams, "agent", "get", agent) if seams.in_herdr() else None
@@ -403,7 +415,9 @@ def _tree_hold(path: str, branch: str, seams: Seams) -> str | None:
     """Why this lane worktree must stay (busy aside), or None when its work is finished."""
     if not branch:
         return "detached"
-    rc, out = seams.run(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "state"], 60)
+    rc, out = seams.run(
+        ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "state"], 60
+    )
     if rc:
         return "unreachable"
     try:
@@ -495,8 +509,11 @@ def cleanup(
             lane_path(c.removesuffix(DELETED)) and (c.endswith(DELETED) or c in trees) for c in raw
         ):
             home = str(record.get("cwd") or "") if record else ""
-            if record and lane_path(home) and raw and all(
-                c and not lane_path(c.removesuffix(DELETED)) for c in raw
+            if (
+                record
+                and lane_path(home)
+                and raw
+                and all(c and not lane_path(c.removesuffix(DELETED)) for c in raw)
             ):
                 paths = {home}  # a pane reports a parent dir; the record names the lane worktree
                 if any(p in trees and holds.get(p) for p in paths):
@@ -566,7 +583,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.action == "start":
-            record = start(args.lane, cwd=args.cwd, cmd=args.cmd, agent=args.agent, branch=args.branch)
+            record = start(
+                args.lane, cwd=args.cwd, cmd=args.cmd, agent=args.agent, branch=args.branch
+            )
             print(f"started {record['label']} in {record['cwd']}")
             if record["agent"]:
                 print(f'next: herdr agent prompt {record["agent"]} "<the lane\'s full task>"')
