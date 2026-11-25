@@ -85,6 +85,10 @@ class LlmSchemaError(LlmError):
     """The model's structured output was missing or not a JSON object."""
 
 
+class LlmBudgetExceeded(LlmError):
+    """The run's accumulated LLM cost reached its budget; no further call was made."""
+
+
 @dataclass(frozen=True)
 class LlmResult:
     """One completed call; ``parsed`` is set only when a schema was given."""
@@ -470,6 +474,41 @@ class AnthropicLLM(_BaseHttpLLM):
         raise LlmSchemaError("response has no tool_use block")
 
 
+class BudgetedLLM:
+    """Wrap an :class:`LLM` and refuse calls once a run's spend reaches ``budget_usd``.
+
+    ``spent`` sums :attr:`LlmResult.cost` of calls completed through this wrapper. Costs are
+    known only after a call, so the last allowed call may overshoot the budget once. Zero-cost
+    calls are never refused. Built by :func:`build_llm` (``budget_usd``) for ``landscape
+    screen``; one instance per run.
+    """
+
+    def __init__(self, inner: LLM, budget_usd: float) -> None:
+        self.inner = inner
+        self.budget_usd = _validate_rate(budget_usd, "budget_usd")
+        self.spent = 0.0
+        self.model: str = inner.model
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        purpose: str,
+        run_id: int,
+        json_schema: Mapping[str, object] | None = None,
+    ) -> LlmResult:
+        if self.spent > 0 and self.spent >= self.budget_usd:
+            # Numbers only: the prompt never reaches an exception message.
+            raise LlmBudgetExceeded(
+                f"run spent {self.spent:.4f} USD of budget {self.budget_usd:.4f} USD"
+            )
+        result = self.inner.complete(
+            prompt, purpose=purpose, run_id=run_id, json_schema=json_schema
+        )
+        self.spent += result.cost
+        return result
+
+
 _LOCAL_BACKENDS: Final = frozenset({"local", "vllm", "openai", "openai-compatible"})
 _CLOUD_BACKENDS: Final = frozenset({"cloud", "anthropic", "claude"})
 
@@ -482,6 +521,7 @@ def build_llm(
     transport: Transport | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     anthropic_base_url: str = DEFAULT_ANTHROPIC_BASE_URL,
+    budget_usd: float | None = None,
 ) -> LLM:
     """Build the adapter named by ``backend`` from :class:`core.config.Settings`.
 
@@ -489,7 +529,28 @@ def build_llm(
     ``settings.llm_gateway_url`` with ``settings.local_model``.
     ``cloud``/``anthropic``/``claude`` select Anthropic with
     ``settings.cloud_llm_model`` and refuse to build without a key.
+    With ``budget_usd`` the adapter is wrapped in :class:`BudgetedLLM` (one budget per run).
     """
+    inner = _build_inner(
+        settings,
+        backend,
+        db=db,
+        transport=transport,
+        timeout=timeout,
+        anthropic_base_url=anthropic_base_url,
+    )
+    return inner if budget_usd is None else BudgetedLLM(inner, budget_usd)
+
+
+def _build_inner(
+    settings: Settings,
+    backend: str,
+    *,
+    db: DbTarget,
+    transport: Transport | None,
+    timeout: float,
+    anthropic_base_url: str,
+) -> LLM:
     name = backend.strip().lower()
     if name in _LOCAL_BACKENDS:
         return OpenAICompatibleLLM(
