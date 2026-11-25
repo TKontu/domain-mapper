@@ -14,6 +14,10 @@ later row.
 ``web-search`` (DS-01) runs one query against SearXNG (``SEARXNG_URL``) and prints
 ``<rank>\t<url>\t<title>`` per result. With ``--save`` (DS-02) each result is also written as one
 ``candidate`` row (channel ``search``) via :func:`~core.candidate_store.record_candidates`.
+
+``resolve`` (RV-01) is read-only: it groups unresolved ``candidate`` rows by normalised domain via
+:func:`~core.resolve.group_candidates` and prints ``<domain>\t<count>\t<name>`` lines, then
+``domains N candidates M`` and, when nonzero, ``skipped K``.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.ingest import ingest_page
+from core.resolve import group_candidates
 from core.runs import create_all
 from core.scope_pack import ScopePackError, load_scope_pack, scope_pack_json_schemas
 
@@ -202,6 +207,26 @@ def run_crawl(
         raise typer.Exit(1)
 
 
+def run_resolve(scope: Path) -> None:
+    """Print unresolved candidates grouped by normalised domain; exit 2 on a database error."""
+    settings = _load(scope)
+    try:
+        engine = create_engine(settings.database_url)
+        try:
+            create_all(engine)
+            summary = group_candidates(engine)
+        finally:
+            engine.dispose()
+    except Exception as exc:  # noqa: BLE001 - never echo the database URL
+        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+        raise typer.Exit(2) from None
+    for group in summary.groups:
+        typer.echo(f"{group.domain}\t{group.count}\t{group.name}")
+    typer.echo(f"domains {len(summary.groups)} candidates {summary.candidates}")
+    if summary.skipped:
+        typer.echo(f"skipped {summary.skipped}")
+
+
 def _register(stage: str) -> None:
     if stage == "crawl":
 
@@ -229,7 +254,14 @@ def _register(stage: str) -> None:
 
 
 for _stage in STAGES:
-    _register(_stage)
+    if _stage != "resolve":  # `resolve` has its own body below (RV-01)
+        _register(_stage)
+
+
+@app.command(name="resolve", help="Group unresolved candidates by normalised domain.")
+def resolve(scope: ScopeOpt) -> None:
+    """Read-only: group unresolved ``candidate`` rows by normalised domain."""
+    run_resolve(scope)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
