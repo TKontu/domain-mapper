@@ -355,6 +355,13 @@ class CleanupTests(LaneTestCase):
         self.assertIn(f"would close tab {record['tab_id']} live-proj-a1", report)
         self.assertNotIn(path, "\n".join(report))
 
+    def test_an_attributed_tab_keeps_its_hold_while_its_worktree_is_kept(self):
+        path, record = self.agent_lane_reporting_parent()
+        self.world.prs["lane/a1"] = ["MERGED", "OPEN"]
+        report = self.cleanup(go=False)
+        self.assertIn(f"hold tab {record['tab_id']} live-proj-a1: worktree-kept", report)
+        self.assertIn(f"hold {path} (lane/a1): open-pr", report)
+
     def test_an_unfinished_record_holds_its_tab_before_attribution(self):
         for state in ("running", "blocked"):
             with self.subTest(state):

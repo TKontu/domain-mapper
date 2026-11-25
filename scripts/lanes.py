@@ -499,6 +499,8 @@ def cleanup(
                 c and not lane_path(c.removesuffix(DELETED)) for c in raw
             ):
                 paths = {home}  # a pane reports a parent dir; the record names the lane worktree
+                if any(p in trees and holds.get(p) for p in paths):
+                    hold = "worktree-kept"
             else:
                 hold = "foreign"  # a pane outside the lane paths, with no record to attribute it to
         elif any(p in trees and holds.get(p) for p in paths):
