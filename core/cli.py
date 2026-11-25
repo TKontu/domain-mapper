@@ -112,6 +112,16 @@ def validate(scope: ScopeOpt) -> None:
     typer.echo(f"layers: {len(pack.scope.layers)}")
     typer.echo(f"topics: {len(topics)}")
     typer.echo(f"criteria: {sum(len(t.criteria) for t in topics)}")
+    optional = {
+        "vocabulary": len(pack.vocabulary.entries),
+        "sources": len(pack.sources.sources),
+        "attributes": len(pack.attributes.attributes),
+        "profiles": len(pack.profiles.profiles),
+        "views": len(pack.views.views),
+    }
+    for name, count in optional.items():
+        present = (scope / f"{name}.yaml").is_file()
+        typer.echo(f"{name}: {count if present else 'absent'}")
 
 
 @app.command(name="schema", help="Export scope-pack JSON Schemas for editor autocompletion.")

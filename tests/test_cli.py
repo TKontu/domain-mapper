@@ -116,6 +116,35 @@ class ValidateTest(unittest.TestCase):
         for label in ("segments: 2", "layers: 3", "topics: 2", "criteria: "):
             self.assertIn(label, result.stdout)
 
+    def test_example_pack_prints_optional_file_counts(self) -> None:
+        result = self.invoke("validate", "--scope", EXAMPLE_SCOPE)
+        self.assertEqual(result.exit_code, 0, result.output)
+        lines = result.stdout.splitlines()
+        self.assertEqual(
+            lines[5:],
+            [
+                "vocabulary: 2",
+                "sources: 3",
+                "attributes: 3",
+                "profiles: 2",
+                "views: 2",
+            ],
+        )
+
+    def test_minimal_pack_reports_optional_files_absent(self) -> None:
+        minimal = Path(self.tmp.name) / "minimal"
+        minimal.mkdir()
+        for name in ("scope.yaml", "rubric.yaml"):
+            shutil.copy(Path(EXAMPLE_SCOPE) / name, minimal / name)
+        result = self.invoke("validate", "--scope", str(minimal))
+        self.assertEqual(result.exit_code, 0, result.output)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "scope: example")
+        self.assertEqual(
+            lines[5:],
+            [f"{n}: absent" for n in ("vocabulary", "sources", "attributes", "profiles", "views")],
+        )
+
     def test_invalid_pack_names_file_and_exits_1(self) -> None:
         broken = Path(self.tmp.name) / "broken"
         shutil.copytree(EXAMPLE_SCOPE, broken)
