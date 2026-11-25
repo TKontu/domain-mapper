@@ -29,9 +29,7 @@ class RoundTests(unittest.TestCase):
         self.spec.write_text("Document the approved behavior. Check whitespace.\n")
 
     def git(self, *args):
-        return subprocess.check_output(
-            ["git", "-C", str(self.repo), *args], text=True
-        ).strip()
+        return subprocess.check_output(["git", "-C", str(self.repo), *args], text=True).strip()
 
     def cli(self, *args, ok=True):
         result = subprocess.run(
@@ -103,9 +101,7 @@ class RoundTests(unittest.TestCase):
 
     def test_close_rejects_incomplete_handoff_without_closing_round(self):
         self.start()
-        self.cli(
-            "resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped"
-        )
+        self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")
         valid = self.handoff()
         invalid = [
             (f"Main-SHA: {self.base}\n", "Generated-UTC"),
@@ -118,12 +114,14 @@ class RoundTests(unittest.TestCase):
             ("Open work", "None."),
             ("Next action", "Read the backlog and select executable work."),
         ):
-            invalid.extend([
-                (valid.replace(f"## {heading}", f"## Other {heading}"), heading),
-                (valid.replace(body, ""), heading),
-                (valid.replace(body, "<!-- Fill this in -->"), heading),
-                (valid.replace(body, "<Fill this in>"), heading),
-            ])
+            invalid.extend(
+                [
+                    (valid.replace(f"## {heading}", f"## Other {heading}"), heading),
+                    (valid.replace(body, ""), heading),
+                    (valid.replace(body, "<!-- Fill this in -->"), heading),
+                    (valid.replace(body, "<Fill this in>"), heading),
+                ]
+            )
         ledger = self.repo / ".agent-runs/R1/round.json"
         original = ledger.read_text()
         for handoff, diagnostic in invalid:
@@ -131,8 +129,17 @@ class RoundTests(unittest.TestCase):
             with self.subTest(handoff=handoff):
                 (self.repo / "HANDOFF.md").write_text(handoff)
                 rejected = self.cli(
-                    "close", "R1", "--main", "main", "--reconciliation", "README.md",
-                    "--handoff", "HANDOFF.md", "--evidence", "Final checks passed", ok=False,
+                    "close",
+                    "R1",
+                    "--main",
+                    "main",
+                    "--reconciliation",
+                    "README.md",
+                    "--handoff",
+                    "HANDOFF.md",
+                    "--evidence",
+                    "Final checks passed",
+                    ok=False,
                 )
                 self.assertIn(diagnostic, rejected.stderr)
                 self.assertEqual(self.manifest()["state"], "open")
@@ -149,9 +156,7 @@ class RoundTests(unittest.TestCase):
 
     def test_close_rejects_unfilled_handoff_template_sections(self):
         self.start()
-        self.cli(
-            "resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped"
-        )
+        self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")
         template = (Path(__file__).resolve().parents[1] / "templates/handoff.md").read_text()
         (self.repo / "HANDOFF.md").write_text(
             template.replace("<timestamp>", "2026-10-09T10:00:00Z").replace(
@@ -159,17 +164,24 @@ class RoundTests(unittest.TestCase):
             )
         )
         rejected = self.cli(
-            "close", "R1", "--main", "main", "--reconciliation", "README.md",
-            "--handoff", "HANDOFF.md", "--evidence", "Final checks passed", ok=False,
+            "close",
+            "R1",
+            "--main",
+            "main",
+            "--reconciliation",
+            "README.md",
+            "--handoff",
+            "HANDOFF.md",
+            "--evidence",
+            "Final checks passed",
+            ok=False,
         )
         self.assertIn("Round delta", rejected.stderr)
         self.assertEqual(self.manifest()["state"], "open")
 
     def test_close_accepts_autolink_as_section_content(self):
         self.start()
-        self.cli(
-            "resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped"
-        )
+        self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")
         (self.repo / "HANDOFF.md").write_text(
             self.handoff().replace(
                 "Read the backlog and select executable work.",
@@ -177,22 +189,37 @@ class RoundTests(unittest.TestCase):
             )
         )
         self.cli(
-            "close", "R1", "--main", "main", "--reconciliation", "README.md",
-            "--handoff", "HANDOFF.md", "--evidence", "Final checks passed",
+            "close",
+            "R1",
+            "--main",
+            "main",
+            "--reconciliation",
+            "README.md",
+            "--handoff",
+            "HANDOFF.md",
+            "--evidence",
+            "Final checks passed",
         )
         self.assertEqual(self.manifest()["state"], "closed")
 
     def test_close_preserves_handoff_size_limits(self):
         self.start()
-        self.cli(
-            "resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped"
-        )
+        self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")
         for extra in ("\n" * 51, "word " * 501):
             with self.subTest(extra=extra):
                 (self.repo / "HANDOFF.md").write_text(self.handoff() + extra)
                 rejected = self.cli(
-                    "close", "R1", "--main", "main", "--reconciliation", "README.md",
-                    "--handoff", "HANDOFF.md", "--evidence", "Final checks passed", ok=False,
+                    "close",
+                    "R1",
+                    "--main",
+                    "main",
+                    "--reconciliation",
+                    "README.md",
+                    "--handoff",
+                    "HANDOFF.md",
+                    "--evidence",
+                    "Final checks passed",
+                    ok=False,
                 )
                 self.assertIn("too long", rejected.stderr)
                 self.assertEqual(self.manifest()["state"], "open")
@@ -203,9 +230,7 @@ class RoundTests(unittest.TestCase):
         status = json.loads(self.cli("status", "R1").stdout)
         assignment = status["assignments"]["A1"]
         self.assertEqual(assignment["state"], "blocked")
-        saved = json.loads(
-            (self.repo / ".agent-runs/R1" / assignment["results"][-1]).read_text()
-        )
+        saved = json.loads((self.repo / ".agent-runs/R1" / assignment["results"][-1]).read_text())
         self.assertEqual(saved["reason"], "Required fixture is missing")
         self.assertNotIn("pr", saved)
         self.cli("init", "R2", "--base", "main", ok=False)
@@ -257,9 +282,7 @@ class RoundTests(unittest.TestCase):
         assignment = self.manifest()["assignments"]["A1"]
         self.assertEqual(assignment["state"], "result-ready")
         self.assertEqual(len(assignment["results"]), 3)
-        blocked = json.loads(
-            (self.repo / ".agent-runs/R1" / assignment["results"][1]).read_text()
-        )
+        blocked = json.loads((self.repo / ".agent-runs/R1" / assignment["results"][1]).read_text())
         self.assertEqual(blocked["status"], "blocked")
 
     def test_blocked_assignment_can_cancel_but_not_reopen(self):
@@ -280,9 +303,7 @@ class RoundTests(unittest.TestCase):
 
     def test_unknown_result_status_is_rejected(self):
         self.start()
-        self.cli(
-            "record", "R1", "--result", str(self.submit(status="ready-ish")), ok=False
-        )
+        self.cli("record", "R1", "--result", str(self.submit(status="ready-ish")), ok=False)
         self.assertEqual(self.manifest()["assignments"]["A1"]["results"], [])
 
     def test_init_pins_base_and_status_is_read_only(self):
@@ -301,9 +322,7 @@ class RoundTests(unittest.TestCase):
         self.start()
         a = self.manifest()["assignments"]["A1"]
         packet = self.repo / ".agent-runs/R1" / a["packet"]
-        self.assertEqual(
-            a["packet_sha256"], hashlib.sha256(packet.read_bytes()).hexdigest()
-        )
+        self.assertEqual(a["packet_sha256"], hashlib.sha256(packet.read_bytes()).hexdigest())
         self.cli(
             "assign",
             "R1",
@@ -362,11 +381,7 @@ class RoundTests(unittest.TestCase):
     def test_packet_tampering_is_rejected(self):
         self.start()
         result = self.submit()
-        packet = (
-            self.repo
-            / ".agent-runs/R1"
-            / self.manifest()["assignments"]["A1"]["packet"]
-        )
+        packet = self.repo / ".agent-runs/R1" / self.manifest()["assignments"]["A1"]["packet"]
         packet.write_text("changed scope")
         self.cli("record", "R1", "--result", str(result), ok=False)
 
@@ -388,9 +403,7 @@ class RoundTests(unittest.TestCase):
         self.cli("record", "R1", "--result", str(self.submit()))
         changed = self.submit(head_sha="3" * 40)
         self.cli("record", "R1", "--result", str(changed))
-        self.assertEqual(
-            len(list((self.repo / ".agent-runs/R1/results").glob("*.json"))), 2
-        )
+        self.assertEqual(len(list((self.repo / ".agent-runs/R1/results").glob("*.json"))), 2)
         self.cli(
             "resolve",
             "R1",
@@ -456,15 +469,11 @@ class RoundTests(unittest.TestCase):
             "Worker stopped; task returned to ready in the registry.",
         )
         self.cli("init", "R2", "--base", "main", ok=False)
-        (self.repo / "reconcile.md").write_text(
-            "TASK-1 returned to ready. No behavior changed.\n"
-        )
+        (self.repo / "reconcile.md").write_text("TASK-1 returned to ready. No behavior changed.\n")
         self.git("add", "reconcile.md")
         self.git("commit", "-qm", "reconcile cancelled assignment")
         final_sha = self.git("rev-parse", "HEAD")
-        (self.repo / "HANDOFF.md").write_text(
-            self.handoff(final_sha)
-        )
+        (self.repo / "HANDOFF.md").write_text(self.handoff(final_sha))
         self.cli(
             "close",
             "R1",
@@ -491,9 +500,7 @@ class RoundTests(unittest.TestCase):
             "--evidence",
             "Worker stopped; remaining work tracked in backlog",
         )
-        (self.repo / "backlog.md").write_text(
-            "TASK-1 ready; missing fixture recorded.\n"
-        )
+        (self.repo / "backlog.md").write_text("TASK-1 ready; missing fixture recorded.\n")
         self.git("add", "backlog.md")
         self.git("commit", "-qm", "reconcile task status in existing project state")
         final_sha = self.git("rev-parse", "HEAD")
@@ -518,9 +525,7 @@ class RoundTests(unittest.TestCase):
 
     def test_close_rejects_malformed_reconciliation_url(self):
         self.start()
-        self.cli(
-            "resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped"
-        )
+        self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")
         (self.repo / "HANDOFF.md").write_text(self.handoff())
         for reference in (
             "https:///missing-host",
@@ -544,9 +549,7 @@ class RoundTests(unittest.TestCase):
 
     def test_local_evidence_requires_committed_file_and_current_handoff(self):
         self.start()
-        self.cli(
-            "resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped"
-        )
+        self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")
         (self.repo / "reconcile.md").write_text("Uncommitted evidence\n")
         (self.repo / "HANDOFF.md").write_text(self.handoff())
         args = (

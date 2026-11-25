@@ -48,7 +48,7 @@ class ConfigureLoggingTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertIn("level=INFO", lines[0])
         self.assertIn("logger=core.test_log", lines[0])
-        self.assertIn("message=\"first record\"", lines[0])
+        self.assertIn('message="first record"', lines[0])
         self.assertIn("message=llm_call", lines[1])
         self.assertIn("run_id=7", lines[1])
         self.assertIn("prompt_hash=" + "a" * 64, lines[1])
