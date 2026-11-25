@@ -57,6 +57,7 @@ def list_rows(engine: sa.Engine) -> list[Candidate]:
         ("http://[::1]/", "::1"),
         ("http://127.0.0.1:8000/x", "127.0.0.1"),
         ("ftp://example.com/file", None),
+        ("ftp://x", None),
         ("mailto:someone@example.com", None),
         ("", None),
         ("   ", None),
