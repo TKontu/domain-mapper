@@ -160,10 +160,12 @@ class CrawlStageTest(unittest.TestCase):
         self.assertIn("FIRECRAWL_URL", result.output)
         self.assertEqual(self.state.scrapes, [])
 
-    def test_no_url_exits_2(self) -> None:
+    def test_no_url_crawls_scope_entities_and_reports_none(self) -> None:
+        # CR-04: without --url the stage crawls the scope's entities; this DB has none.
         result = self.crawl()
-        self.assertEqual(result.exit_code, 2, result.output)
-        self.assertIn("--url", result.output)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.stdout.splitlines(), ["entities 0"])
+        self.assertEqual(self.state.scrapes, [])
 
     def test_env_urls_never_echoed(self) -> None:
         secret_base = "http://firecrawl-secret.invalid:9"

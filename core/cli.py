@@ -5,11 +5,14 @@ are unwired by design until their own todo.md rows; ``--dry-run`` prints the res
 ``validate`` (SP-02) and ``schema`` (SP-03) are not stages: they load/summarize a scope pack and
 export its JSON Schemas.
 
-``crawl`` (CL-01) runs for explicit ``--url`` values: robots.txt check (CR-02), per-host rate
-limit, :class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, then
+``crawl`` (CL-01, CR-04) runs for explicit ``--url`` values, or with none for the homepage
+``https://<primary_domain>/`` of each entity of the scope pack's id in id order (at most
+``--limit`` entities), paged by :func:`core.entity_store.iter_entities` so one page is in memory.
+Each URL goes through the robots.txt check (CR-02), per-host rate limit,
+:class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, then
 :func:`~core.ingest.ingest_page` with a :class:`~adapters.blob_store.FilesystemBlobStore` rooted at
-``RAW_STORE_DIR``. URLs run sequentially, one body in memory at a time. Entity-driven crawling is a
-later row.
+``RAW_STORE_DIR`` and the entity's id as ``entity_id``. URLs run sequentially, one body in memory
+at a time.
 
 ``web-search`` (DS-01) runs one query against SearXNG (``SEARXNG_URL``) and prints
 ``<rank>\t<url>\t<title>`` per result. With ``--save`` (DS-02) each result is also written as one
@@ -28,19 +31,21 @@ import dataclasses
 import json
 import os
 import time
+from collections.abc import Iterable
 from datetime import UTC, datetime
+from itertools import chain
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
 import typer
 from sqlalchemy import create_engine
-from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 
 from adapters.blob_store import FilesystemBlobStore, raw_store_root
 from adapters.crawl_policy import HostRateLimiter, RobotsPolicy
-from adapters.fetcher import DEFAULT_MAX_BYTES, FetchError
+from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
@@ -48,6 +53,7 @@ from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
+from core.entity_store import EntityRef, iter_entities
 from core.ingest import ingest_page
 from core.resolve import apply_resolution, group_candidates
 from core.runs import create_all
@@ -79,7 +85,11 @@ DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Print the plan and e
 
 
 UrlOpt = Annotated[
-    list[str] | None, typer.Option("--url", help="URL to crawl (repeatable; crawl stage only).")
+    list[str] | None,
+    typer.Option(
+        "--url",
+        help="URL to crawl (repeatable; without it, each entity homepage is crawled).",
+    ),
 ]
 
 USER_AGENT = "domain-mapper/0.1 (polite research crawler)"
@@ -137,19 +147,24 @@ def _mask_database_url(url: str) -> str:
 def run_crawl(
     scope: Path, layer: str | None, limit: int | None, dry_run: bool, urls: list[str]
 ) -> None:
-    """Crawl explicit ``urls``; one line per URL; exit 1 if any failed, 2 on bad setup."""
+    """Crawl ``urls`` or, without them, one homepage per entity of ``scope``'s id.
+
+    One line per URL; exit 1 if any failed, 2 on bad setup.
+    """
     settings = _load(scope)
     if dry_run:
         _print_plan("crawl", scope, layer, limit, settings)
         return
-    if not urls:
-        typer.echo(
-            "error: crawl needs at least one --url (entity-driven crawling is not implemented yet)",
-            err=True,
-        )
-        raise typer.Exit(2)
+    if urls:
+        _crawl_urls(settings, urls)
+        return
+    _crawl_entities(scope, settings, limit)
+
+
+def _make_fetcher() -> FirecrawlFetcher:
+    """Build the Firecrawl fetcher from the environment; a missing URL exits 2."""
     try:
-        fetcher = FirecrawlFetcher.from_env(
+        return FirecrawlFetcher.from_env(
             make_post_transport(
                 max_bytes=2 * DEFAULT_MAX_BYTES + 64 * 1024, timeout_s=_HTTP_TIMEOUT_S
             )
@@ -157,12 +172,73 @@ def run_crawl(
     except ValueError as exc:  # message names FIRECRAWL_URL, never its value
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from None
+
+
+def _open_engine(settings: Settings) -> Engine:
+    """Create the schema on the configured database; any failure exits 2, URL never echoed."""
     try:
         engine = create_engine(settings.database_url)
         create_all(engine)
     except Exception as exc:  # noqa: BLE001 - never echo the database URL
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
+    return engine
+
+
+def _crawl_urls(settings: Settings, urls: list[str]) -> None:
+    """Crawl explicit URLs with ``entity_id`` None; exit 1 if any failed."""
+    fetcher = _make_fetcher()
+    engine = _open_engine(settings)
+    try:
+        failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls))
+    finally:
+        engine.dispose()
+    if failed:
+        raise typer.Exit(1)
+
+
+def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
+    """Crawl one homepage per entity of the scope pack id, at most ``limit``, in id order."""
+    try:
+        scope_id = load_scope_pack(scope).scope.id
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    engine = _open_engine(settings)
+    try:
+        entities = iter_entities(engine, scope_id, limit=limit)
+        try:
+            first = next(entities)
+        except StopIteration:
+            typer.echo("entities 0")
+            return
+        # Built only once there is work: no entities needs no fetcher endpoint.
+        fetcher = _make_fetcher()
+        targets = chain((_homepage(first),), (_homepage(entity) for entity in entities))
+        failed = _crawl_targets(engine, fetcher, targets)
+    except SQLAlchemyError as exc:  # a page read failed: bad setup, URL never echoed
+        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        engine.dispose()
+    if failed:
+        raise typer.Exit(1)
+
+
+def _homepage(entity: EntityRef) -> tuple[str, int]:
+    """The one URL crawled per entity (multi-page policy is a later row)."""
+    return f"https://{entity.primary_domain}/", entity.id
+
+
+def _crawl_targets(
+    engine: Engine, fetcher: Fetcher, targets: Iterable[tuple[str, int | None]]
+) -> bool:
+    """Fetch ``(url, entity_id)`` targets sequentially; return whether any failed.
+
+    Each URL goes through the same robots check, per-host wait and ``ingest_page`` call. A target
+    failure is printed and does not stop the rest; a database read error while pulling the next
+    target propagates to the caller.
+    """
     limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
 
     def fetch_robots(robots_url: str) -> tuple[int, bytes]:
@@ -174,39 +250,35 @@ def run_crawl(
     blob_store = FilesystemBlobStore(raw_store_root(os.environ))
     parser = HtmlParser()
     failed = False
-    try:
-        for url in urls:
-            try:
-                host = urlsplit(url).hostname or ""
-                if not robots.allowed(url):
-                    typer.echo(f"skipped {url} robots")
-                    continue
-                delay = robots.crawl_delay(url)
-                if delay is not None:
-                    limiter.set_interval(host, delay)
-                limiter.wait(url)
-                result = ingest_page(
-                    engine,
-                    fetcher=fetcher,
-                    parser=parser,
-                    url=url,
-                    entity_id=None,
-                    source_kind=_SOURCE_KIND,
-                    blob_store=blob_store,
-                )
-            except Exception as exc:  # noqa: BLE001 - report and continue with the next URL
-                failed = True
-                detail = str(exc) if isinstance(exc, FetchError) else ""
-                typer.echo(f"error {url} {type(exc).__name__}{': ' + detail if detail else ''}")
+    for url, entity_id in targets:
+        try:
+            host = urlsplit(url).hostname or ""
+            if not robots.allowed(url):
+                typer.echo(f"skipped {url} robots")
                 continue
-            typer.echo(
-                f"ok {url} snapshot={result.snapshot_id} chunks={result.chunks_written} "
-                f"raw={result.raw_digest}"
+            delay = robots.crawl_delay(url)
+            if delay is not None:
+                limiter.set_interval(host, delay)
+            limiter.wait(url)
+            result = ingest_page(
+                engine,
+                fetcher=fetcher,
+                parser=parser,
+                url=url,
+                entity_id=entity_id,
+                source_kind=_SOURCE_KIND,
+                blob_store=blob_store,
             )
-    finally:
-        engine.dispose()
-    if failed:
-        raise typer.Exit(1)
+        except Exception as exc:  # noqa: BLE001 - report and continue with the next URL
+            failed = True
+            detail = str(exc) if isinstance(exc, FetchError) else ""
+            typer.echo(f"error {url} {type(exc).__name__}{': ' + detail if detail else ''}")
+            continue
+        typer.echo(
+            f"ok {url} snapshot={result.snapshot_id} chunks={result.chunks_written} "
+            f"raw={result.raw_digest}"
+        )
+    return failed
 
 
 def run_resolve(scope: Path, apply: bool = False) -> None:
@@ -262,7 +334,10 @@ def _register(stage: str) -> None:
         ) -> None:
             run_crawl(scope, layer, limit, dry_run, list(url or []))
 
-        app.command(name=stage, help="Run the crawl stage for explicit --url values.")(crawl)
+        app.command(
+            name=stage,
+            help="Run the crawl stage for each --url, or each scope entity's homepage.",
+        )(crawl)
         return
 
     def command(
