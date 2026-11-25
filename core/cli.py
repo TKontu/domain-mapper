@@ -9,8 +9,9 @@ export its JSON Schemas.
 homepage ``https://<primary_domain>/`` of each entity of the scope pack's id in id order (at most
 ``--limit`` entities, which counts entities rather than URLs), then that entity's
 ``crawl.priority_paths`` in listed order, stopping at ``crawl.max_pages`` URLs per entity
-(default: homepage only). Entities are paged by :func:`core.entity_store.iter_entities` so one page
-is in memory.
+(default: homepage only). ``--entity-scheme http`` builds those entity URLs as ``http://``
+instead, a test/live aid for loopback fakes; it exits 2 with ``--url`` and stays ``https`` by
+default. Entities are paged by :func:`core.entity_store.iter_entities` so one page is in memory.
 Each URL goes through the robots.txt check (CR-02), per-host rate limit,
 :class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, then
 :func:`~core.ingest.ingest_page` with a :class:`~adapters.blob_store.FilesystemBlobStore` rooted at
@@ -41,6 +42,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
+from enum import StrEnum
 from itertools import chain, islice
 from pathlib import Path
 from typing import Annotated
@@ -101,6 +103,27 @@ UrlOpt = Annotated[
     ),
 ]
 
+
+class EntityScheme(StrEnum):
+    """Scheme for entity homepage and priority-path URLs (CR-13).
+
+    ``http`` is a test/live aid for loopback fakes; remove the option once a live check can run
+    against a real ``https`` host.
+    """
+
+    https = "https"
+    http = "http"
+
+
+EntitySchemeOpt = Annotated[
+    EntityScheme | None,
+    typer.Option(
+        "--entity-scheme",
+        help="URL scheme for entity targets; http only for loopback test fakes.",
+        show_default="https",
+    ),
+]
+
 USER_AGENT = "domain-mapper/0.1 (polite research crawler)"
 CRAWL_MIN_INTERVAL_S = 1.0
 """Minimum spacing between requests to one host; a robots ``Crawl-delay`` can only raise it."""
@@ -156,12 +179,22 @@ def _mask_database_url(url: str) -> str:
 
 
 def run_crawl(
-    scope: Path, layer: str | None, limit: int | None, dry_run: bool, urls: list[str]
+    scope: Path,
+    layer: str | None,
+    limit: int | None,
+    dry_run: bool,
+    urls: list[str],
+    entity_scheme: EntityScheme | None = None,
 ) -> None:
     """Crawl ``urls`` or, without them, one homepage per entity of ``scope``'s id.
 
-    One line per URL; exit 1 if any failed, 2 on bad setup.
+    ``entity_scheme`` selects the entity URL scheme (default ``https``) and exits 2 when combined
+    with ``urls``. One line per URL; exit 1 if any failed, 2 on bad setup.
     """
+    if urls and entity_scheme is not None:
+        typer.echo("error: --entity-scheme cannot be combined with --url", err=True)
+        raise typer.Exit(2)
+    scheme = (entity_scheme or EntityScheme.https).value
     settings = _load(scope)
     if dry_run:
         _print_plan("crawl", scope, layer, limit, settings)
@@ -169,7 +202,7 @@ def run_crawl(
     if urls:
         _crawl_urls(settings, urls)
         return
-    _crawl_entities(scope, settings, limit)
+    _crawl_entities(scope, settings, limit, scheme)
 
 
 def _make_fetcher() -> FirecrawlFetcher:
@@ -208,7 +241,9 @@ def _crawl_urls(settings: Settings, urls: list[str]) -> None:
         raise typer.Exit(1)
 
 
-def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
+def _crawl_entities(
+    scope: Path, settings: Settings, limit: int | None, scheme: str = "https"
+) -> None:
     """Crawl each entity of the scope pack id in id order, at most ``limit``, per its policy."""
     try:
         pack = load_scope_pack(scope)
@@ -228,7 +263,7 @@ def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
         fetcher = _make_fetcher()
         crawler = _Crawler(engine, fetcher)
         for entity in chain((first,), entities):
-            _crawl_entity(crawler, entity, policy)
+            _crawl_entity(crawler, entity, policy, scheme)
         failed = crawler.failed
     except SQLAlchemyError as exc:  # a page read failed: bad setup, URL never echoed
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
@@ -239,17 +274,21 @@ def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
         raise typer.Exit(1)
 
 
-def _entity_targets(entity: EntityRef, policy: CrawlPolicy) -> Iterator[tuple[str, int]]:
+def _entity_targets(
+    entity: EntityRef, policy: CrawlPolicy, scheme: str = "https"
+) -> Iterator[tuple[str, int]]:
     """Yield the homepage, then priority paths, of ``entity``; at most ``policy.max_pages``."""
     urls = chain(
-        (_homepage(entity),),
-        (f"https://{entity.primary_domain}{path}" for path in policy.priority_paths),
+        (_homepage(entity, scheme),),
+        (f"{scheme}://{entity.primary_domain}{path}" for path in policy.priority_paths),
     )
     for url in islice(urls, policy.max_pages):
         yield url, entity.id
 
 
-def _crawl_entity(crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy) -> None:
+def _crawl_entity(
+    crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy, scheme: str = "https"
+) -> None:
     """Crawl one entity: homepage and priority paths, then (if enabled) discovered links.
 
     With ``discover_links`` the remaining ``max_pages`` budget is filled breadth-first, in
@@ -259,7 +298,7 @@ def _crawl_entity(crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy) -> 
     """
     seen: set[str] = set()
     frontier: deque[str] = deque()
-    for url, _ in _entity_targets(entity, policy):
+    for url, _ in _entity_targets(entity, policy, scheme):
         key = crawl_key(url) or url
         if key not in seen:
             seen.add(key)
@@ -282,9 +321,9 @@ def _crawl_entity(crawler: _Crawler, entity: EntityRef, policy: CrawlPolicy) -> 
                 frontier.append(link)
 
 
-def _homepage(entity: EntityRef) -> str:
+def _homepage(entity: EntityRef, scheme: str = "https") -> str:
     """The homepage URL crawled first for every entity."""
-    return f"https://{entity.primary_domain}/"
+    return f"{scheme}://{entity.primary_domain}/"
 
 
 def _crawl_targets(
@@ -425,8 +464,9 @@ def _register(stage: str) -> None:
             limit: LimitOpt = None,
             dry_run: DryRunOpt = False,
             url: UrlOpt = None,
+            entity_scheme: EntitySchemeOpt = None,
         ) -> None:
-            run_crawl(scope, layer, limit, dry_run, list(url or []))
+            run_crawl(scope, layer, limit, dry_run, list(url or []), entity_scheme)
 
         app.command(
             name=stage,

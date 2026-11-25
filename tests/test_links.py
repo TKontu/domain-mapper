@@ -65,6 +65,18 @@ def test_href_cap() -> None:
     assert len(links(body)) == MAX_HREFS_PER_PAGE
 
 
+def test_host_with_port_matches_by_host_and_port() -> None:
+    body = (
+        '<a href="/a">a</a><a href="http://127.0.0.1:8080/b">b</a>'
+        '<a href="http://127.0.0.1:8081/c">c</a><a href="https://other.invalid/d">d</a>'
+    )
+    assert extract_links(
+        f"<html><body>{body}</body></html>",
+        base_url="http://127.0.0.1:8080/",
+        host="127.0.0.1:8080",
+    ) == ["http://127.0.0.1:8080/a", "http://127.0.0.1:8080/b"]
+
+
 def test_normalise_url() -> None:
     assert normalise_url("HTTPS://Alpha.Example.com") == "https://alpha.example.com/"
     assert normalise_url("https://alpha.example.com/x?a#b") == "https://alpha.example.com/x"

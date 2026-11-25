@@ -1,9 +1,9 @@
 """Same-host link extraction from fetched HTML (CR-06); stdlib ``html.parser`` only.
 
 Only ``<a href>`` is read. Each href is resolved against the page's final URL; only ``http``/
-``https`` links on exactly ``host`` are kept, with fragment and query dropped, obvious non-HTML
-extensions skipped and duplicates removed in document order. At most :data:`MAX_HREFS_PER_PAGE`
-hrefs are examined per page.
+``https`` links on exactly ``host`` are kept (a ``host:port`` host matches by host and port), with
+fragment and query dropped, obvious non-HTML extensions skipped and duplicates removed in document
+order. At most :data:`MAX_HREFS_PER_PAGE` hrefs are examined per page.
 """
 
 from __future__ import annotations
@@ -64,6 +64,15 @@ def crawl_key(url: str) -> str | None:
     return urlunsplit(("https", parts.netloc, path, "", ""))
 
 
+def _host_parts(host: str) -> tuple[str, int | None]:
+    """Lower-cased hostname and optional port of ``host``; an unparsable host never matches."""
+    try:
+        parts = urlsplit("//" + host.lower())
+        return parts.hostname or "", parts.port
+    except ValueError:
+        return host.lower(), None
+
+
 def extract_links(
     html: str, *, base_url: str, host: str, cap: int = MAX_HREFS_PER_PAGE
 ) -> list[str]:
@@ -74,7 +83,7 @@ def extract_links(
         collector.close()
     except Exception:  # noqa: BLE001 - malformed markup: keep what was collected
         pass
-    want = host.lower()
+    want_host, want_port = _host_parts(host)
     seen: set[str] = set()
     links: list[str] = []
     for href in collector.hrefs:
@@ -83,7 +92,10 @@ def extract_links(
         except ValueError:
             continue
         url = normalise_url(absolute)
-        if url is None or urlsplit(url).hostname != want:
+        if url is None:
+            continue
+        parts = urlsplit(url)
+        if parts.hostname != want_host or (want_port is not None and parts.port != want_port):
             continue
         last = urlsplit(url).path.rsplit("/", 1)[-1].lower()
         if "." in last and last[last.rindex(".") :] in _SKIP_EXTENSIONS:
