@@ -131,3 +131,42 @@ class ValidateTest(unittest.TestCase):
         result = self.invoke("validate", "--scope", str(Path(self.tmp.name) / "nope"))
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("not found", result.stderr)
+
+
+class SchemaTest(unittest.TestCase):
+    """``landscape schema`` (SP-03)."""
+
+    def setUp(self) -> None:
+        self.runner = CliRunner()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def invoke(self, *args: str):
+        return self.runner.invoke(app, list(args))
+
+    def test_out_writes_one_file_per_pack_file(self) -> None:
+        import json
+
+        from core.scope_pack import scope_pack_json_schemas
+
+        out = Path(self.tmp.name) / "schemas"
+        result = self.invoke("schema", "--out", str(out))
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected = {f"{Path(n).stem}.schema.json" for n in scope_pack_json_schemas()}
+        self.assertEqual({p.name for p in out.iterdir()}, expected)
+        self.assertEqual({Path(line).name for line in result.stdout.splitlines()}, expected)
+        body = json.loads((out / "scope.schema.json").read_text())
+        self.assertEqual(body["type"], "object")
+
+    def test_file_prints_schema_to_stdout(self) -> None:
+        import json
+
+        result = self.invoke("schema", "--file", "rubric.yaml")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("topics", json.loads(result.stdout)["properties"])
+
+    def test_unknown_file_exits_2(self) -> None:
+        result = self.invoke("schema", "--file", "nope.yaml")
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("unknown scope-pack file", result.stderr)
+        self.assertEqual(result.stdout, "")

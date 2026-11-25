@@ -128,9 +128,7 @@ class DotenvTests(SettingsTestCase):
 
         settings = load_settings(self.absent_env_file())
 
-        self.assertEqual(
-            settings.database_url, "postgresql+psycopg://u:p@db:5432/other"
-        )
+        self.assertEqual(settings.database_url, "postgresql+psycopg://u:p@db:5432/other")
 
     def test_blank_database_url_falls_back_to_the_default(self) -> None:
         env_file = self.env_file("DM_DATABASE_URL=")

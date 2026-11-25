@@ -76,3 +76,53 @@ class MalformedPackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JsonSchemaExportTest(unittest.TestCase):
+    """``scope_pack_json_schemas`` (SP-03)."""
+
+    FILES = {
+        "scope.yaml",
+        "rubric.yaml",
+        "vocabulary.yaml",
+        "sources.yaml",
+        "attributes.yaml",
+        "profiles.yaml",
+        "views.yaml",
+    }
+
+    def setUp(self) -> None:
+        from core.scope_pack import scope_pack_json_schemas
+
+        self.schemas = scope_pack_json_schemas()
+
+    def test_one_schema_per_pack_file(self) -> None:
+        self.assertEqual(set(self.schemas), self.FILES)
+        for name, schema in self.schemas.items():
+            with self.subTest(name):
+                self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+                self.assertEqual(schema["type"], "object")
+                self.assertIsInstance(schema["properties"], dict)
+
+    def test_schemas_forbid_extra_keys_everywhere(self) -> None:
+        for name, schema in self.schemas.items():
+            objects = [schema, *schema.get("$defs", {}).values()]
+            for obj in objects:
+                if obj.get("type") == "object" and "properties" in obj:
+                    with self.subTest(name, title=obj.get("title")):
+                        self.assertIs(obj["additionalProperties"], False)
+
+    def test_example_files_match_exported_schema(self) -> None:
+        import yaml
+
+        from core.scope_pack import _FILE_MODELS
+
+        for path in sorted(EXAMPLE.glob("*.yaml")):
+            with self.subTest(path.name):
+                schema = self.schemas[path.name]
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                self.assertLessEqual(set(data), set(schema["properties"]))
+                self.assertLessEqual(set(schema.get("required", [])), set(data))
+                model = _FILE_MODELS[path.name]
+                required = {n for n, f in model.model_fields.items() if f.is_required()}
+                self.assertEqual(set(schema.get("required", [])), required)

@@ -42,7 +42,11 @@ class FakeWorld:
         if cmd[:4] == ["git", "worktree", "list", "--porcelain"]:
             out = []
             for path, branch in self.trees.items():
-                out += [f"worktree {path}", f"branch refs/heads/{branch}" if branch else "detached", ""]
+                out += [
+                    f"worktree {path}",
+                    f"branch refs/heads/{branch}" if branch else "detached",
+                    "",
+                ]
             return 0, "\n".join(out)
         if cmd[:2] == ["git", "-C"] and cmd[3:5] == ["status", "--porcelain"]:
             return 0, "?? x" if cmd[2] in self.dirty else ""
@@ -119,7 +123,9 @@ class LaneTestCase(unittest.TestCase):
         args = {"cwd": self.lane_dir, "cmd": self.script(), "agent": None, "branch": "lane/a1"}
         args.update(kw)
         seams = args.pop("seams", None) or self.world.seams()
-        return lanes.start(lane, root=self.root, prefix=self.prefix, seams=seams, env=self.env, **args)
+        return lanes.start(
+            lane, root=self.root, prefix=self.prefix, seams=seams, env=self.env, **args
+        )
 
     def cleanup(self, go=True, handoff=""):
         return lanes.cleanup(
@@ -314,7 +320,9 @@ class CleanupTests(LaneTestCase):
         self.assertIn(f"hold {path} (lane/a1): busy-unknown", report)
 
 
-@unittest.skipUnless(shutil.which("setsid") and Path("/proc/self").exists(), "needs setsid and /proc")
+@unittest.skipUnless(
+    shutil.which("setsid") and Path("/proc/self").exists(), "needs setsid and /proc"
+)
 class WrapperTests(unittest.TestCase):
     """The real wrapper, detached with setsid, outside Herdr."""
 
