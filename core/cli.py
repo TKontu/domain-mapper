@@ -17,7 +17,9 @@ later row.
 
 ``resolve`` (RV-01) is read-only: it groups unresolved ``candidate`` rows by normalised domain via
 :func:`~core.resolve.group_candidates` and prints ``<domain>\t<count>\t<name>`` lines, then
-``domains N candidates M`` and, when nonzero, ``skipped K``.
+``domains N candidates M`` and, when nonzero, ``skipped K``. With ``--apply`` (RV-02) it instead
+links them to ``entity`` rows of the scope pack's id via :func:`~core.resolve.apply_resolution`
+and prints ``created C linked L skipped K``.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.ingest import ingest_page
-from core.resolve import group_candidates
+from core.resolve import apply_resolution, group_candidates
 from core.runs import create_all
 from core.scope_pack import ScopePackError, load_scope_pack, scope_pack_json_schemas
 
@@ -207,9 +209,30 @@ def run_crawl(
         raise typer.Exit(1)
 
 
-def run_resolve(scope: Path) -> None:
-    """Print unresolved candidates grouped by normalised domain; exit 2 on a database error."""
+def run_resolve(scope: Path, apply: bool = False) -> None:
+    """Print unresolved candidates grouped by normalised domain; exit 2 on a database error.
+
+    With ``apply`` link them to entities of the scope pack id and print the write summary.
+    """
     settings = _load(scope)
+    if apply:
+        try:
+            scope_id = load_scope_pack(scope).scope.id
+        except ScopePackError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from None
+        try:
+            engine = create_engine(settings.database_url)
+            try:
+                create_all(engine)
+                applied = apply_resolution(engine, scope_id)
+            finally:
+                engine.dispose()
+        except Exception as exc:  # noqa: BLE001 - never echo the database URL
+            typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+            raise typer.Exit(2) from None
+        typer.echo(f"created {applied.created} linked {applied.linked} skipped {applied.skipped}")
+        return
     try:
         engine = create_engine(settings.database_url)
         try:
@@ -259,9 +282,14 @@ for _stage in STAGES:
 
 
 @app.command(name="resolve", help="Group unresolved candidates by normalised domain.")
-def resolve(scope: ScopeOpt) -> None:
-    """Read-only: group unresolved ``candidate`` rows by normalised domain."""
-    run_resolve(scope)
+def resolve(
+    scope: ScopeOpt,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Create/link entity rows per normalised domain.")
+    ] = False,
+) -> None:
+    """Group unresolved ``candidate`` rows by normalised domain; ``--apply`` links entities."""
+    run_resolve(scope, apply)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
