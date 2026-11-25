@@ -66,6 +66,13 @@ def list_rows(engine: sa.Engine) -> list[Candidate]:
         ("http://exa mple.com/", None),
         ("http://exa%6dple.com/", None),
         ("http://a..b/", None),
+        # RV-03: invalid ports and a bare ``www`` host are unnormalisable.
+        ("http://example.com:99999/", None),
+        ("http://example.com:abc/", None),
+        ("https://www./", None),
+        ("http://WWW/", None),
+        ("https://www.example.com:8443/a", "example.com"),
+        ("http://example.com:0/", "example.com"),
     ],
 )
 def test_normalize_domain(url: str, expected: str | None) -> None:
@@ -114,12 +121,13 @@ def test_unnormalisable_urls_counted_as_skipped(engine: sa.Engine) -> None:
             ("not a url", "not a url", None),
             ("ftp", "ftp://files.example.com/x", None),
             ("blank url", "", None),
+            ("bad port", "http://b.example.com:99999/", None),
             ("skipped but resolved", "not a url either", 3),
         ],
     )
     summary = group_candidates(engine)
     assert summary.groups == (DomainGroup(domain="a.example.com", name="ok", count=1),)
-    assert (summary.candidates, summary.skipped) == (1, 3)
+    assert (summary.candidates, summary.skipped) == (1, 4)
 
 
 def test_empty_table(engine: sa.Engine) -> None:

@@ -79,17 +79,20 @@ def normalize_domain(url: str) -> str | None:
     """Return the normalised domain of an ``http(s)`` URL, or ``None``.
 
     ``HTTPS://WWW.Example.COM:8443/a?b`` → ``example.com``; ``http://[::1]/`` → ``::1``.
+    An invalid port (non-numeric or outside 0-65535) or a host that is exactly ``www`` gives
+    ``None``.
     """
     try:
         parts = urlsplit(url.strip())
         scheme = parts.scheme.lower()
         host = parts.hostname
-    except ValueError:  # e.g. an unterminated IPv6 bracket
+        parts.port  # noqa: B018 - raises ValueError for a non-numeric or out-of-range port
+    except ValueError:  # e.g. an unterminated IPv6 bracket or an invalid port
         return None
     if scheme not in _HTTP_SCHEMES or not host:
         return None
     host = host.lower().rstrip(".")
-    if not host:
+    if not host or host == "www":
         return None
     if not _is_ip_literal(host):
         try:
