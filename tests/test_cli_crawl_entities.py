@@ -513,6 +513,52 @@ class EntityCrawlCliTest(unittest.TestCase):
         self.assertIn(f"skipped {missing} status=404", result.output)
         self.assertNotIn(hidden, self.state.scrapes)
 
+    # --- CR-13: --entity-scheme selects http for loopback fakes; https stays the default ---
+
+    def test_entity_scheme_http_builds_http_homepage_and_priority_paths(self) -> None:
+        (eid,) = self.seed([(SCOPE_ID, "a.example.com")])
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 2\n  priority_paths: [/about]\n")
+        result = self.crawl("--entity-scheme", "http", scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected = ["http://a.example.com/", "http://a.example.com/about"]
+        self.assertEqual(self.state.scrapes, expected)
+        self.assertEqual(self.snapshots(), [(eid, expected[0]), (eid, expected[1])])
+
+    def test_entity_scheme_https_matches_the_default(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com")])
+        default = self.crawl()
+        explicit = self.crawl("--entity-scheme", "https")
+        self.assertEqual(default.exit_code, 0, default.output)
+        self.assertEqual(explicit.exit_code, 0, explicit.output)
+        self.assertEqual(self.state.scrapes, ["https://a.example.com/", "https://a.example.com/"])
+
+    def test_entity_scheme_unknown_value_exits_2_and_fetches_nothing(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com")])
+        result = self.crawl("--entity-scheme", "ftp")
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertEqual(self.state.scrapes, [])
+
+    def test_entity_scheme_with_url_exits_2_naming_the_option(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com")])
+        for scheme in ("http", "https"):
+            with self.subTest(scheme=scheme):
+                result = self.crawl("--url", "https://c.example.com/", "--entity-scheme", scheme)
+                self.assertEqual(result.exit_code, 2, result.output)
+                self.assertIn("--entity-scheme", result.output)
+                self.assertEqual(self.state.scrapes, [])
+
+    def test_http_entity_scheme_discovers_links_on_a_loopback_primary_domain(self) -> None:
+        host = f"127.0.0.1:{self.server.server_address[1]}"
+        (eid,) = self.seed([(SCOPE_ID, host)])
+        home = f"http://{host}/"
+        self.page(home, '<a href="/a">a</a><a href="/a/">a slash</a><a href="/b">b</a>')
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 4\n  discover_links: true\n")
+        result = self.crawl("--entity-scheme", "http", scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected = [home, f"http://{host}/a", f"http://{host}/b"]
+        self.assertEqual(self.state.scrapes, expected)
+        self.assertEqual(self.snapshots(), [(eid, url) for url in expected])
+
 
 if __name__ == "__main__":
     unittest.main()
