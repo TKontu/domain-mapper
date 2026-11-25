@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import unittest
@@ -19,6 +20,7 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 import sqlalchemy as sa
+import yaml
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
@@ -32,6 +34,7 @@ EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_exampl
 SCOPE_ID = "example"
 HTML = "<html><head><title>T</title></head><body><h1>Guide</h1><p>Widgets here.</p></body></html>"
 ROBOTS_DISALLOW_ALL = b"User-agent: *\nDisallow: /\n"
+ROBOTS_DISALLOW_BLOCKED = b"User-agent: *\nDisallow: /blocked\n"
 
 
 class _State:
@@ -67,11 +70,11 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
 
 
 def fake_robots(url: str, *, user_agent: str = "", timeout_s: float = 0.0) -> tuple[int, bytes]:
-    """404 (allow all) for most hosts; hosts named ``blocked.*`` disallow everything."""
+    """Hosts named ``blocked.*`` disallow everything; other hosts disallow only ``/blocked``."""
     host = urlsplit(url).hostname or ""
     if host.startswith("blocked."):
         return 200, ROBOTS_DISALLOW_ALL
-    return 404, b""
+    return 200, ROBOTS_DISALLOW_BLOCKED
 
 
 class EntityCrawlCliTest(unittest.TestCase):
@@ -108,6 +111,15 @@ class EntityCrawlCliTest(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(self.tmp)  # no stray .env
         self.addCleanup(os.chdir, cwd)
+        # CR-04 behaviour: a pack without a `crawl` section crawls the homepage only.
+        self.plain_scope = self.tmp / "plain-scope"
+        self.plain_scope.mkdir()
+        for name in ("scope.yaml", "rubric.yaml"):
+            shutil.copy(Path(EXAMPLE_SCOPE) / name, self.plain_scope / name)
+        scope_file = self.plain_scope / "scope.yaml"
+        data = yaml.safe_load(scope_file.read_text(encoding="utf-8"))
+        data.pop("crawl", None)
+        scope_file.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
     def seed(self, rows: list[tuple[str, str]]) -> list[int]:
         """Insert ``(scope_id, primary_domain)`` entities in order; return their ids."""
@@ -130,8 +142,17 @@ class EntityCrawlCliTest(unittest.TestCase):
             engine.dispose()
         return ids
 
-    def crawl(self, *extra: str, scope: str = EXAMPLE_SCOPE):
-        return self.runner.invoke(app, ["crawl", "--scope", scope, *extra])
+    def crawl(self, *extra: str, scope: str | None = None):
+        return self.runner.invoke(app, ["crawl", "--scope", scope or str(self.plain_scope), *extra])
+
+    def scope_with_crawl(self, body: str) -> str:
+        """Copy the no-crawl pack into a fresh directory and append a ``crawl`` section."""
+        root = Path(tempfile.mkdtemp(dir=self.tmp))
+        for name in ("scope.yaml", "rubric.yaml"):
+            shutil.copy(self.plain_scope / name, root / name)
+        path = root / "scope.yaml"
+        path.write_text(path.read_text(encoding="utf-8") + "\n" + body, encoding="utf-8")
+        return str(root)
 
     def snapshots(self) -> list[tuple[int | None, str]]:
         engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
@@ -171,6 +192,76 @@ class EntityCrawlCliTest(unittest.TestCase):
         self.assertEqual(self.state.scrapes, [a_url])
         self.assertEqual(self.snapshots(), [(a_id, a_url)])
         self.assertNotEqual(a_id, b_id)
+
+    def test_no_crawl_section_fetches_homepage_only(self) -> None:
+        a_id = self.seed([(SCOPE_ID, "a.example.com")])[0]
+        url = "https://a.example.com/"
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, [url])
+        self.assertEqual(self.snapshots(), [(a_id, url)])
+
+    def test_example_policy_fetches_homepage_then_priority_paths(self) -> None:
+        a_id, b_id = self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        result = self.crawl(scope=EXAMPLE_SCOPE)
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected = [
+            "https://a.example.com/",
+            "https://a.example.com/about",
+            "https://a.example.com/services",
+            "https://b.example.com/",
+            "https://b.example.com/about",
+            "https://b.example.com/services",
+        ]
+        self.assertEqual(self.state.scrapes, expected)
+        self.assertEqual(
+            self.snapshots(),
+            [
+                (a_id, expected[0]),
+                (a_id, expected[1]),
+                (a_id, expected[2]),
+                (b_id, expected[3]),
+                (b_id, expected[4]),
+                (b_id, expected[5]),
+            ],
+        )
+        self.assertEqual(len(result.stdout.splitlines()), len(expected), result.stdout)
+
+    def test_policy_is_truncated_at_max_pages(self) -> None:
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 2\n  priority_paths: [/a, /b]\n")
+        a_id = self.seed([(SCOPE_ID, "a.example.com")])[0]
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        expected = ["https://a.example.com/", "https://a.example.com/a"]
+        self.assertEqual(self.state.scrapes, expected)
+        self.assertEqual(self.snapshots(), [(a_id, expected[0]), (a_id, expected[1])])
+
+    def test_limit_counts_entities_not_pages(self) -> None:
+        a_id, b_id = self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        result = self.crawl("--limit", "1", scope=EXAMPLE_SCOPE)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.state.scrapes,
+            [
+                "https://a.example.com/",
+                "https://a.example.com/about",
+                "https://a.example.com/services",
+            ],
+        )
+        self.assertTrue(all(entity_id == a_id for entity_id, _ in self.snapshots()))
+        self.assertNotEqual(a_id, b_id)
+
+    def test_robots_disallow_on_one_priority_path_continues(self) -> None:
+        scope = self.scope_with_crawl(
+            "crawl:\n  max_pages: 3\n  priority_paths: [/blocked, /after]\n"
+        )
+        a_id = self.seed([(SCOPE_ID, "a.example.com")])[0]
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("skipped https://a.example.com/blocked robots", result.output)
+        expected = ["https://a.example.com/", "https://a.example.com/after"]
+        self.assertEqual(self.state.scrapes, expected)
+        self.assertEqual(self.snapshots(), [(a_id, expected[0]), (a_id, expected[1])])
 
     def test_robots_disallow_prints_skipped_and_fetches_nothing(self) -> None:
         self.seed([(SCOPE_ID, "blocked.example.invalid")])
