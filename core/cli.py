@@ -12,7 +12,8 @@ limit, :class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, 
 later row.
 
 ``web-search`` (DS-01) runs one query against SearXNG (``SEARXNG_URL``) and prints
-``<rank>\t<url>\t<title>`` per result; no persistence.
+``<rank>\t<url>\t<title>`` per result. With ``--save`` (DS-02) each result is also written as one
+``candidate`` row (channel ``search``) via :func:`~core.candidate_store.record_candidates`.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import dataclasses
 import json
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -38,6 +40,7 @@ from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
+from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.ingest import ingest_page
 from core.runs import create_all
@@ -290,9 +293,12 @@ def web_search(
     limit: Annotated[int, typer.Option("--limit", min=1, max=100, help="Max results.")] = 10,
     language: Annotated[str | None, typer.Option("--language", help="Language code.")] = None,
     site: Annotated[str | None, typer.Option("--site", help="Restrict to host.")] = None,
+    save: Annotated[
+        bool, typer.Option("--save", help="Persist results as candidate rows.")
+    ] = False,
 ) -> None:
     """Print one ``rank\turl\ttitle`` line per result; exit 1 on SearchError, 2 on bad setup."""
-    _load(scope)
+    settings = _load(scope)
     if not query.strip():
         typer.echo("error: --query must be non-blank", err=True)
         raise typer.Exit(2)
@@ -308,6 +314,24 @@ def web_search(
         raise typer.Exit(1) from None
     for r in results:
         typer.echo(f"{r.rank}\t{r.url}\t{r.title}")
+    if not save:
+        return
+    found_at = datetime.now(UTC)
+    rows = [
+        NewCandidate(name=r.title, url=r.url, channel="search", query=query, found_at=found_at)
+        for r in sorted(results, key=lambda r: r.rank)
+    ]
+    try:
+        engine = create_engine(settings.database_url)
+        try:
+            create_all(engine)
+            saved = record_candidates(engine, rows)
+        finally:
+            engine.dispose()
+    except Exception as exc:  # noqa: BLE001 - never echo the database URL
+        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"saved {saved} candidates")
 
 
 def main() -> None:

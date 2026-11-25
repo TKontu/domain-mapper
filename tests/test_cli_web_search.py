@@ -41,7 +41,7 @@ def _body(n: int) -> bytes:
     ).encode()
 
 
-class WebSearchCliTest(unittest.TestCase):
+class _CliFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.runner = CliRunner()
         tmp = tempfile.TemporaryDirectory()
@@ -67,6 +67,8 @@ class WebSearchCliTest(unittest.TestCase):
     def invoke(self, *args: str):
         return self.runner.invoke(app, ["web-search", "--scope", EXAMPLE_SCOPE, *args])
 
+
+class WebSearchCliTest(_CliFixture):
     def test_prints_rank_url_title(self) -> None:
         os.environ["SEARXNG_URL"] = BASE
         with self.fake_urlopen(3):
@@ -142,3 +144,79 @@ class FromEnvTest(unittest.TestCase):
                 SearxngSearch.from_env()
         self.assertNotIn("hidden", str(ctx.exception))
         self.assertIn("SEARXNG_URL", str(ctx.exception))
+
+
+class WebSearchSaveTest(_CliFixture):
+    """``--save`` persists results as ``candidate`` rows (DS-02); SQLite under a temp dir."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        os.environ["SEARXNG_URL"] = BASE
+        self.db_url = f"sqlite:///{os.getcwd()}/dm.sqlite"
+        os.environ["DM_DATABASE_URL"] = self.db_url
+
+    def rows(self):  # noqa: ANN201
+        import sqlalchemy as sa
+        from sqlalchemy.orm import Session
+
+        from core.candidate_store import Candidate
+
+        engine = sa.create_engine(self.db_url)
+        try:
+            if not sa.inspect(engine).has_table("candidate"):
+                return []
+            with Session(engine) as s:
+                return list(s.scalars(sa.select(Candidate).order_by(Candidate.id)))
+        finally:
+            engine.dispose()
+
+    def test_save_writes_one_row_per_result(self) -> None:
+        from datetime import UTC
+
+        with self.fake_urlopen(3):
+            result = self.invoke("--query", "web crawler", "--save")
+        self.assertEqual(result.exit_code, 0, result.output)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[:3], [f"{i}\thttps://example.org/{i}\tTitle {i}" for i in (1, 2, 3)])
+        self.assertEqual(lines[3:], ["saved 3 candidates"])
+        rows = self.rows()
+        self.assertEqual([r.url for r in rows], [f"https://example.org/{i}" for i in (1, 2, 3)])
+        self.assertEqual([r.name for r in rows], ["Title 1", "Title 2", "Title 3"])
+        for r in rows:
+            self.assertEqual((r.channel, r.query), ("search", "web crawler"))
+            self.assertEqual(r.found_at.tzinfo, UTC)
+            self.assertIsNone(r.country_hint)
+            self.assertIsNone(r.source_id)
+
+    def test_save_zero_results(self) -> None:
+        with self.fake_urlopen(0):
+            result = self.invoke("--query", "nothing", "--save")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.stdout.splitlines(), ["saved 0 candidates"])
+
+    def test_save_db_failure_exits_2_without_url(self) -> None:
+        os.environ["DM_DATABASE_URL"] = "postgresql+psycopg://user:hunter2@db.invalid:1/x"
+        with (
+            self.fake_urlopen(2),
+            mock.patch("core.cli.create_engine", side_effect=RuntimeError("db.invalid hunter2")),
+        ):
+            result = self.invoke("--query", "crawler", "--save")
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("error: database unavailable (RuntimeError)", result.stderr)
+        self.assertNotIn("db.invalid", result.output)
+        self.assertNotIn("hunter2", result.output)
+
+    def test_search_error_with_save_writes_nothing(self) -> None:
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("boom")):
+            result = self.invoke("--query", "crawler", "--save")
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertEqual(self.rows(), [])
+
+    def test_without_save_no_engine_created(self) -> None:
+        with (
+            self.fake_urlopen(2),
+            mock.patch("core.cli.create_engine", side_effect=AssertionError("no engine")),
+        ):
+            result = self.invoke("--query", "crawler")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("saved", result.stdout)
