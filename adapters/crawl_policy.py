@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -241,16 +242,25 @@ def _robots_text(body: object) -> str:
 
 
 class RobotsPolicy:
-    """``robots.txt`` decisions for one user agent, cached per origin."""
+    """``robots.txt`` decisions for one user agent, cached per origin.
 
-    def __init__(self, fetch_robots: RobotsFetch, user_agent: str) -> None:
+    At most ``max_origins`` origins are cached; the least recently used one is
+    evicted and its robots.txt is fetched again on its next use. Not thread-safe.
+    """
+
+    def __init__(
+        self, fetch_robots: RobotsFetch, user_agent: str, *, max_origins: int = 1024
+    ) -> None:
         if not isinstance(user_agent, str) or not user_agent.strip():
             raise CrawlPolicyError("user_agent must be a non-empty string")
         if not callable(fetch_robots):
             raise CrawlPolicyError("fetch_robots must be callable")
+        if isinstance(max_origins, bool) or not isinstance(max_origins, int) or max_origins < 1:
+            raise CrawlPolicyError(f"max_origins must be an int >= 1: {max_origins!r}")
+        self._max_origins = max_origins
         self._fetch_robots = fetch_robots
         self._user_agent = user_agent
-        self._cache: dict[tuple[str, str, int | None], _HostRules] = {}
+        self._cache: OrderedDict[tuple[str, str, int | None], _HostRules] = OrderedDict()
 
     @property
     def user_agent(self) -> str:
@@ -271,6 +281,10 @@ class RobotsPolicy:
         if rules is None:
             rules = self._load(robots_url)
             self._cache[key] = rules
+            if len(self._cache) > self._max_origins:
+                self._cache.popitem(last=False)
+        else:
+            self._cache.move_to_end(key)
         return rules
 
     def _load(self, robots_url: str) -> _HostRules:

@@ -439,3 +439,56 @@ def test_crawl_delay_can_feed_the_host_override() -> None:
     limiter.wait("https://example.com/a")
     limiter.wait("https://example.com/b")
     assert clock.sleeps == [pytest.approx(3.0)]
+
+
+A_URL = "https://a.example.com/robots.txt"
+B_URL = "https://b.example.com/robots.txt"
+C_URL = "https://c.example.com/robots.txt"
+
+
+def test_least_recently_used_origin_is_evicted_and_refetched() -> None:
+    fetch = FakeRobots()
+    policy = RobotsPolicy(fetch, USER_AGENT, max_origins=2)
+    for host in ("a", "b", "c"):
+        policy.allowed(f"https://{host}.example.com/page")
+    policy.allowed("https://a.example.com/page")
+    assert fetch.calls == [A_URL, B_URL, C_URL, A_URL]
+
+
+def test_touching_an_origin_keeps_it_cached() -> None:
+    fetch = FakeRobots()
+    policy = RobotsPolicy(fetch, USER_AGENT, max_origins=2)
+    policy.allowed("https://a.example.com/page")
+    policy.allowed("https://b.example.com/page")
+    policy.allowed("https://a.example.com/other")
+    policy.allowed("https://c.example.com/page")
+    policy.allowed("https://a.example.com/page")
+    assert fetch.calls == [A_URL, B_URL, C_URL]
+    policy.allowed("https://b.example.com/page")
+    assert fetch.calls == [A_URL, B_URL, C_URL, B_URL]
+
+
+def test_cached_origin_is_fetched_once_under_a_bound() -> None:
+    fetch = FakeRobots({A_URL: (200, ALLOW_PRIVATE_ROBOTS)})
+    policy = RobotsPolicy(fetch, USER_AGENT, max_origins=1)
+    assert policy.allowed("https://a.example.com/public")
+    assert not policy.allowed("https://a.example.com/private")
+    assert policy.crawl_delay("https://a.example.com/x") is None
+    assert fetch.calls == [A_URL]
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5])
+def test_invalid_max_origins_is_rejected(bad: object) -> None:
+    with pytest.raises(CrawlPolicyError):
+        RobotsPolicy(FakeRobots(), USER_AGENT, max_origins=bad)  # type: ignore[arg-type]
+
+
+def test_default_bound_is_1024() -> None:
+    fetch = FakeRobots()
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    for i in range(1025):
+        policy.allowed(f"https://h{i}.example.com/")
+    policy.allowed("https://h1.example.com/")
+    assert len(fetch.calls) == 1025
+    policy.allowed("https://h0.example.com/")
+    assert len(fetch.calls) == 1026
