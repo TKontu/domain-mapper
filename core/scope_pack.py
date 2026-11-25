@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 class ScopePackError(ValueError):
@@ -44,6 +44,33 @@ class Layer(_Model):
     rubric_depth: Literal["full", "core"]
 
 
+class CrawlPolicy(_Model):
+    """Per-entity crawl policy (ARCHITECTURE.md §4 stage 4; CR-05).
+
+    ``max_pages`` bounds all URLs crawled per entity; ``priority_paths`` are absolute paths on the
+    entity's primary domain, crawled after its homepage in listed order.
+    """
+
+    max_pages: int = Field(default=1, ge=1, le=50)
+    priority_paths: list[str] = Field(default_factory=list)
+
+    @field_validator("priority_paths")
+    @classmethod
+    def _valid_paths(cls, paths: list[str]) -> list[str]:
+        seen: set[str] = set()
+        for path in paths:
+            if not path.startswith("/"):
+                raise ValueError(f"priority path must start with '/': {path!r}")
+            if path.startswith("//"):
+                raise ValueError(f"priority path must not name a host: {path!r}")
+            if "?" in path or "#" in path:
+                raise ValueError(f"priority path must not have a query or fragment: {path!r}")
+            if path in seen:
+                raise ValueError(f"duplicate priority path: {path!r}")
+            seen.add(path)
+        return paths
+
+
 class Scope(_Model):
     id: str
     version: str
@@ -53,6 +80,7 @@ class Scope(_Model):
     segments: list[Segment] = Field(min_length=1)
     layers: list[Layer] = Field(min_length=1)
     languages: dict[str, list[str]] = Field(default_factory=dict)
+    crawl: CrawlPolicy = Field(default_factory=CrawlPolicy)
 
 
 # --- rubric.yaml --------------------------------------------------------------

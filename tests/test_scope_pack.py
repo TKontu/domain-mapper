@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from core.scope_pack import ScopePack, ScopePackError, load_scope_pack
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "scopes" / "_example"
@@ -112,6 +114,65 @@ class MalformedPackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CrawlPolicyTest(unittest.TestCase):
+    """``scope.yaml``'s optional ``crawl`` section (CR-05)."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        for name in ("scope.yaml", "rubric.yaml"):
+            shutil.copy(EXAMPLE / name, self.dir / name)
+        path = self.dir / "scope.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data.pop("crawl", None)  # start from a pack without the section
+        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    def with_crawl(self, body: str) -> None:
+        path = self.dir / "scope.yaml"
+        path.write_text(path.read_text(encoding="utf-8") + "\n" + body, encoding="utf-8")
+
+    def assert_policy_fails(self, body: str, fragment: str) -> None:
+        self.with_crawl(body)
+        with self.assertRaises(ScopePackError) as ctx:
+            load_scope_pack(self.dir)
+        self.assertEqual(ctx.exception.file, "scope.yaml")
+        self.assertIn(fragment, str(ctx.exception))
+
+    def test_default_policy_without_section(self) -> None:
+        policy = load_scope_pack(self.dir).scope.crawl
+        self.assertEqual(policy.max_pages, 1)
+        self.assertEqual(policy.priority_paths, [])
+
+    def test_valid_policy(self) -> None:
+        self.with_crawl("crawl:\n  max_pages: 3\n  priority_paths: [/a, /b]\n")
+        policy = load_scope_pack(self.dir).scope.crawl
+        self.assertEqual(policy.max_pages, 3)
+        self.assertEqual(policy.priority_paths, ["/a", "/b"])
+
+    def test_max_pages_zero_rejected(self) -> None:
+        self.assert_policy_fails("crawl: {max_pages: 0}", "crawl.max_pages")
+
+    def test_max_pages_above_fifty_rejected(self) -> None:
+        self.assert_policy_fails("crawl: {max_pages: 51}", "crawl.max_pages")
+
+    def test_path_without_leading_slash_rejected(self) -> None:
+        self.assert_policy_fails("crawl: {priority_paths: [about]}", "crawl.priority_paths")
+
+    def test_path_with_query_rejected(self) -> None:
+        self.assert_policy_fails('crawl: {priority_paths: ["/about?x=1"]}', "crawl.priority_paths")
+
+    def test_path_with_fragment_rejected(self) -> None:
+        self.assert_policy_fails('crawl: {priority_paths: ["/about#top"]}', "crawl.priority_paths")
+
+    def test_path_with_host_rejected(self) -> None:
+        self.assert_policy_fails(
+            'crawl: {priority_paths: ["//example.invalid/x"]}', "crawl.priority_paths"
+        )
+
+    def test_duplicate_path_rejected(self) -> None:
+        self.assert_policy_fails("crawl: {priority_paths: [/a, /a]}", "crawl.priority_paths")
 
 
 class JsonSchemaExportTest(unittest.TestCase):

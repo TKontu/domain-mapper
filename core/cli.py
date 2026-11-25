@@ -5,9 +5,12 @@ are unwired by design until their own todo.md rows; ``--dry-run`` prints the res
 ``validate`` (SP-02) and ``schema`` (SP-03) are not stages: they load/summarize a scope pack and
 export its JSON Schemas.
 
-``crawl`` (CL-01, CR-04) runs for explicit ``--url`` values, or with none for the homepage
-``https://<primary_domain>/`` of each entity of the scope pack's id in id order (at most
-``--limit`` entities), paged by :func:`core.entity_store.iter_entities` so one page is in memory.
+``crawl`` (CL-01, CR-04, CR-05) runs for explicit ``--url`` values, or with none for the
+homepage ``https://<primary_domain>/`` of each entity of the scope pack's id in id order (at most
+``--limit`` entities, which counts entities rather than URLs), then that entity's
+``crawl.priority_paths`` in listed order, stopping at ``crawl.max_pages`` URLs per entity
+(default: homepage only). Entities are paged by :func:`core.entity_store.iter_entities` so one page
+is in memory.
 Each URL goes through the robots.txt check (CR-02), per-host rate limit,
 :class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, then
 :func:`~core.ingest.ingest_page` with a :class:`~adapters.blob_store.FilesystemBlobStore` rooted at
@@ -31,9 +34,9 @@ import dataclasses
 import json
 import os
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
-from itertools import chain
+from itertools import chain, islice
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -57,7 +60,7 @@ from core.entity_store import EntityRef, iter_entities
 from core.ingest import ingest_page
 from core.resolve import apply_resolution, group_candidates
 from core.runs import create_all
-from core.scope_pack import ScopePackError, load_scope_pack, scope_pack_json_schemas
+from core.scope_pack import CrawlPolicy, ScopePackError, load_scope_pack, scope_pack_json_schemas
 
 STAGES: tuple[str, ...] = (
     "discover",
@@ -198,15 +201,16 @@ def _crawl_urls(settings: Settings, urls: list[str]) -> None:
 
 
 def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
-    """Crawl one homepage per entity of the scope pack id, at most ``limit``, in id order."""
+    """Crawl each entity of the scope pack id in id order, at most ``limit``, per its policy."""
     try:
-        scope_id = load_scope_pack(scope).scope.id
+        pack = load_scope_pack(scope)
     except ScopePackError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from None
+    policy = pack.scope.crawl
     engine = _open_engine(settings)
     try:
-        entities = iter_entities(engine, scope_id, limit=limit)
+        entities = iter_entities(engine, pack.scope.id, limit=limit)
         try:
             first = next(entities)
         except StopIteration:
@@ -214,7 +218,8 @@ def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
             return
         # Built only once there is work: no entities needs no fetcher endpoint.
         fetcher = _make_fetcher()
-        targets = chain((_homepage(first),), (_homepage(entity) for entity in entities))
+        ordered = chain((first,), entities)
+        targets = chain.from_iterable(_entity_targets(entity, policy) for entity in ordered)
         failed = _crawl_targets(engine, fetcher, targets)
     except SQLAlchemyError as exc:  # a page read failed: bad setup, URL never echoed
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
@@ -225,9 +230,19 @@ def _crawl_entities(scope: Path, settings: Settings, limit: int | None) -> None:
         raise typer.Exit(1)
 
 
-def _homepage(entity: EntityRef) -> tuple[str, int]:
-    """The one URL crawled per entity (multi-page policy is a later row)."""
-    return f"https://{entity.primary_domain}/", entity.id
+def _entity_targets(entity: EntityRef, policy: CrawlPolicy) -> Iterator[tuple[str, int]]:
+    """Yield the homepage, then priority paths, of ``entity``; at most ``policy.max_pages``."""
+    urls = chain(
+        (_homepage(entity),),
+        (f"https://{entity.primary_domain}{path}" for path in policy.priority_paths),
+    )
+    for url in islice(urls, policy.max_pages):
+        yield url, entity.id
+
+
+def _homepage(entity: EntityRef) -> str:
+    """The homepage URL crawled first for every entity."""
+    return f"https://{entity.primary_domain}/"
 
 
 def _crawl_targets(
@@ -336,7 +351,7 @@ def _register(stage: str) -> None:
 
         app.command(
             name=stage,
-            help="Run the crawl stage for each --url, or each scope entity's homepage.",
+            help="Run the crawl stage for each --url, or per entity by its scope's crawl policy.",
         )(crawl)
         return
 
