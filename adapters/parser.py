@@ -12,7 +12,9 @@ arrive with the first implementation of this interface.
 
 Records: ``pages`` is empty for HTML and holds 1-based, contiguous page numbers
 (``1..n``) for paginated sources such as PDFs; a document whose pages are not
-contiguous is rejected at construction.
+contiguous is rejected at construction. ``pages`` must be a ``tuple``; a list,
+generator or other sequence raises :class:`ParseError` (AD-09) so the frozen
+record never holds a mutable or one-shot sequence. Lists are not coerced.
 
 Bound: :meth:`Parser.parse` holds one document's Markdown and pages in memory.
 A real implementation must cap input size and page count before converting.
@@ -50,6 +52,8 @@ class ParsedDocument:
     parser: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.pages, tuple):
+            raise ParseError("pages must be a tuple of ParsedPage records")
         for page in self.pages:
             if not isinstance(page, ParsedPage):
                 raise ParseError("pages must contain ParsedPage records")

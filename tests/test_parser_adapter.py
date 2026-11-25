@@ -114,3 +114,21 @@ def test_records_frozen() -> None:
     page = pdf_document().pages[0]
     with pytest.raises(dataclasses.FrozenInstanceError):
         page.number = 2  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        pytest.param([ParsedPage(number=1, markdown="a")], id="list"),
+        pytest.param((p for p in [ParsedPage(number=1, markdown="a")]), id="generator"),
+    ],
+)
+def test_non_tuple_pages_rejected(pages: object) -> None:
+    with pytest.raises(ParseError, match="pages must be a tuple"):
+        ParsedDocument(markdown="a", pages=pages, title=None, parser="fake")  # type: ignore[arg-type]
+
+
+def test_tuple_pages_still_construct() -> None:
+    assert ParsedDocument(markdown="", pages=(), title=None, parser="fake").pages == ()
+    page = ParsedPage(number=1, markdown="a")
+    assert ParsedDocument(markdown="a", pages=(page,), title=None, parser="fake").pages == (page,)
