@@ -136,7 +136,9 @@ class TestIdempotency(StoreFixture):
     def test_restoring_a_snapshot_replaces_its_rows(self) -> None:
         store_chunks(self.engine, 1, [make_chunk(0), make_chunk(1), make_chunk(2)])
 
-        written = store_chunks(self.engine, 1, [make_chunk(0, text="new a"), make_chunk(1, text="new b")])
+        written = store_chunks(
+            self.engine, 1, [make_chunk(0, text="new a"), make_chunk(1, text="new b")]
+        )
 
         assert written == 2
         rows = rows_for(self.engine, 1)
@@ -235,19 +237,27 @@ class TestEndToEnd(StoreFixture):
         )
         parser = InMemoryParser({"text/html": document})
 
-        chunks = list(
-            parse_and_chunk(b"body", content_type="text/html", url=URL, parser=parser)
+        chunks = list(parse_and_chunk(b"body", content_type="text/html", url=URL, parser=parser))
+        written = store_chunks(
+            self.engine,
+            42,
+            parse_and_chunk(b"body", content_type="text/html", url=URL, parser=parser),
         )
-        written = store_chunks(self.engine, 42, parse_and_chunk(
-            b"body", content_type="text/html", url=URL, parser=parser
-        ))
 
         assert written == len(chunks)
         rows = rows_for(self.engine, 42)
-        assert [(row.seq, row.text, row.page, row.heading_path, row.char_start, row.char_end)
-                for row in rows] == [
-            (chunk.seq, chunk.text, chunk.page, list(chunk.heading_path),
-             chunk.char_start, chunk.char_end)
+        assert [
+            (row.seq, row.text, row.page, row.heading_path, row.char_start, row.char_end)
+            for row in rows
+        ] == [
+            (
+                chunk.seq,
+                chunk.text,
+                chunk.page,
+                list(chunk.heading_path),
+                chunk.char_start,
+                chunk.char_end,
+            )
             for chunk in chunks
         ]
 
