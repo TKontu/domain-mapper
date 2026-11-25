@@ -46,7 +46,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] `ruff format --check .` fails on main at a code block in ARCHITECTURE.md (operator-owned file); gates exclude it until the operator fixes or excludes it
 - [ ] `lanes.py cleanup` holds `--agent` lane tabs as "foreign" when the agent pane reports cwd `/work` instead of the lane worktree (round 4: sp-01, rt-01 tabs)
 - [x] **SP-05** → [docs/items/SP-05.md](docs/items/SP-05.md) `landscape validate` summary prints counts for optional pack files (vocabulary, sources, attributes, profiles, views) — done 2026-11-25: PR #22; seen: `uv run landscape validate --scope scopes/_example` on head ab7090b (vocabulary 2, sources 3, attributes 3, profiles 2, views 2)
-- [ ] Lane worktrees: helper that links private `scopes/<name>/` checkouts into a lane worktree
+- [ ] **LW-01** → [docs/items/LW-01.md](docs/items/LW-01.md) Lane worktrees: helper that links private `scopes/<name>/` checkouts into a lane worktree — partial 2026-11-25: PR open (round 9 A2); not yet seen on a real lane worktree
 
 ### Adapters (interfaces + first implementation)
 - [ ] `Fetcher` adapter around own web scraping tool (document its API, JS rendering, PDF download)
