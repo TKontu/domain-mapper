@@ -35,3 +35,23 @@ projects; the number is kept so `scripts/merge_guard.py` and the round prompt ci
   the scope repository. Lane worktrees link a private scope from the main checkout
   (`scopes/README.md`).
 - **Carried in:** `.gitignore`, `AGENTS.md`, `scopes/README.md`.
+
+## D-004 — Search backend: self-hosted SearXNG (2026-11-25, operator)
+
+- **Ruling:** discovery search uses the existing self-hosted SearXNG instance through its JSON API.
+  No paid search API for now.
+- **Consequences:** the endpoint lives only in the gitignored `.env` as `SEARXNG_URL`;
+  `.env.example` carries a placeholder. A SearXNG implementation of the AD-05 `Search` adapter is
+  a normal backlog item. Live searches run only when an item assigns them; the offline gate uses
+  fakes.
+- **Carried in:** `.env.example`, `todo.md` (Phase 0 search-backend row).
+
+## D-005 — Raw storage: content-addressed filesystem blob store (2026-11-25, operator)
+
+- **Ruling:** raw fetched bytes go into a content-addressed filesystem store behind a blob-store
+  interface. MinIO stays an optional later backend of the same interface.
+- **Consequences:** the store root comes from `.env` `RAW_STORE_DIR`, defaulting to the gitignored
+  `data/raw/`. Blobs are keyed by the body's sha256 (as recorded on the `snapshot` row, CR-01), so
+  identical bodies are stored once. Implementing the interface and filesystem backend is a normal
+  backlog item.
+- **Carried in:** `.env.example`, `todo.md` (Phase 0 raw-storage row).
