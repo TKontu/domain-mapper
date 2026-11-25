@@ -275,7 +275,14 @@ def _crawl_urls(settings: Settings, urls: list[str]) -> None:
     fetcher = _make_fetcher()
     engine = _open_engine(settings)
     try:
-        failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls))
+        run_id = _open_run(engine, "crawl")
+        try:
+            failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls))
+        except BaseException:
+            # An unexpected error or interrupt must not leave the run row open (CR-14).
+            _close_run(engine, run_id, FAILED)
+            raise
+        _close_run(engine, run_id, FAILED if failed else FINISHED)
     finally:
         engine.dispose()
     if failed:
@@ -298,14 +305,22 @@ def _crawl_entities(
         try:
             first = next(entities)
         except StopIteration:
-            typer.echo("entities 0")
+            typer.echo("entities 0")  # no work: no run row
             return
-        # Built only once there is work: no entities needs no fetcher endpoint.
+        # Built only once there is work: no entities needs no fetcher endpoint. Built before the
+        # run row opens, so a missing FIRECRAWL_URL exits 2 with no run row (CR-14).
         fetcher = _make_fetcher()
         crawler = _Crawler(engine, fetcher)
-        for entity in chain((first,), entities):
-            _crawl_entity(crawler, entity, policy, scheme)
+        run_id = _open_run(engine, "crawl")
+        try:
+            for entity in chain((first,), entities):
+                _crawl_entity(crawler, entity, policy, scheme)
+        except BaseException:
+            # An unexpected error, interrupt or page-read failure must not leave the run open.
+            _close_run(engine, run_id, FAILED)
+            raise
         failed = crawler.failed
+        _close_run(engine, run_id, FAILED if failed else FINISHED)
     except SQLAlchemyError as exc:  # a page read failed: bad setup, URL never echoed
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
