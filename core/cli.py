@@ -41,6 +41,13 @@ text. One ``screen_result`` row is written and the entity status moved to ``in_s
 ``unscreened`` and the run exits 1). Spend is capped per run by ``DM_LLM_BUDGET_USD`` (LB-01):
 ``LlmBudgetExceeded`` stops screening, leaving that and later entities ``unscreened``; the last
 line is ``screened S skipped K errors E``.
+
+``index`` (IX-02) embeds pending chunks: settings load, a ``run`` row (stage ``index``) opens via
+:func:`_open_run`, the embedder builds through the test seam :func:`_make_embedder`
+(``build_embedder(settings, model)``), and :func:`~core.embed_store.embed_pending_chunks` runs with
+the ``--model``/``--batch-size``/``--limit`` options. On success it prints ``embedded <n> batches
+<m>``; on ``EmbeddingError``/``EmbedStoreError`` it prints ``error <ErrorName>: <message>`` on
+stderr, closes the run ``failed`` and exits 1.
 """
 
 from __future__ import annotations
@@ -66,6 +73,7 @@ from sqlalchemy.orm import Session
 
 from adapters.blob_store import FilesystemBlobStore, raw_store_root
 from adapters.crawl_policy import HostRateLimiter, RobotsPolicy
+from adapters.embedding import Embedder, EmbeddingError, build_embedder
 from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFetchError
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
@@ -75,6 +83,7 @@ from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
+from core.embed_store import EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.links import crawl_key, extract_links
@@ -106,6 +115,15 @@ app = typer.Typer(help="Domain Mapper pipeline stages.", no_args_is_help=True)
 ScopeOpt = Annotated[Path, typer.Option("--scope", help="Scope pack directory.")]
 LayerOpt = Annotated[str | None, typer.Option("--layer", help="Market layer to run.")]
 LimitOpt = Annotated[int | None, typer.Option("--limit", min=1, help="Max entities to process.")]
+IndexModelOpt = Annotated[
+    str, typer.Option("--model", help="Embedding model name passed to the embedding service.")
+]
+IndexBatchSizeOpt = Annotated[
+    int, typer.Option("--batch-size", min=1, help="Chunks per embed call (default 64).")
+]
+IndexLimitOpt = Annotated[
+    int | None, typer.Option("--limit", min=0, help="Max chunks to embed; 0 embeds none.")
+]
 DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Print the plan and exit.")]
 
 
@@ -571,6 +589,48 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
         raise typer.Exit(1)
 
 
+def _make_embedder(settings: Settings, model: str) -> Embedder:
+    """Build the embedder for the Index stage; the test seam for a fake adapter."""
+    return build_embedder(settings, model)
+
+
+def run_index(model: str, batch_size: int, limit: int | None) -> None:
+    """Embed pending chunks via the configured embedding service inside a ``run`` row (IX-02).
+
+    Prints ``embedded <n> batches <m>`` on success; ``EmbeddingError``/``EmbedStoreError`` print
+    ``error <ErrorName>: <message>`` on stderr with the run ``failed`` and exit 1.
+    """
+    if not model.strip():
+        typer.echo("error: --model must be non-empty", err=True)
+        raise typer.Exit(2)
+    if batch_size < 1:
+        typer.echo("error: --batch-size must be at least 1", err=True)
+        raise typer.Exit(2)
+    if limit is not None and limit < 0:
+        typer.echo("error: --limit must be non-negative", err=True)
+        raise typer.Exit(2)
+    settings = load_settings()
+    engine = _open_engine(settings)
+    try:
+        run_id = _open_run(engine, "index")
+        try:
+            stats = embed_pending_chunks(
+                engine,
+                _make_embedder(settings, model),
+                model=model,
+                batch_size=batch_size,
+                limit=limit,
+            )
+        except (EmbeddingError, EmbedStoreError) as exc:
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            _close_run(engine, run_id, FAILED)
+            raise typer.Exit(1) from None
+        _close_run(engine, run_id, FINISHED)
+        typer.echo(f"embedded {stats.embedded} batches {stats.batches}")
+    finally:
+        engine.dispose()
+
+
 def _register(stage: str) -> None:
     if stage == "crawl":
 
@@ -602,7 +662,8 @@ def _register(stage: str) -> None:
 
 
 for _stage in STAGES:
-    if _stage not in ("resolve", "screen"):  # both have their own bodies below
+    # resolve, screen and index have their own bodies below
+    if _stage not in ("resolve", "screen", "index"):
         _register(_stage)
 
 
@@ -626,6 +687,16 @@ def screen(
 ) -> None:
     """Classify each ``unscreened`` entity of the scope from its stored chunk text."""
     run_screen(scope, layer, limit, dry_run)
+
+
+@app.command(name="index", help="Embed pending chunks with the configured embedding service.")
+def index(
+    model: IndexModelOpt,
+    batch_size: IndexBatchSizeOpt = 64,
+    limit: IndexLimitOpt = None,
+) -> None:
+    """Embed pending chunks via ``embed_pending_chunks``; prints ``embedded <n> batches <m>``."""
+    run_index(model, batch_size, limit)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
