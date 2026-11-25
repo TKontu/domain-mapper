@@ -21,11 +21,13 @@ protocol conformance: both values send the same request and map to no option
 Firecrawl envelope, so ``FetchResult.headers`` is empty.
 
 Errors: a non-http(s) request URL, a transport exception, a non-2xx transport
-status, a response over the response cap, non-JSON or non-object JSON, a
-missing/invalid ``data`` object, ``success`` that is not ``true`` (with the
-``error`` text, truncated), a missing or non-string ``rawHtml``, or ``rawHtml``
-over ``max_bytes`` raise :class:`~adapters.fetcher.FetchError`. Messages never
-contain the response body or the base URL; ``repr`` hides the base URL.
+status, a response over the response cap, non-JSON or non-object JSON, JSON
+nested too deeply (``RecursionError`` from ``json.loads``), a missing/invalid
+``data`` object, ``success`` that is not ``true`` (with the ``error`` text,
+truncated), a missing or non-string ``rawHtml``, a ``rawHtml`` that is not
+encodable as UTF-8 (a lone surrogate), or ``rawHtml`` over ``max_bytes`` raise
+:class:`~adapters.fetcher.FetchError`. Messages never contain the response body
+or the base URL; ``repr`` hides the base URL.
 
 HTTP goes through an injected POST transport
 ``(url, body, headers) -> (status, body_bytes)``; no real transport is shipped
@@ -97,6 +99,14 @@ def _truncate(value: object) -> str:
     return text
 
 
+def _encode_raw_html(raw_html: str) -> bytes:
+    """UTF-8 encode ``rawHtml``; a lone surrogate is malformed, not a crash."""
+    try:
+        return raw_html.encode("utf-8")
+    except UnicodeEncodeError:
+        raise FetchError("rawHtml is not encodable as UTF-8") from None
+
+
 class FirecrawlFetcher:
     """:class:`~adapters.fetcher.Fetcher` over Firecrawl's ``/v1/scrape`` API."""
 
@@ -154,7 +164,7 @@ class FirecrawlFetcher:
         raw_html = data.get("rawHtml")
         if not isinstance(raw_html, str):
             raise FetchError("response has no rawHtml")
-        body_bytes = raw_html.encode("utf-8")
+        body_bytes = _encode_raw_html(raw_html)
         if len(body_bytes) > self._max_bytes:
             raise FetchError(f"body exceeds max_bytes={self._max_bytes}")
         metadata = data.get("metadata")
@@ -175,6 +185,8 @@ class FirecrawlFetcher:
     def _parse(response: bytes) -> Mapping[str, Any]:
         try:
             payload = json.loads(response)
+        except RecursionError:
+            raise FetchError("response body is nested too deeply") from None
         except ValueError:
             raise FetchError("response body is not valid JSON") from None
         if not isinstance(payload, Mapping):

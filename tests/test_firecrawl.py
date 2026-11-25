@@ -244,6 +244,29 @@ def test_missing_raw_html_rejected(body: bytes) -> None:
         run(body)
 
 
+def test_lone_surrogate_raw_html_rejected_without_content() -> None:
+    # json.dumps escapes the lone surrogate, so the response bytes are valid JSON
+    # and json.loads hands back a str that cannot be encoded as UTF-8.
+    body = envelope(raw_html="<p>\ud800</p>")
+    with pytest.raises(FetchError) as info:
+        run(body)
+    message = str(info.value)
+    assert "rawHtml" in message
+    assert "<p>" not in message
+    assert "\ud800" not in message
+
+
+def test_deeply_nested_json_rejected_without_content() -> None:
+    depth = 100_000
+    body = b"[" * depth + b"]" * depth
+    with pytest.raises(FetchError) as info:
+        run(body)
+    message = str(info.value)
+    assert len(message) < 200
+    assert "nested" in message
+    assert "[" not in message
+
+
 def test_response_bytes_over_cap_rejected() -> None:
     with pytest.raises(FetchError, match="response"):
         run(b" " * 200_000, max_bytes=1)
