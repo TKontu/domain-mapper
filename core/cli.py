@@ -42,12 +42,14 @@ text. One ``screen_result`` row is written and the entity status moved to ``in_s
 ``LlmBudgetExceeded`` stops screening, leaving that and later entities ``unscreened``; the last
 line is ``screened S skipped K errors E``.
 
-``index`` (IX-02) embeds pending chunks: settings load, a ``run`` row (stage ``index``) opens via
-:func:`_open_run`, the embedder builds through the test seam :func:`_make_embedder`
-(``build_embedder(settings, model)``), and :func:`~core.embed_store.embed_pending_chunks` runs with
-the ``--model``/``--batch-size``/``--limit`` options. On success it prints ``embedded <n> batches
-<m>``; on ``EmbeddingError``/``EmbedStoreError`` it prints ``error <ErrorName>: <message>`` on
-stderr, closes the run ``failed`` and exits 1.
+``index`` (IX-02, IX-05) embeds pending chunks: settings load, the embedder builds through the
+test seam :func:`_make_embedder` (``build_embedder(settings, model)``), a ``run`` row (stage
+``index``) opens via :func:`_open_run`, and :func:`~core.embed_store.embed_pending_chunks` runs
+with the ``--model``/``--batch-size``/``--limit`` options. On success it prints ``embedded <n>
+batches <m>``; on ``EmbeddingError``/``EmbedStoreError`` it prints ``error <ErrorName>: <message>``
+on stderr, closes the run ``failed`` and exits 1. A ``ValueError`` building the embedder (an
+unconfigured service) prints ``error: <message>`` on stderr and exits 2 before any run row exists;
+any other error or interrupt after the run opens closes it ``failed`` before propagating.
 
 ``search`` (IX-04) prints one line per BM25 hit from :func:`~core.keyword_search.search_chunks`:
 ``<score> chunk <chunk_id> snapshot <snapshot_id> seq <seq>`` plus `` <heading > ...`` when the
@@ -605,7 +607,10 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
     """Embed pending chunks via the configured embedding service inside a ``run`` row (IX-02).
 
     Prints ``embedded <n> batches <m>`` on success; ``EmbeddingError``/``EmbedStoreError`` print
-    ``error <ErrorName>: <message>`` on stderr with the run ``failed`` and exit 1.
+    ``error <ErrorName>: <message>`` on stderr with the run ``failed`` and exit 1. The embedder is
+    built before the run row opens, so an unbuildable backend (``ValueError``) exits 2 with
+    ``error: <message>`` and no run row; any other error or interrupt after that closes the run
+    ``failed`` before propagating (IX-05).
     """
     if not model.strip():
         typer.echo("error: --model must be non-empty", err=True)
@@ -619,11 +624,16 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
     settings = load_settings()
     engine = _open_engine(settings)
     try:
+        try:
+            embedder = _make_embedder(settings, model)
+        except ValueError as exc:  # unbuildable backend: bad setup, exit 2, no run row
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
         run_id = _open_run(engine, "index")
         try:
             stats = embed_pending_chunks(
                 engine,
-                _make_embedder(settings, model),
+                embedder,
                 model=model,
                 batch_size=batch_size,
                 limit=limit,
@@ -632,6 +642,10 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
             raise typer.Exit(1) from None
+        except BaseException:
+            # An unexpected error or interrupt must not leave the run row open.
+            _close_run(engine, run_id, FAILED)
+            raise
         _close_run(engine, run_id, FINISHED)
         typer.echo(f"embedded {stats.embedded} batches {stats.batches}")
     finally:

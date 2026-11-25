@@ -61,6 +61,11 @@ def run_rows(engine) -> list[tuple[str, str]]:
         return [(r.stage, r.status) for r in session.scalars(sa.select(Run).order_by(Run.id))]
 
 
+def run_records(engine) -> list[Run]:
+    with Session(engine) as session:
+        return list(session.scalars(sa.select(Run).order_by(Run.id)))
+
+
 def chunk_states(engine) -> list[tuple[str, str | None]]:
     with Session(engine) as session:
         return [
@@ -206,3 +211,53 @@ def test_seam_receives_settings_and_model(engine, monkeypatch, db_url) -> None:
     settings, model = seen[0]
     assert model == "m1"
     assert settings.database_url == db_url
+
+
+def test_unexpected_embedder_error_fails_run_and_propagates(engine, monkeypatch) -> None:
+    seed_chunks(engine, ["alpha", "beta"])
+    use_embedder(monkeypatch, FakeEmbedder(fail_on_call=1, error=RuntimeError("boom")))
+
+    result = invoke("--model", "m1")
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, RuntimeError)
+    records = run_records(engine)
+    assert [(r.stage, r.status) for r in records] == [("index", "failed")]
+    assert records[0].finished_at is not None
+
+
+class InterruptingEmbedder(FakeEmbedder):
+    """Embedder whose first call is interrupted (a BaseException, not an Exception)."""
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        raise KeyboardInterrupt
+
+
+def test_keyboard_interrupt_fails_run_and_exits_130(engine, monkeypatch) -> None:
+    seed_chunks(engine, ["alpha"])
+    use_embedder(monkeypatch, InterruptingEmbedder())
+
+    result = invoke("--model", "m1")
+
+    # typer converts the re-raised KeyboardInterrupt into exit 130.
+    assert result.exit_code == 130, result.output
+    records = run_records(engine)
+    assert [(r.stage, r.status) for r in records] == [("index", "failed")]
+    assert records[0].finished_at is not None
+
+
+def test_unbuildable_embedder_exits_2_without_run(engine, monkeypatch) -> None:
+    seed_chunks(engine, ["alpha"])
+    fake = FakeEmbedder()
+
+    def seam(settings, model):
+        raise ValueError("embedding service URL is not configured")
+
+    monkeypatch.setattr(cli, "_make_embedder", seam)
+
+    result = invoke("--model", "m1")
+
+    assert result.exit_code == 2, result.output
+    assert result.stderr.strip() == "error: embedding service URL is not configured"
+    assert run_rows(engine) == []
+    assert fake.calls == []
