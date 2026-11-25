@@ -194,6 +194,117 @@ def test_crawl_delay_is_none_when_absent_or_robots_missing() -> None:
     assert missing.crawl_delay("https://example.com/page") is None
 
 
+def test_crawl_delay_accepts_a_decimal_value() -> None:
+    policy, _ = make_policy(b"User-agent: *\nCrawl-delay: 1.5\n")
+    delay = policy.crawl_delay("https://example.com/page")
+    assert delay == 1.5
+    assert isinstance(delay, float)
+
+
+def test_zero_crawl_delay_is_kept() -> None:
+    policy, _ = make_policy(b"User-agent: *\nCrawl-delay: 0\n")
+    assert policy.crawl_delay("https://example.com/page") == 0.0
+
+
+def test_decimal_crawl_delay_does_not_disturb_allow_rules() -> None:
+    policy, _ = make_policy(b"User-agent: *\nCrawl-delay: 0.25\nDisallow: /private\n")
+    assert policy.allowed("https://example.com/private/secret") is False
+    assert policy.allowed("https://example.com/public") is True
+    assert policy.crawl_delay("https://example.com/public") == 0.25
+
+
+def test_crawl_delay_tolerates_space_and_a_trailing_comment() -> None:
+    policy, _ = make_policy(b"User-agent: *\nCrawl-delay:   0.75   # politely\n")
+    assert policy.crawl_delay("https://example.com/page") == 0.75
+
+
+def test_specific_agent_delay_wins_over_the_star_fallback() -> None:
+    body = b"User-agent: PoliteBot\nCrawl-delay: 4.5\n\nUser-agent: *\nCrawl-delay: 1\n"
+    polite, _ = make_policy(body, user_agent="PoliteBot/1.0")
+    other, _ = make_policy(body, user_agent="OtherBot/1.0")
+    assert polite.crawl_delay("https://example.com/page") == 4.5
+    assert other.crawl_delay("https://example.com/page") == 1.0
+
+
+def test_matching_specific_group_without_delay_does_not_fall_back_to_star() -> None:
+    # The stdlib stops at the first matching specific group even when that group
+    # carries no Crawl-delay; the ``*`` group is only a fallback.
+    body = b"User-agent: PoliteBot\nDisallow: /bot\n\nUser-agent: *\nCrawl-delay: 3\n"
+    policy, _ = make_policy(body)
+    assert policy.crawl_delay("https://example.com/page") is None
+
+
+def test_crawl_delay_applies_to_every_agent_in_a_group() -> None:
+    body = b"User-agent: ABot\nUser-agent: PoliteBot\nCrawl-delay: 2.5\n"
+    policy, _ = make_policy(body)
+    assert policy.crawl_delay("https://example.com/page") == 2.5
+
+
+def test_first_matching_specific_group_wins() -> None:
+    body = b"User-agent: PoliteBot\nCrawl-delay: 2.5\n\nUser-agent: PoliteBot\nCrawl-delay: 9\n"
+    policy, _ = make_policy(body)
+    assert policy.crawl_delay("https://example.com/page") == 2.5
+
+
+def test_request_rate_alone_still_defines_a_specific_group() -> None:
+    # The stdlib treats request-rate as starting a group, so this group still
+    # shadows the ``*`` delay even though it carries no Crawl-delay.
+    body = b"User-agent: PoliteBot\nRequest-rate: 1/5\n\nUser-agent: *\nCrawl-delay: 3\n"
+    policy, _ = make_policy(body)
+    assert policy.crawl_delay("https://example.com/page") is None
+
+
+def test_an_invalid_later_delay_keeps_an_earlier_valid_one() -> None:
+    # Parity with the stdlib: an unparsable value leaves the group's delay as-is.
+    body = b"User-agent: *\nCrawl-delay: 1.5\nCrawl-delay: nope\n"
+    policy, _ = make_policy(body)
+    assert policy.crawl_delay("https://example.com/page") == 1.5
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "abc",
+        "-1",
+        "-0.5",
+        "+1.5",
+        "inf",
+        "-inf",
+        "Infinity",
+        "nan",
+        "NaN",
+        "1e3",
+        "1.5.2",
+        "1,5",
+        "1.5s",
+        "1_0",
+        "9" * 400,  # overflows float() to inf
+    ],
+)
+def test_invalid_crawl_delay_values_are_none(value: str) -> None:
+    policy, _ = make_policy(f"User-agent: *\nCrawl-delay: {value}\n".encode())
+    assert policy.crawl_delay("https://example.com/page") is None
+
+
+@pytest.mark.parametrize("status", [404, 500])
+def test_crawl_delay_is_none_for_blanket_rules(status: int) -> None:
+    policy, _ = make_policy(b"User-agent: *\nCrawl-delay: 1.5\n", status=status)
+    assert policy.crawl_delay("https://example.com/page") is None
+
+
+def test_crawl_delay_is_none_when_the_fetch_fails() -> None:
+    fetch = FakeRobots({ROBOTS_URL: OSError("connection reset")})
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    assert policy.crawl_delay("https://example.com/page") is None
+
+
+def test_crawl_delay_beyond_the_body_cap_is_ignored() -> None:
+    body = b"User-agent: *\n# " + b"x" * MAX_ROBOTS_BYTES + b"\nCrawl-delay: 5\n"
+    policy, _ = make_policy(body)
+    assert policy.crawl_delay("https://example.com/page") is None
+
+
 @pytest.mark.parametrize(
     "url",
     ["", "example.com/page", "ftp://example.com/x", "https:///path", "mailto:a@example.com"],
