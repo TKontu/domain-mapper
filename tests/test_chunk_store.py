@@ -119,8 +119,9 @@ class TestRoundTrip(StoreFixture):
             "heading_path",
             "char_start",
             "char_end",
+            "embedding",
+            "embedding_model",
         }
-        assert "embedding" not in columns
         indexed_columns = {
             name for index in inspector.get_indexes("chunk") for name in index["column_names"]
         }
