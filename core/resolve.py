@@ -13,7 +13,12 @@ Semantics:
   stripped, and the port, path, query, fragment and userinfo are dropped. IP literals are kept
   as-is (``127.0.0.1``, ``::1``).
 * Only rows with ``resolved_entity_id IS NULL`` are read; the first row seen per domain supplies
-  the group's name. Nothing is written.
+  the group's name. :func:`group_candidates` writes nothing.
+* :func:`apply_resolution` (RV-02) writes: one ``entity`` per ``(scope_id, normalised domain)``
+  (reused if it already exists, else created with the first-found name and status
+  ``unscreened``) and sets ``candidate.resolved_entity_id``. Each batch of candidates is one
+  transaction; a failure rolls back that batch only and re-raises. Unnormalisable URLs are
+  counted as skipped and stay NULL, so a rerun reports them again and creates/links nothing new.
 
 Production caller: ``landscape resolve`` (``core.cli.run_resolve``). Consumer: the future Resolve
 merge-suggestion row (unwired by design). Rows are streamed with ``yield_per``, so memory is
@@ -32,6 +37,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from core.candidate_store import Candidate
+from core.entity_store import STATUS_UNSCREENED, Entity
 
 DEFAULT_BATCH = 500
 """Rows fetched per page by :func:`group_candidates`."""
@@ -57,6 +63,15 @@ class ResolveSummary:
 
     groups: tuple[DomainGroup, ...]
     candidates: int
+    skipped: int
+
+
+@dataclass(frozen=True, slots=True)
+class ApplySummary:
+    """Outcome of :func:`apply_resolution`."""
+
+    created: int
+    linked: int
     skipped: int
 
 
@@ -128,3 +143,75 @@ def group_candidates(engine: Engine, *, batch: int = DEFAULT_BATCH) -> ResolveSu
         for domain, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     )
     return ResolveSummary(groups=groups, candidates=sum(counts.values()), skipped=skipped)
+
+
+def apply_resolution(engine: Engine, scope_id: str, *, batch: int = DEFAULT_BATCH) -> ApplySummary:
+    """Link unresolved candidates to per-domain entities of ``scope_id``; create missing ones.
+
+    Candidates are paged in id order by keyset (``id > last``, ``LIMIT batch``) with each page
+    read, resolved and committed in its own transaction; the read uses ``yield_per(batch)``.
+    Memory holds only the committed ``domain -> entity_id`` map (bounded by distinct domains).
+    """
+    if batch < 1:
+        raise ValueError(f"batch must be >= 1, got {batch}")
+    known: dict[str, int] = {}
+    created = linked = skipped = 0
+    last_id = 0
+    while True:
+        stmt = (
+            sa.select(Candidate.id, Candidate.name, Candidate.url)
+            .where(Candidate.resolved_entity_id.is_(None), Candidate.id > last_id)
+            .order_by(Candidate.id)
+            .limit(batch)
+        )
+        with Session(engine) as session, session.begin():
+            rows = list(session.execute(stmt).yield_per(batch))
+            if not rows:
+                break
+            last_id = rows[-1][0]
+            new_known: dict[str, int] = {}
+            by_entity: dict[int, list[int]] = {}
+            batch_created = batch_skipped = 0
+            for cand_id, name, url in rows:
+                domain = normalize_domain(url)
+                if domain is None:
+                    batch_skipped += 1
+                    continue
+                entity_id = known.get(domain) or new_known.get(domain)
+                if entity_id is None:
+                    entity_id = session.scalar(
+                        sa.select(Entity.id).where(
+                            Entity.scope_id == scope_id, Entity.primary_domain == domain
+                        )
+                    )
+                    if entity_id is None:
+                        entity = Entity(
+                            scope_id=scope_id,
+                            name=name,
+                            primary_domain=domain,
+                            status=STATUS_UNSCREENED,
+                        )
+                        session.add(entity)
+                        session.flush()
+                        entity_id = entity.id
+                        batch_created += 1
+                    new_known[domain] = entity_id
+                by_entity.setdefault(entity_id, []).append(cand_id)
+            batch_linked = sum(_link(session, eid, ids) for eid, ids in by_entity.items())
+        # Only reached after the batch committed.
+        known.update(new_known)
+        created += batch_created
+        linked += batch_linked
+        skipped += batch_skipped
+    return ApplySummary(created=created, linked=linked, skipped=skipped)
+
+
+def _link(session: Session, entity_id: int, candidate_ids: list[int]) -> int:
+    """Set ``resolved_entity_id`` on still-unresolved ``candidate_ids``; return rows updated."""
+    result = session.execute(
+        sa.update(Candidate)
+        .where(Candidate.id.in_(candidate_ids), Candidate.resolved_entity_id.is_(None))
+        .values(resolved_entity_id=entity_id)
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount)  # type: ignore[attr-defined]
