@@ -7,9 +7,8 @@ decisions = "docs/decisions.md"  # append-only
 default_branch = "main"
 
 [verification]
-# Until the product stack exists, the gate is the workflow tooling's own tests.
-# Replace with the real gate (pytest, ruff, mypy) once item PF-01 lands.
-command = ["python3", "-m", "unittest", "discover", "-s", "tests"]
+# PF-01 stack gate: pytest (incl. workflow-tooling tests), ruff, mypy.
+command = ["bash", "-c", "uv run pytest -q && uv run ruff check . && uv run mypy core"]
 environment = "offline; no network services, no paid APIs"
 
 [policy]
