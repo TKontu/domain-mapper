@@ -24,8 +24,10 @@ Semantics:
 
 The declarative base is ``core.runs.Base`` (reused, not duplicated), so
 ``core.runs.create_all`` creates the ``chunk`` table alongside the run tables.
-Schema migrations remain a separate item (residual below). No ``embedding``
-column: the Index row adds it.
+Schema migrations remain a separate item (residual below). The nullable
+``embedding`` (JSON list of floats) and ``embedding_model`` columns belong to the
+Index stage (IX-01, ``core.embed_store``); :func:`store_chunks` writes them NULL,
+so re-chunking a snapshot invalidates its embeddings.
 """
 
 from __future__ import annotations
@@ -59,6 +61,8 @@ class ChunkRow(Base):
     heading_path: Mapped[list[str]] = mapped_column(sa.JSON)
     char_start: Mapped[int] = mapped_column()
     char_end: Mapped[int] = mapped_column()
+    embedding: Mapped[list[float] | None] = mapped_column(sa.JSON)
+    embedding_model: Mapped[str | None] = mapped_column(sa.String(255))
 
 
 def store_chunks(
@@ -96,6 +100,8 @@ def _row(snapshot_id: int, chunk: Chunk) -> ChunkRow:
         heading_path=list(chunk.heading_path),
         char_start=chunk.char_start,
         char_end=chunk.char_end,
+        embedding=None,
+        embedding_model=None,
     )
 
 
