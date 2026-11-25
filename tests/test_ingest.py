@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -11,6 +12,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from adapters.blob_store import BlobStoreError, FilesystemBlobStore, InMemoryBlobStore
 from adapters.fetcher import FetchError, FetchResult, InMemoryFetcher
 from adapters.html_parser import HtmlParser
 from adapters.parser import ParseError
@@ -148,3 +150,104 @@ def test_chunks_stream_without_materialising(monkeypatch: pytest.MonkeyPatch) ->
     )
     assert seen["type"] is not list
     assert result.chunks_written > 0
+
+
+# --- RS-02: raw blob store wiring -------------------------------------------
+
+
+class RaisingStore(InMemoryBlobStore):
+    def put(self, data: bytes) -> str:
+        raise BlobStoreError("disk full")
+
+
+class WrongDigestStore(InMemoryBlobStore):
+    def put(self, data: bytes) -> str:
+        super().put(data)
+        return "0" * 64
+
+
+class CountingStore(InMemoryBlobStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts = 0
+
+    def put(self, data: bytes) -> str:
+        self.puts += 1
+        return super().put(data)
+
+
+@pytest.mark.parametrize("kind", ["memory", "filesystem"])
+def test_blob_stored_and_retrievable_by_snapshot_sha(kind: str, tmp_path: Path) -> None:
+    engine = memory_engine()
+    store = InMemoryBlobStore() if kind == "memory" else FilesystemBlobStore(tmp_path)
+    result = ingest_page(
+        engine,
+        fetcher=fetcher(),
+        parser=HtmlParser(),
+        url=URL,
+        entity_id=None,
+        source_kind="web",
+        blob_store=store,
+    )
+    [snap] = snapshots(engine)
+    assert result.raw_digest == snap.sha256 == hashlib.sha256(HTML).hexdigest()
+    assert store.get(snap.sha256) == HTML
+
+
+def test_no_store_leaves_raw_digest_none() -> None:
+    result = ingest_page(
+        memory_engine(),
+        fetcher=fetcher(),
+        parser=HtmlParser(),
+        url=URL,
+        entity_id=None,
+        source_kind="web",
+    )
+    assert result.raw_digest is None
+
+
+def test_store_put_error_writes_no_snapshot() -> None:
+    engine = memory_engine()
+    with pytest.raises(BlobStoreError):
+        ingest_page(
+            engine,
+            fetcher=fetcher(),
+            parser=HtmlParser(),
+            url=URL,
+            entity_id=None,
+            source_kind="web",
+            blob_store=RaisingStore(),
+        )
+    assert snapshots(engine) == []
+    assert chunks(engine) == []
+
+
+def test_store_wrong_digest_raises_and_writes_no_snapshot() -> None:
+    engine = memory_engine()
+    with pytest.raises(BlobStoreError):
+        ingest_page(
+            engine,
+            fetcher=fetcher(),
+            parser=HtmlParser(),
+            url=URL,
+            entity_id=None,
+            source_kind="web",
+            blob_store=WrongDigestStore(),
+        )
+    assert snapshots(engine) == []
+    assert chunks(engine) == []
+
+
+def test_fetch_error_puts_nothing() -> None:
+    store = CountingStore()
+    with pytest.raises(FetchError):
+        ingest_page(
+            memory_engine(),
+            fetcher=InMemoryFetcher({}),
+            parser=HtmlParser(),
+            url=URL,
+            entity_id=None,
+            source_kind="web",
+            blob_store=store,
+        )
+    assert store.puts == 0
