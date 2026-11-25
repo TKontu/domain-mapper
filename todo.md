@@ -80,7 +80,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 ## Phase 1 — Vertical slice (one layer, ~20 entities)
 
 - [ ] Discover: search + register channels + LLM-recall channel, all tagged by channel
-  - [ ] **DS-02** → [docs/items/DS-02.md](docs/items/DS-02.md) `landscape web-search --save` persists each result as a `candidate` row (`channel="search"`, query, aware-UTC `found_at`) via `core.candidate_store.record_candidates`; consumer: Resolve row (unwired)
+  - [ ] **DS-02** → [docs/items/DS-02.md](docs/items/DS-02.md) `landscape web-search --save` persists each result as a `candidate` row (`channel="search"`, query, aware-UTC `found_at`) via `core.candidate_store.record_candidates`; consumer: Resolve row (unwired) — partial 2026-11-25: merged (PR #76); seen offline on main c23cafa (pytest 801 passed, 5 Postgres skips); needs a live `landscape web-search --save` run (round 31) and a Postgres run; residuals: no dedup, no migrations, no `source_id` link, a blank result url would be reported as "database unavailable (ValueError)"
 - [ ] Resolve: domain/name normalisation, business-register ID lookup, GLEIF groups, merge suggestions
 - [ ] Enrich: register financial data (revenue, size) where public
 - [ ] Screen: in-scope + segment classification (local small model), review borderline
