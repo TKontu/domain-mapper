@@ -1,0 +1,34 @@
+# Build context for the app image: never ship secrets or private material into
+# the image (D-003). Mirrors the gitignored paths in .gitignore.
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.agent-runs
+.agents
+.claude
+scopes
+snapshots
+data
+raw
+output
+exports
+minio
+pgdata
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+__pycache__
+*.py[cod]
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.hypothesis
+dist
+build
+*.egg-info
+node_modules
+*.log

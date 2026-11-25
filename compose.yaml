@@ -1,0 +1,65 @@
+# Local development stack (PF-05): PostgreSQL 16 + pgvector, an app image, and
+# an opt-in MinIO profile.
+#
+#   docker compose up -d db              # database only; vector extension on first init
+#   docker compose --profile minio up -d # also start MinIO
+#   docker compose build app             # build the application image
+#
+# The raw-storage choice (filesystem vs MinIO) is still an open decision, so
+# MinIO is never started by default. Credentials are read from .env and have no
+# defaults: compose refuses to start when they are unset or empty.
+# See docs/compose.md for usage.
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DM_POSTGRES_DB:-domain_mapper}
+      POSTGRES_USER: ${DM_POSTGRES_USER:-domain_mapper}
+      POSTGRES_PASSWORD: ${DM_POSTGRES_PASSWORD:?DM_POSTGRES_PASSWORD must be set in .env (see .env.example)}
+    ports:
+      - "${DM_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Containers reach the database by service name, not by localhost.
+      DM_POSTGRES_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Optional raw-storage service behind `--profile minio`. The upstream public
+  # server image is no longer published on Docker Hub, so the default is a
+  # pinned legacy mirror; override DM_MINIO_IMAGE with a licensed/self-hosted
+  # image when the raw-storage decision lands.
+  minio:
+    profiles: ["minio"]
+    image: ${DM_MINIO_IMAGE:-bitnamilegacy/minio:2025.7.23-debian-12-r5}
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${DM_MINIO_ROOT_USER:?DM_MINIO_ROOT_USER must be set in .env (see .env.example)}
+      MINIO_ROOT_PASSWORD: ${DM_MINIO_ROOT_PASSWORD:?DM_MINIO_ROOT_PASSWORD must be set in .env (see .env.example)}
+    ports:
+      - "${DM_MINIO_PORT:-9000}:9000"
+      - "${DM_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - miniodata:/bitnami/minio/data
+
+volumes:
+  pgdata:
+  miniodata:
