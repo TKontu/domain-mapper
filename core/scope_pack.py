@@ -53,6 +53,8 @@ class CrawlPolicy(_Model):
 
     max_pages: int = Field(default=1, ge=1, le=50)
     priority_paths: list[str] = Field(default_factory=list)
+    # CR-06: fill the rest of ``max_pages`` with same-host links from fetched pages, breadth-first.
+    discover_links: bool = False
 
     @field_validator("priority_paths")
     @classmethod
@@ -65,6 +67,8 @@ class CrawlPolicy(_Model):
                 raise ValueError(f"priority path must not name a host: {path!r}")
             if "?" in path or "#" in path:
                 raise ValueError(f"priority path must not have a query or fragment: {path!r}")
+            if path == "/":
+                raise ValueError("priority path '/' duplicates the homepage")
             if path in seen:
                 raise ValueError(f"duplicate priority path: {path!r}")
             seen.add(path)
