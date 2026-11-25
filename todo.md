@@ -41,7 +41,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [x] **PF-03** → [docs/items/PF-03.md](docs/items/PF-03.md) Config: `.env` for endpoints (vLLM gateway, embedding/reranker service, cloud LLM key), budgets; `.env.example` tracked ✔ 2026-11-25 (PR #5; `load_settings` wired by PF-04)
 - [x] **PF-04** → [docs/items/PF-04.md](docs/items/PF-04.md) Typer CLI skeleton: `landscape <stage> --scope --layer --limit --dry-run` ✔ 2026-11-25 (PR #7; seen: `uv run landscape discover --scope scopes/_example --limit 2 --dry-run` on main 47e1242; stage bodies unwired until their rows)
 - [ ] **RT-01** → [docs/items/RT-01.md](docs/items/RT-01.md) Run/work-unit tracking table + resumable stage runner — partial 2026-11-25: merged (PR #11); seen on SQLite only (in-memory run on main dc3ae93: fresh 2 executed, rerun 1 skipped/1 re-executed); needs a run against the compose Postgres (`DM_TEST_DATABASE_URL`) on a host with docker
-- [ ] Logging + `llm_call` cost/latency logging
+- [ ] **RT-02** → [docs/items/RT-02.md](docs/items/RT-02.md) Logging + `llm_call` cost/latency logging — partial 2026-11-25: merged (PR #14); seen on SQLite only (pytest on main 0789345: rows written on success and error, prompt text absent); unwired until the `LLM` adapter row; needs a run against the compose Postgres on a host with docker
+- [ ] Configured gate `python3 -m unittest discover -s tests` fails under bare system python (no sqlalchemy) since RT-01; it passes under `uv run`. Resolved by the operator-owned gate switch (PR #3)
 - [ ] `ruff format --check .` fails on main at a code block in ARCHITECTURE.md (operator-owned file); gates exclude it until the operator fixes or excludes it
 - [ ] `lanes.py cleanup` holds `--agent` lane tabs as "foreign" when the agent pane reports cwd `/work` instead of the lane worktree (round 4: sp-01, rt-01 tabs)
 - [ ] Lane worktrees: helper that links private `scopes/<name>/` checkouts into a lane worktree
@@ -57,7 +58,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 
 ### Scope pack schema
 - [x] **SP-01** → [docs/items/SP-01.md](docs/items/SP-01.md) Pydantic models: scope, segments, layers, vocabulary, sources, rubric, attributes, profiles, views ✔ 2026-11-25 (PR #10; seen: `load_scope_pack('scopes/_example')` on main dc3ae93 → 2 segments, 3 layers, 2 topics; unwired until `landscape validate`)
-- [ ] `landscape validate --scope ...` command
+- [x] **SP-02** → [docs/items/SP-02.md](docs/items/SP-02.md) `landscape validate --scope ...` command ✔ 2026-11-25 (PR #13; seen: `uv run landscape validate --scope scopes/_example` on main 0789345 → scope example, 2 segments, 3 layers, 2 topics, 2 criteria, exit 0)
 - [ ] JSON Schema export for editor autocompletion
 - [ ] `scopes/_example/` complete enough to validate (all files, tiny rubric, 3 seed entities)
 
