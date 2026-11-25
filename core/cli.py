@@ -38,7 +38,9 @@ text. One ``screen_result`` row is written and the entity status moved to ``in_s
 ``out_of_scope`` or ``borderline`` in one transaction per entity. It prints ``ok <id> <status>
 <confidence> <segments>``, ``skipped <id> no-text`` for an entity without chunk text, and
 ``error <id> <ErrorName>: <message>`` for invalid model output or a failed call (the entity stays
-``unscreened`` and the run exits 1); the last line is ``screened S skipped K errors E``.
+``unscreened`` and the run exits 1). Spend is capped per run by ``DM_LLM_BUDGET_USD`` (LB-01):
+``LlmBudgetExceeded`` stops screening, leaving that and later entities ``unscreened``; the last
+line is ``screened S skipped K errors E``.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFe
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
-from adapters.llm import LLM, DbTarget, LlmError, build_llm
+from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
@@ -468,8 +470,11 @@ def run_resolve(scope: Path, apply: bool = False) -> None:
 
 
 def _make_screen_llm(settings: Settings, db: DbTarget) -> LLM:
-    """Build the small local model used for screening; the test seam for a fake adapter."""
-    return build_llm(settings, "local", db=db)
+    """Build the small local model used for screening; the test seam for a fake adapter.
+
+    One budget per invocation (= per run): ``settings.llm_budget_usd`` caps the run's spend.
+    """
+    return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
 
 
 def _open_run(engine: Engine, stage: str) -> int:
@@ -535,6 +540,11 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
                         run_id=run_id,
                         max_chars=DEFAULT_MAX_CHARS,
                     )
+                except LlmBudgetExceeded as exc:
+                    # The run's budget is spent: stop cleanly, the rest stay unscreened.
+                    typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
+                    errors += 1
+                    break
                 except (ScreenError, LlmError) as exc:
                     # Invalid output or a failed call leaves the entity unscreened for a retry.
                     typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")

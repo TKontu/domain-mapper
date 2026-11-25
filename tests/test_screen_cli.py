@@ -402,3 +402,40 @@ def test_builds_local_backend_with_the_database_engine(engine, monkeypatch) -> N
     _settings, backend = build.call_args.args
     assert backend == "local"
     assert isinstance(build.call_args.kwargs["db"], sa.Engine)
+
+
+def test_budget_exceeded_stops_screening_and_keeps_rest_unscreened(engine, monkeypatch) -> None:
+    import adapters.llm as llm_module
+
+    first = seed_entity(engine, "Acme", [[(0, "page text")]])
+    second = seed_entity(engine, "Beta", [[(0, "page text")]])
+    third = seed_entity(engine, "Gamma", [[(0, "page text")]])
+    fake = FakeLLM({name: answer(segments=["agency"]) for name in ("Acme", "Beta", "Gamma")})
+    original = fake.complete
+
+    def costly(prompt: str, **kwargs: Any) -> LlmResult:
+        result = original(prompt, **kwargs)
+        return LlmResult(
+            text=result.text,
+            parsed=result.parsed,
+            tokens_in=1,
+            tokens_out=1,
+            cost=0.75,
+            cache_hit=False,
+        )
+
+    fake.complete = costly  # type: ignore[method-assign]
+    monkeypatch.setenv("DM_LLM_BUDGET_USD", "0.5")
+    monkeypatch.setattr(llm_module, "OpenAICompatibleLLM", lambda *a, **k: fake)
+
+    result = invoke()
+
+    assert result.exit_code == 1, result.output
+    assert f"ok {first} in_scope" in result.output
+    assert f"error {second} LlmBudgetExceeded:" in result.output
+    lines = result.output.splitlines()
+    assert not [line for line in lines if line.split()[1:2] == [str(third)]]  # never attempted
+    assert len(fake.calls) == 1
+    assert "screened 1 skipped 0 errors 1" in result.output
+    assert entity_status(engine, second) == STATUS_UNSCREENED
+    assert entity_status(engine, third) == STATUS_UNSCREENED
