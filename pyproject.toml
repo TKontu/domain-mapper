@@ -4,7 +4,12 @@ version = "0.0.0"
 description = "Domain-agnostic engine for mapping a domain from public sources."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "typer>=0.29.2",
+]
+
+[project.scripts]
+landscape = "core.cli:main"
 
 [dependency-groups]
 dev = [

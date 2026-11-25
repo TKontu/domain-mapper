@@ -97,6 +97,16 @@ landscape publish --out site/
 landscape run --layer home
 ```
 
+**Today (skeleton, PF-04):** `uv sync` installs the `landscape` command. Every stage
+(`discover resolve screen crawl parse index assess attributes verify aggregate synthesize publish`)
+accepts `--scope PATH --layer TEXT --limit N --dry-run`. With `--dry-run` it prints the resolved
+plan and settings (never the API key) and exits 0; without it, a stage exits 1 with "not
+implemented yet". A missing scope directory or an invalid `DM_*` setting exits 2.
+
+```bash
+uv run landscape discover --scope scopes/_example --layer home --limit 5 --dry-run
+```
+
 ---
 
 ## 7. Repository layout (target)
