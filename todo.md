@@ -36,9 +36,9 @@ The private scope repo is already published (initial commit `d5714f3`).
 
 ### Repo & infra
 - [x] **PF-01** Python project skeleton (uv), ruff, mypy, pytest, pre-commit → [docs/items/PF-01.md](docs/items/PF-01.md) ✔ 2026-11-25 (PR #1; gate switch in `.agent/config.toml` owed to operator)
-- [ ] **PF-02** Make `tests/test_round_supervisor.py` hermetic: `RepoNameTests.test_dashboard_lists_only_this_repos_lanes` reads live lane records when `ROUND_SUPERVISOR_ROOT` is set (fails inside supervised sessions)
+- [x] **PF-02** → [docs/items/PF-02.md](docs/items/PF-02.md) Make `tests/test_round_supervisor.py` hermetic: `RepoNameTests.test_dashboard_lists_only_this_repos_lanes` reads live lane records when `ROUND_SUPERVISOR_ROOT` is set (fails inside supervised sessions) ✔ 2026-11-25 (PR #4)
 - [ ] docker compose: Postgres 16 + pgvector, (MinIO), app container
-- [ ] Config: `.env` for endpoints (vLLM gateway, embedding/reranker service, cloud LLM key), budgets; `.env.example` tracked
+- [x] **PF-03** → [docs/items/PF-03.md](docs/items/PF-03.md) Config: `.env` for endpoints (vLLM gateway, embedding/reranker service, cloud LLM key), budgets; `.env.example` tracked ✔ 2026-11-25 (PR #5; `load_settings` unwired until the Typer CLI row)
 - [ ] Typer CLI skeleton: `landscape <stage> --scope --layer --limit --dry-run`
 - [ ] Run/work-unit tracking table + resumable stage runner
 - [ ] Logging + `llm_call` cost/latency logging
