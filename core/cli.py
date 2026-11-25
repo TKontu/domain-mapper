@@ -10,6 +10,9 @@ limit, :class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, 
 :func:`~core.ingest.ingest_page` with a :class:`~adapters.blob_store.FilesystemBlobStore` rooted at
 ``RAW_STORE_DIR``. URLs run sequentially, one body in memory at a time. Entity-driven crawling is a
 later row.
+
+``web-search`` (DS-01) runs one query against SearXNG (``SEARXNG_URL``) and prints
+``<rank>\t<url>\t<title>`` per result; no persistence.
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ from adapters.fetcher import DEFAULT_MAX_BYTES, FetchError
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
+from adapters.search import SearchError, SearchQuery
+from adapters.searxng import SearxngSearch
 from core.config import Settings, load_settings
 from core.ingest import ingest_page
 from core.runs import create_all
@@ -276,6 +281,33 @@ def schema(
         target = out / f"{Path(name).stem}.schema.json"
         target.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
         typer.echo(str(target))
+
+
+@app.command(name="web-search", help="Run one SearXNG web search and print ranked results.")
+def web_search(
+    scope: ScopeOpt,
+    query: Annotated[str, typer.Option("--query", help="Search text.")],
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100, help="Max results.")] = 10,
+    language: Annotated[str | None, typer.Option("--language", help="Language code.")] = None,
+    site: Annotated[str | None, typer.Option("--site", help="Restrict to host.")] = None,
+) -> None:
+    """Print one ``rank\turl\ttitle`` line per result; exit 1 on SearchError, 2 on bad setup."""
+    _load(scope)
+    if not query.strip():
+        typer.echo("error: --query must be non-blank", err=True)
+        raise typer.Exit(2)
+    try:
+        search = SearxngSearch.from_env()
+    except ValueError as exc:  # names SEARXNG_URL, never its value
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    try:
+        results = search.search(SearchQuery(text=query, limit=limit, language=language, site=site))
+    except SearchError as exc:  # message omits base URL and query
+        typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from None
+    for r in results:
+        typer.echo(f"{r.rank}\t{r.url}\t{r.title}")
 
 
 def main() -> None:
