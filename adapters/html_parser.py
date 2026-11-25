@@ -16,9 +16,14 @@ Conversion:
   (``javascript:``, ``vbscript:``, ``data:``) keep their text but are not
   emitted as links.
 * ``script``, ``style``, ``noscript``, ``template``, ``nav``, ``header``,
-  ``footer``, ``aside`` and ``form`` are dropped with their content.
+  ``footer``, ``aside`` and ``form`` are dropped with their content. A dropped
+  element left unclosed stops swallowing text at the closing tag of an
+  enclosing element or at ``</body>``, so later body text still appears.
+* ``pre`` keeps its newlines and spaces and is emitted as a fenced code block.
 * ``title`` supplies :attr:`ParsedDocument.title` and is removed from the body.
-* Runs of whitespace collapse to one space; ``br`` becomes a line break.
+* Runs of whitespace collapse to one space; ``br`` becomes a line break. A
+  paragraph line whose output would start with ``#`` is escaped (``\\#``) so
+  the chunker does not read it as an ATX heading.
 * Table cell text is flattened into paragraphs; no table Markdown is produced.
 
 Caps and decoding:
@@ -81,6 +86,26 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _UNSAFE_SCHEMES = ("javascript:", "vbscript:", "data:")
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+_HEADING_LINE = re.compile(r"^ {0,3}#")
+_FENCE_RUN = re.compile(r"`+")
 _SPACE_RUN = re.compile(r"\s+")
 _HREF_NOISE = re.compile(r"[\s\x00-\x1f\x7f]+")
 _NEWLINE_PADDING = re.compile(r" *\n *")
@@ -91,6 +116,19 @@ def _collapse(text: str) -> str:
     text = _SPACE_RUN.sub(" ", text)
     text = _NEWLINE_PADDING.sub("\n", text)
     return text.strip()
+
+
+def _escape_heading_lines(text: str) -> str:
+    """Prefix paragraph lines the chunker would read as ATX headings."""
+    return "\n".join(
+        f"\\{line}" if _HEADING_LINE.match(line) else line for line in text.split("\n")
+    )
+
+
+def _fence_for(text: str) -> str:
+    """Return a backtick fence longer than any run inside ``text``."""
+    longest = max((len(run) for run in _FENCE_RUN.findall(text)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def _is_safe_href(href: str) -> bool:
@@ -131,21 +169,46 @@ class _MarkdownBuilder(HTMLParser):
         self._title: str | None = None
         self._in_title = False
         self._in_head = False
-        self._drop_depth = 0
+        self._open_tags: list[str] = []
+        self._drop_start: int | None = None
+        self._in_pre = False
+        self._pre_parts: list[str] = []
         self._links: list[tuple[int, str]] = []
 
     @property
     def title(self) -> str | None:
         return self._title
 
+    def _close_element(self, tag: str) -> None:
+        """Pop ``tag`` and anything above it, ending a drop at an ancestor."""
+        for index in range(len(self._open_tags) - 1, -1, -1):
+            if self._open_tags[index] != tag:
+                continue
+            del self._open_tags[index:]
+            if self._drop_start is not None and index <= self._drop_start:
+                self._drop_start = None
+            return
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
-        if self._in_title:
+        if tag not in _VOID_TAGS:
+            self._open_tags.append(tag)
+        depth = len(self._open_tags) - 1
+        if self._drop_start is not None:
             return
         if tag in _DROPPED_TAGS:
-            self._drop_depth += 1
+            self._drop_start = depth
             return
-        if self._drop_depth:
+        if tag == "pre":
+            self._flush_pending()
+            self._in_pre = True
+            self._pre_parts = []
+            return
+        if self._in_pre:
+            if tag == "br":
+                self._pre_parts.append("\n")
+            return
+        if self._in_title:
             return
         if tag == "title":
             self._in_title = True
@@ -181,6 +244,13 @@ class _MarkdownBuilder(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag not in _VOID_TAGS:
+            self._close_element(tag)
+        if tag == "pre" and self._in_pre:
+            self._flush_pre()
+            return
+        if self._in_pre:
+            return
         if tag == "title" and self._in_title:
             self._in_title = False
             title = _collapse("".join(self._title_parts))
@@ -188,11 +258,7 @@ class _MarkdownBuilder(HTMLParser):
             return
         if self._in_title:
             return
-        if tag in _DROPPED_TAGS:
-            if self._drop_depth:
-                self._drop_depth -= 1
-            return
-        if self._drop_depth:
+        if self._drop_start is not None:
             return
         if tag == "head":
             self._in_head = False
@@ -223,7 +289,10 @@ class _MarkdownBuilder(HTMLParser):
         if self._in_title:
             self._title_parts.append(data)
             return
-        if self._drop_depth or self._in_head:
+        if self._drop_start is not None or self._in_head:
+            return
+        if self._in_pre:
+            self._pre_parts.append(data)
             return
         self._inline += _SPACE_RUN.sub(" ", data)
 
@@ -243,6 +312,15 @@ class _MarkdownBuilder(HTMLParser):
             replacement = " " if leading or trailing else ""
         self._inline = self._inline[:start] + replacement
 
+    def _flush_pre(self) -> None:
+        text = "".join(self._pre_parts).rstrip("\n")
+        self._in_pre = False
+        self._pre_parts = []
+        if not text.strip():
+            return
+        fence = _fence_for(text)
+        self.blocks.append(("code", f"{fence}\n{text}\n{fence}"))
+
     def _flush_pending(self) -> None:
         raw = self._inline
         self._inline = ""
@@ -256,9 +334,11 @@ class _MarkdownBuilder(HTMLParser):
             body = ("\n" + indent + "  ").join(text.split("\n"))
             self.blocks.append(("item", f"{indent}- {body}"))
         else:
-            self.blocks.append(("paragraph", text))
+            self.blocks.append(("paragraph", _escape_heading_lines(text)))
 
     def markdown(self) -> str:
+        if self._in_pre:
+            self._flush_pre()
         self._flush_pending()
         parts: list[str] = []
         previous: str | None = None
