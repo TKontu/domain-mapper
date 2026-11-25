@@ -17,9 +17,13 @@ body is stored with ``blob_store.put`` after the fetch and *before*
 Errors:
 
 * :class:`~adapters.fetcher.FetchError` propagates before any row is written.
+* :class:`NonSuccessStatusError` is raised after the fetch when
+  ``FetchResult.status`` is outside 200-299, before any blob or row is written
+  (CR-07): the response is a skip, not an observation. The CLI crawl reports it
+  as ``skipped <url> status=<code>`` and does not mark the run failed.
 * :class:`~adapters.blob_store.BlobStoreError` from ``put`` (or a digest
   mismatch) propagates before any row is written; nothing is put on a
-  ``FetchError``.
+  ``FetchError`` or a non-2xx status.
 * :class:`~adapters.parser.ParseError` propagates *after* the snapshot row
   exists; no chunk rows are written for it (the fetch was a real observation).
 
@@ -59,6 +63,18 @@ class IngestResult:
     content_type: str = ""
 
 
+class NonSuccessStatusError(ValueError):
+    """A fetched response outside 200-299; nothing was ingested (CR-07).
+
+    Not a :class:`~adapters.fetcher.FetchError`: the fetch succeeded, so the
+    caller skips the URL and continues instead of marking the run failed.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP status {status} is not 2xx")
+        self.status = status
+
+
 def ingest_page(
     engine: Engine,
     *,
@@ -72,6 +88,8 @@ def ingest_page(
 ) -> IngestResult:
     """Fetch ``url`` once, snapshot it, then parse and store its chunks."""
     result = fetcher.fetch(url, render_js=render_js)
+    if not 200 <= result.status <= 299:
+        raise NonSuccessStatusError(result.status)
     raw_digest: str | None = None
     if blob_store is not None:
         raw_digest = blob_store.put(result.body_bytes)

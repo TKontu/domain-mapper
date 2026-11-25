@@ -41,6 +41,7 @@ class _State:
     def __init__(self) -> None:
         self.scrapes: list[str] = []
         self.pages: dict[str, str] = {}  # URL -> rawHtml; others serve HTML
+        self.statuses: dict[str, int] = {}  # URL -> metadata.statusCode; default 200
 
 
 def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
@@ -60,7 +61,10 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                     "success": True,
                     "data": {
                         "rawHtml": state.pages.get(url, HTML),
-                        "metadata": {"statusCode": 200, "url": url},
+                        "metadata": {
+                            "statusCode": state.statuses.get(url, 200),
+                            "url": url,
+                        },
                     },
                 }
             body = json.dumps(payload).encode()
@@ -428,6 +432,67 @@ class EntityCrawlCliTest(unittest.TestCase):
             self.state.scrapes,
             [f"https://alpha.example.com{p}" for p in ("/", "/p", "/q", "/r")],
         )
+
+    # --- CR-07: a non-2xx fetch is skipped, writes nothing and is not a failure ---
+
+    def test_non_2xx_priority_path_prints_skipped_and_snapshots_only_homepage(self) -> None:
+        (eid,) = self.seed([(SCOPE_ID, "a.example.com")])
+        home, missing = "https://a.example.com/", "https://a.example.com/a"
+        self.state.statuses[missing] = 404
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 2\n  priority_paths: [/a]\n")
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, [home, missing])
+        self.assertEqual(self.snapshots(), [(eid, home)])
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 2, result.stdout)
+        self.assertTrue(lines[0].startswith(f"ok {home} snapshot="), lines[0])
+        self.assertEqual(lines[1], f"skipped {missing} status=404")
+
+    def test_crawl_continues_after_non_2xx_to_the_next_url(self) -> None:
+        (eid,) = self.seed([(SCOPE_ID, "a.example.com")])
+        home, failing, ok = (
+            "https://a.example.com/",
+            "https://a.example.com/a",
+            "https://a.example.com/b",
+        )
+        self.state.statuses[failing] = 500
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 3\n  priority_paths: [/a, /b]\n")
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, [home, failing, ok])
+        self.assertEqual(self.snapshots(), [(eid, home), (eid, ok)])
+        self.assertIn(f"skipped {failing} status=500", result.output)
+        self.assertIn(f"ok {ok}", result.output)
+
+    def test_500_homepage_is_skipped_without_failing_the_run(self) -> None:
+        failing_id, ok_id = self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        failing, ok = "https://a.example.com/", "https://b.example.com/"
+        self.state.statuses[failing] = 500
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, [failing, ok])
+        self.assertEqual(self.snapshots(), [(ok_id, ok)])
+        self.assertIn(f"skipped {failing} status=500", result.output)
+        self.assertNotEqual(failing_id, ok_id)
+
+    def test_links_from_a_non_2xx_page_are_not_discovered(self) -> None:
+        (eid,) = self.seed([(SCOPE_ID, "alpha.example.com")])
+        home, missing, hidden = (
+            "https://alpha.example.com/",
+            "https://alpha.example.com/missing",
+            "https://alpha.example.com/hidden",
+        )
+        self.page(home, '<a href="/missing">m</a>')
+        self.page(missing, '<a href="/hidden">h</a>')
+        self.state.statuses[missing] = 404
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 5\n  discover_links: true\n")
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, [home, missing])
+        self.assertEqual(self.snapshots(), [(eid, home)])
+        self.assertIn(f"skipped {missing} status=404", result.output)
+        self.assertNotIn(hidden, self.state.scrapes)
 
 
 if __name__ == "__main__":

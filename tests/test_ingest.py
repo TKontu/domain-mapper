@@ -17,7 +17,7 @@ from adapters.fetcher import FetchError, FetchResult, InMemoryFetcher
 from adapters.html_parser import HtmlParser
 from adapters.parser import ParseError
 from core.chunk_store import ChunkRow
-from core.ingest import IngestResult, ingest_page
+from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.runs import create_all
 from core.snapshot_store import SnapshotRow
 
@@ -41,8 +41,10 @@ def memory_engine() -> Engine:
     return engine
 
 
-def fetcher(body: bytes = HTML, content_type: str = "text/html; charset=utf-8") -> InMemoryFetcher:
-    result = FetchResult(final_url=FINAL, status=200, content_type=content_type, body_bytes=body)
+def fetcher(
+    body: bytes = HTML, content_type: str = "text/html; charset=utf-8", *, status: int = 200
+) -> InMemoryFetcher:
+    result = FetchResult(final_url=FINAL, status=status, content_type=content_type, body_bytes=body)
     return InMemoryFetcher({FINAL: result}, redirects={URL: FINAL})
 
 
@@ -102,6 +104,44 @@ def test_fetch_error_writes_no_snapshot() -> None:
         )
     assert snapshots(engine) == []
     assert chunks(engine) == []
+
+
+@pytest.mark.parametrize("status", [199, 300, 302, 404, 500])
+def test_non_2xx_status_writes_and_puts_nothing(status: int) -> None:
+    """CR-07: a non-2xx fetch is a skip, not an observation."""
+    engine = memory_engine()
+    store = CountingStore()
+    f = fetcher(status=status)
+    with pytest.raises(NonSuccessStatusError) as raised:
+        ingest_page(
+            engine,
+            fetcher=f,
+            parser=HtmlParser(),
+            url=URL,
+            entity_id=None,
+            source_kind="web",
+            blob_store=store,
+        )
+    assert raised.value.status == status
+    assert f.calls == [(URL, False)]
+    assert snapshots(engine) == []
+    assert chunks(engine) == []
+    assert store.puts == 0
+
+
+@pytest.mark.parametrize("status", [200, 204, 299])
+def test_2xx_status_is_ingested_as_before(status: int) -> None:
+    engine = memory_engine()
+    result = ingest_page(
+        engine,
+        fetcher=fetcher(status=status),
+        parser=HtmlParser(),
+        url=URL,
+        entity_id=None,
+        source_kind="web",
+    )
+    assert len(snapshots(engine)) == 1
+    assert result.chunks_written > 0
 
 
 def test_parse_error_keeps_snapshot_and_writes_no_chunks() -> None:
