@@ -65,6 +65,16 @@ class DefaultsTests(SettingsTestCase):
         self.assertNotIn("super-secret-key", repr(settings))
         self.assertNotIn("super-secret-key", str(settings))
 
+    def test_database_url_password_is_absent_from_repr(self) -> None:
+        os.environ["DM_DATABASE_URL"] = (
+            "postgresql+psycopg://domain_mapper:db-secret@db:5432/domain_mapper"
+        )
+
+        settings = load_settings(self.absent_env_file())
+
+        self.assertNotIn("db-secret", repr(settings))
+        self.assertNotIn("db-secret", str(settings))
+
     def test_settings_are_frozen(self) -> None:
         settings = load_settings(self.absent_env_file())
 

@@ -40,7 +40,7 @@ class Settings:
     cloud_llm_model: str = DEFAULT_CLOUD_LLM_MODEL
     llm_budget_usd: float = DEFAULT_LLM_BUDGET_USD
     max_crawl_concurrency: int = DEFAULT_MAX_CRAWL_CONCURRENCY
-    database_url: str = DEFAULT_DATABASE_URL
+    database_url: str = field(default=DEFAULT_DATABASE_URL, repr=False)
 
 
 def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
