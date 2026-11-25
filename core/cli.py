@@ -15,7 +15,8 @@ Each URL goes through the robots.txt check (CR-02), per-host rate limit,
 :class:`~adapters.firecrawl.FirecrawlFetcher` over the stdlib transport, then
 :func:`~core.ingest.ingest_page` with a :class:`~adapters.blob_store.FilesystemBlobStore` rooted at
 ``RAW_STORE_DIR`` and the entity's id as ``entity_id``. URLs run sequentially, one body in memory
-at a time.
+at a time. A fetched response whose status is outside 200-299 writes nothing; it prints
+``skipped <url> status=<code>``, is not a failure, and the crawl continues with the next URL.
 
 ``web-search`` (DS-01) runs one query against SearXNG (``SEARXNG_URL``) and prints
 ``<rank>\t<url>\t<title>`` per result. With ``--save`` (DS-02) each result is also written as one
@@ -58,7 +59,7 @@ from adapters.searxng import SearxngSearch
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.entity_store import EntityRef, iter_entities
-from core.ingest import IngestResult, ingest_page
+from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.links import extract_links, normalise_url
 from core.resolve import apply_resolution, group_candidates
 from core.runs import create_all
@@ -294,7 +295,8 @@ class _Crawler:
     """Sequential fetches sharing one robots policy, per-host limiter, raw store and parser.
 
     Each URL goes through the same robots check, per-host wait and ``ingest_page`` call. A target
-    failure is printed and recorded in :attr:`failed` and does not stop the rest.
+    failure is printed and recorded in :attr:`failed` and does not stop the rest. A non-2xx
+    status is printed as a skip, writes nothing and is not recorded in :attr:`failed`.
     """
 
     def __init__(self, engine: Engine, fetcher: Fetcher) -> None:
@@ -314,7 +316,7 @@ class _Crawler:
         self.failed = False
 
     def crawl(self, url: str, entity_id: int | None) -> IngestResult | None:
-        """Fetch and ingest ``url``; None if robots-skipped or failed."""
+        """Fetch and ingest ``url``; None if robots-skipped, non-2xx or failed."""
         try:
             host = urlsplit(url).hostname or ""
             if not self.robots.allowed(url):
@@ -333,6 +335,9 @@ class _Crawler:
                 source_kind=_SOURCE_KIND,
                 blob_store=self.blob_store,
             )
+        except NonSuccessStatusError as exc:
+            typer.echo(f"skipped {url} status={exc.status}")
+            return None
         except Exception as exc:  # noqa: BLE001 - report and continue with the next URL
             self.failed = True
             detail = str(exc) if isinstance(exc, FetchError) else ""

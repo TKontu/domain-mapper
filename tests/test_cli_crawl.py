@@ -59,9 +59,10 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             if url.endswith("/broken"):
                 payload = {"success": False, "error": "scrape failed"}
             else:
+                status_code = 404 if url.endswith("/missing") else 200
                 payload = {
                     "success": True,
-                    "data": {"rawHtml": HTML, "metadata": {"statusCode": 200, "url": url}},
+                    "data": {"rawHtml": HTML, "metadata": {"statusCode": status_code, "url": url}},
                 }
             self._send(200, json.dumps(payload).encode(), "application/json")
 
@@ -152,6 +153,16 @@ class CrawlStageTest(unittest.TestCase):
         self.assertIn(f"ok {good}", result.output)
         self.assertEqual(len(self.rows()[0]), 1)
         self.assertNotIn(self.base + "/v1", result.output)
+
+    def test_non_2xx_explicit_url_is_skipped_and_exits_0(self) -> None:
+        url = self.base + "/missing"
+        result = self.crawl(url)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn(f"skipped {url} status=404", result.output)
+        snaps, chunks = self.rows()
+        self.assertEqual(snaps, [])
+        self.assertEqual(chunks, [])
+        self.assertFalse(self.raw.exists())
 
     def test_missing_firecrawl_url_exits_2(self) -> None:
         del os.environ["FIRECRAWL_URL"]
