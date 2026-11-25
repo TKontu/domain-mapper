@@ -167,3 +167,31 @@ def test_parse_and_chunk_uses_html_heading_paths() -> None:
     paths = [chunk.heading_path for chunk in chunks]
     assert ("Top",) in paths
     assert ("Top", "Section") in paths
+
+
+def test_unclosed_dropped_tag_stops_at_enclosing_element_close() -> None:
+    body = b"<body><div><header><p>dropped</p></div><p>after</p></body>"
+    assert parse(body).markdown == "after"
+
+
+def test_unclosed_dropped_tag_stops_at_body_close() -> None:
+    body = b"<body><header><p>dropped</p></body><p>after</p>"
+    assert parse(body).markdown == "after"
+
+
+def test_pre_preserves_whitespace_in_a_fenced_code_block() -> None:
+    body = b"<body><pre>a\n  b</pre><p>after</p></body>"
+    assert parse(body).markdown == "```\na\n  b\n```\n\nafter"
+
+
+def test_paragraph_line_starting_with_hash_is_escaped() -> None:
+    body = b"<body><p># not a heading</p></body>"
+    assert parse(body).markdown == "\\# not a heading"
+
+
+def test_escaped_hash_text_is_not_a_heading_to_the_chunker() -> None:
+    body = b"<body><p># not a heading</p></body>"
+    chunks = list(parse_and_chunk(body, content_type=HTML, url=URL, parser=HtmlParser()))
+    assert len(chunks) == 1
+    assert chunks[0].heading_path == ()
+    assert chunks[0].text == "\\# not a heading"
