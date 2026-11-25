@@ -286,7 +286,11 @@ class RepoNameTests(unittest.TestCase):
     def test_dashboard_lists_only_this_repos_lanes(self):
         mine = {"name": rs.LANE_PREFIX + "task1", "agent_status": "working"}
         other = {"name": "live-otherrepo-task1", "agent_status": "working"}
-        view = rs.gather_view(FakeHerdr([mine, other]))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        empty = Path(tmp.name)  # no lane records: ROUND_SUPERVISOR_ROOT must not leak in
+        with mock.patch.object(rs, "ROOT", empty), mock.patch.object(rs, "STATE", empty / "state"):
+            view = rs.gather_view(FakeHerdr([mine, other]))
         self.assertEqual(view["lanes"], [(mine["name"], "working")])
 
     def test_dashboard_prefers_lane_records_over_agent_state(self):
