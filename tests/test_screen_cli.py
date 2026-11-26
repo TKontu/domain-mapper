@@ -509,3 +509,69 @@ def test_db_error_with_close_ok_exits_2_one_line_run_failed(engine, monkeypatch)
     assert result.exit_code == 2, result.output
     _assert_one_db_line(result)
     assert _screen_runs(engine) == [("screen", "failed")]
+
+
+# --- RT-01: screen runs through StageRunner -------------------------------------
+
+
+def _work_units(engine) -> list[tuple[str, str, int, int]]:
+    from core.runs import WorkUnit
+
+    with Session(engine) as session:
+        return [
+            (u.unit_key, u.status, u.attempts, u.run_id)
+            for u in session.scalars(
+                sa.select(WorkUnit).where(WorkUnit.stage == "screen").order_by(WorkUnit.id)
+            )
+        ]
+
+
+def test_screen_records_done_work_units_under_the_run(engine, monkeypatch) -> None:  # RT-01
+    first = seed_entity(engine, "Acme", [[(0, "page text")]])
+    second = seed_entity(engine, "Beta", [[(0, "page text")]])
+    no_text = seed_entity(engine, "NoText")
+    use_llm(monkeypatch, FakeLLM({n: answer() for n in ("Acme", "Beta")}))
+
+    result = invoke()
+
+    assert result.exit_code == 0, result.output
+    assert f"skipped {no_text} no-text" in result.output.splitlines()
+    run_id = _screen_runs_ids(engine)[0]
+    assert _work_units(engine) == [
+        (str(first), "done", 1, run_id),
+        (str(second), "done", 1, run_id),
+    ]
+
+
+def test_screen_retry_after_failure_increments_attempts(engine, monkeypatch) -> None:  # RT-01
+    entity_id = seed_entity(engine, "Acme", [[(0, "page text")]])
+    use_llm(monkeypatch, FakeLLM({"Acme": LlmError("gateway down")}))
+    assert invoke().exit_code == 1
+    assert [u[:3] for u in _work_units(engine)] == [(str(entity_id), "failed", 1)]
+
+    use_llm(monkeypatch, FakeLLM({"Acme": answer()}))
+    result = invoke()
+
+    assert result.exit_code == 0, result.output
+    second_run = _screen_runs_ids(engine)[1]
+    assert _work_units(engine) == [(str(entity_id), "done", 2, second_run)]
+
+
+def test_budget_stop_records_unit_failed_and_run_failed(engine, monkeypatch) -> None:  # RT-01
+    from adapters.llm import LlmBudgetExceeded
+
+    first = seed_entity(engine, "Acme", [[(0, "page text")]])
+    seed_entity(engine, "Beta", [[(0, "page text")]])
+    use_llm(monkeypatch, FakeLLM({"Acme": LlmBudgetExceeded("spent"), "Beta": answer()}))
+
+    result = invoke()
+
+    assert result.exit_code == 1, result.output
+    assert "screened 0 skipped 0 errors 1" in result.output
+    assert [u[:3] for u in _work_units(engine)] == [(str(first), "failed", 1)]
+    assert _screen_runs(engine) == [("screen", "failed")]
+
+
+def _screen_runs_ids(engine) -> list[int]:
+    with Session(engine) as session:
+        return list(session.scalars(sa.select(Run.id).order_by(Run.id)))

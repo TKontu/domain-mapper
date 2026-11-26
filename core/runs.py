@@ -5,9 +5,11 @@ processes units one at a time, committing each unit's status in its own short
 transaction. A unit that is already ``done`` for the same input hash is skipped,
 so re-running a stage (including after a crash) only touches unfinished work.
 
-The runner is unwired by design: the first stage body (todo Phase 1 Discover)
-wires it through the CLI. It does not own the handler's side effects; handlers
-must be idempotent because a unit can be retried after a partial failure.
+Its first production caller is ``landscape screen`` (app/cli.py ``run_screen``),
+which attaches it to the invocation's own run row (``run_id=``) and stops the
+whole run on a budget error (``catch=``). The runner does not own the handler's
+side effects; handlers must be idempotent because a unit can be retried after a
+partial failure.
 """
 
 from __future__ import annotations
@@ -114,8 +116,16 @@ class StageRunner:
 
     ``units`` yields ``(unit_key, input_hash)`` pairs. They are consumed lazily,
     one at a time, so a stage never materialises the whole unit set in memory.
-    ``handler`` is called with the unit key; any ``Exception`` it raises is
-    recorded on the unit and the run continues with the next unit.
+    ``handler`` is called with the unit key; an exception matching ``catch``
+    (default: any ``Exception``) is recorded on the unit and the run continues.
+    Any other ``Exception`` is recorded ``failed`` on the unit, the run is closed
+    ``failed`` (when the runner owns it) and the exception propagates.
+
+    With ``run_id`` the runner attaches to a run row the caller opened and owns:
+    it neither opens nor closes the run, and the summary status only reflects
+    unit failures. Each unit's claim (attempt increment) and outcome are
+    committed in two short transactions; the handler runs between them, outside
+    any runner transaction, so it may write through its own connections.
     """
 
     def __init__(self, engine: Engine) -> None:
@@ -127,12 +137,17 @@ class StageRunner:
         stage: str,
         units: Iterable[tuple[str, str]],
         handler: Callable[[str], None],
+        *,
+        run_id: int | None = None,
+        catch: tuple[type[Exception], ...] = (Exception,),
     ) -> RunSummary:
-        run_id = self._open_run(stage)
+        owns_run = run_id is None
+        if run_id is None:
+            run_id = self._open_run(stage)
         executed = skipped = failed = 0
         try:
             for unit_key, input_hash in units:
-                outcome = self._process_unit(run_id, stage, unit_key, input_hash, handler)
+                outcome = self._process_unit(run_id, stage, unit_key, input_hash, handler, catch)
                 if outcome is None:
                     skipped += 1
                     continue
@@ -140,12 +155,15 @@ class StageRunner:
                 if outcome == FAILED:
                     failed += 1
         except BaseException:
-            # The unit iterator itself failed; do not leave the run ``running``.
-            self._close_run(run_id, FAILED)
+            # The iterator or an uncaught handler error stopped the run; do not
+            # leave an owned run ``running``.
+            if owns_run:
+                self._close_run(run_id, FAILED)
             raise
 
         status = FAILED if failed else FINISHED
-        self._close_run(run_id, status)
+        if owns_run:
+            self._close_run(run_id, status)
         return RunSummary(
             run_id=run_id,
             status=status,
@@ -176,8 +194,9 @@ class StageRunner:
         unit_key: str,
         input_hash: str,
         handler: Callable[[str], None],
+        catch: tuple[type[Exception], ...] = (Exception,),
     ) -> str | None:
-        """Process one unit in its own transaction; ``None`` means already done."""
+        """Claim, run and record one unit; ``None`` means already done."""
         with self._session_factory.begin() as session:
             unit = session.scalar(
                 sa.select(WorkUnit).where(
@@ -205,16 +224,26 @@ class StageRunner:
             unit.error = None
             unit.updated_at = _utcnow()
             session.flush()
+            unit_id = unit.id
 
-            try:
-                handler(unit_key)
-            except Exception as exc:
-                unit.status = FAILED
-                unit.error = _error_text(exc)
-            else:
-                unit.status = DONE
-            unit.updated_at = _utcnow()
-            return unit.status
+        status, error, stop = DONE, None, None
+        try:
+            handler(unit_key)
+        except catch as exc:
+            status, error = FAILED, _error_text(exc)
+        except Exception as exc:
+            status, error, stop = FAILED, _error_text(exc), exc
+
+        with self._session_factory.begin() as session:
+            row = session.get(WorkUnit, unit_id)
+            if row is None:  # pragma: no cover - the row was just committed
+                raise RuntimeError(f"work unit {unit_id} disappeared")
+            row.status = status
+            row.error = error
+            row.updated_at = _utcnow()
+        if stop is not None:
+            raise stop
+        return status
 
 
 def _error_text(exc: Exception) -> str:
