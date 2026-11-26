@@ -11,6 +11,7 @@ from unittest import mock
 from typer.testing import CliRunner
 
 import app.cli as cli
+import core.runs
 from core.runs import create_db_engine
 
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
@@ -32,10 +33,13 @@ class CliEngineFactoryTest(unittest.TestCase):
 
     def test_resolve_builds_engine_via_create_db_engine(self) -> None:
         spy = mock.Mock(wraps=create_db_engine)
-        with mock.patch.object(cli, "create_db_engine", spy, create=True):
+        with mock.patch.object(cli, "create_db_engine", spy):
             result = CliRunner().invoke(cli.app, ["resolve", "--scope", EXAMPLE_SCOPE])
         self.assertEqual(result.exit_code, 0, result.output)
         spy.assert_called_once_with(self.db_url)
+
+    def test_cli_uses_shared_engine_factory(self) -> None:
+        self.assertIs(cli.create_db_engine, core.runs.create_db_engine)
 
     def test_cli_does_not_import_raw_create_engine(self) -> None:
         self.assertFalse(hasattr(cli, "create_engine"))
