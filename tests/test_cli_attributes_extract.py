@@ -638,3 +638,122 @@ def test_skip_existing_with_entity_exits_2_no_run(engine, tmp_path) -> None:
     assert runs(engine) == []
     make.assert_not_called()
     assert values(engine) == []
+
+
+# --- RT-01: batch runs each pair through StageRunner -----------------------------
+
+
+def _extract_units(engine) -> list[tuple[str, str, int, int]]:
+    from core.runs import WorkUnit
+
+    with Session(engine) as session:
+        return [
+            (u.unit_key, u.status, u.attempts, u.run_id)
+            for u in session.scalars(
+                sa.select(WorkUnit)
+                .where(WorkUnit.stage == "attributes_extract")
+                .order_by(WorkUnit.id)
+            )
+        ]
+
+
+def _run_ids(engine) -> list[int]:
+    with Session(engine) as session:
+        return list(session.scalars(sa.select(Run.id).order_by(Run.id)))
+
+
+def _add_chunk(engine, entity_id: int, text: str) -> None:
+    with Session(engine) as session, session.begin():
+        snap = SnapshotRow(
+            entity_id=entity_id,
+            url="https://extra.example/",
+            final_url="https://extra.example/",
+            content_type="text/html",
+            sha256="1" * 64,
+            fetched_at=datetime.now(UTC),
+            source_kind="web",
+        )
+        session.add(snap)
+        session.flush()
+        snap_id = snap.id
+    store_chunks(
+        engine,
+        snap_id,
+        [Chunk(seq=0, text=text, page=None, heading_path=("S",), char_start=0, char_end=len(text))],
+    )
+
+
+def test_all_records_done_work_units_under_the_run(engine, tmp_path) -> None:  # RT-01
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    second = seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    result, _ = invoke_batch(GroundingFake(value=42), scope, "--all")
+    assert result.exit_code == 0, result.output
+    run_id = _run_ids(engine)[0]
+    assert _extract_units(engine) == [
+        (f"{first}:attr_a", "done", 1, run_id),
+        (f"{first}:attr_b", "done", 1, run_id),
+        (f"{second}:attr_a", "done", 1, run_id),
+        (f"{second}:attr_b", "done", 1, run_id),
+    ]
+
+
+def test_all_rerun_skips_done_and_retries_errored_pair(engine, tmp_path) -> None:  # RT-01
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    second = seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    first_chunk = _first_chunk(engine, first)
+
+    class FlakyFake(GroundingFake):
+        def complete(self, prompt, *, purpose, run_id, json_schema=None):
+            if f"[chunk {first_chunk}]" in prompt and not self.prompts:
+                self.prompts.append(prompt)
+                raise LlmError("boom")
+            return super().complete(prompt, purpose=purpose, run_id=run_id, json_schema=json_schema)
+
+    result, _ = invoke_batch(FlakyFake(value=42), scope, "--all")
+    assert result.exit_code == 1, result.output
+    assert (f"{first}:attr_a", "failed", 1) in [u[:3] for u in _extract_units(engine)]
+
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 1
+    pair_lines = [ln for ln in result.output.splitlines() if ln.startswith("entity ")]
+    assert len(pair_lines) == 1 and pair_lines[0].startswith(f"entity {first} attribute attr_a ")
+    assert result.output.splitlines()[-1] == "pairs 4 stored 1 null 0 failed 0 errors 0 skipped 3"
+    first_run, second_run = _run_ids(engine)
+    assert _extract_units(engine) == [
+        (f"{first}:attr_a", "done", 2, second_run),
+        (f"{first}:attr_b", "done", 1, first_run),
+        (f"{second}:attr_a", "done", 1, first_run),
+        (f"{second}:attr_b", "done", 1, first_run),
+    ]
+
+
+def test_all_failed_checks_pair_is_done_not_retried(engine, tmp_path) -> None:  # RT-01
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, _ = invoke_batch(GroundingFake(value=42, quote="not in the text"), scope, "--all")
+    assert result.exit_code == 1, result.output
+    assert {u[1] for u in _extract_units(engine)} == {"done"}
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert fake.prompts == []
+    assert result.output.splitlines()[-1] == "pairs 2 stored 0 null 0 failed 0 errors 0 skipped 2"
+
+
+def test_all_new_chunk_re_extracts_entity_pairs(engine, tmp_path) -> None:  # RT-01
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    assert invoke_batch(GroundingFake(value=42), scope, "--all")[0].exit_code == 0
+    _add_chunk(engine, first, BATCH_TEXT)
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 2
+    pair_lines = [ln for ln in result.output.splitlines() if ln.startswith("entity ")]
+    assert all(ln.startswith(f"entity {first} ") for ln in pair_lines) and len(pair_lines) == 2
+    assert result.output.splitlines()[-1] == "pairs 4 stored 2 null 0 failed 0 errors 0 skipped 2"
