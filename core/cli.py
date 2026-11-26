@@ -112,6 +112,8 @@ from core.attribute_extract import (
     store_attribute_extraction,
 )
 from core.attribute_store import (
+    attribute_evidence_many,
+    current_attribute_value_rows_many,
     current_attribute_values,
     current_attribute_values_many,
     record_attribute_value,
@@ -937,10 +939,11 @@ def run_attributes_export(scope: Path, out: Path) -> None:
 
     Entities stream in ascending id via :func:`iter_entities` and are batched
     (``ATTRIBUTES_EXPORT_BATCH`` ids) into one
-    :func:`core.attribute_store.current_attribute_values_many` query per batch (AT-04). Entities
+    :func:`core.attribute_store.current_attribute_value_rows_many` query and one
+    :func:`core.attribute_store.attribute_evidence_many` query per batch (AT-04, AT-10). Entities
     without values are skipped and counted; the rest are written one line at a time, attribute ids
-    sorted, to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup
-    errors
+    sorted, with an ``evidence`` object (attribute id -> current value's evidence in id order) to
+    ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup errors
     or an unwritable output directory exit 2. Production caller: the ``attributes-export``
     command; consumer is the later static-site row.
     """
@@ -962,16 +965,32 @@ def run_attributes_export(scope: Path, out: Path) -> None:
                 def flush() -> None:
                     nonlocal count, skipped
                     with Session(engine) as session:
-                        many = current_attribute_values_many(session, batch)
+                        many = current_attribute_value_rows_many(session, batch)
+                        evidence = attribute_evidence_many(
+                            session,
+                            [row_id for rows in many.values() for row_id, _ in rows.values()],
+                        )
                     for entity_id in batch:
                         values = many.get(entity_id)
                         if not values:
                             skipped += 1
                             continue
-                        attributes = {
-                            attribute_id: values[attribute_id] for attribute_id in sorted(values)
+                        keys = sorted(values)
+                        obj = {
+                            "entity_id": entity_id,
+                            "attributes": {key: values[key][1] for key in keys},
+                            "evidence": {
+                                key: [
+                                    {
+                                        "chunk_id": e.chunk_id,
+                                        "quote": e.quote,
+                                        "grounded": e.grounded,
+                                    }
+                                    for e in evidence.get(values[key][0], [])
+                                ]
+                                for key in keys
+                            },
                         }
-                        obj = {"entity_id": entity_id, "attributes": attributes}
                         handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
                         count += 1
                     batch.clear()
