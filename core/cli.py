@@ -104,7 +104,11 @@ from core.assessment_store import (
     iter_current_assessments,
     record_assessment,
 )
-from core.attribute_store import current_attribute_values, record_attribute_value
+from core.attribute_store import (
+    current_attribute_values,
+    current_attribute_values_many,
+    record_attribute_value,
+)
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -916,13 +920,18 @@ def run_attributes(scope: Path, entity_id: int) -> None:
         )
 
 
+ATTRIBUTES_EXPORT_BATCH = 500
+
+
 def run_attributes_export(scope: Path, out: Path) -> None:
     """Write one attributes object per entity of ``scope`` with current values to ``out`` (AT-03).
 
-    Entities stream in ascending id via :func:`iter_entities`; each one's current values come from
-    :func:`core.attribute_store.current_attribute_values` (entities without values are skipped and
-    counted) and are written one line at a time, attribute ids sorted, to ``<out>.tmp``, renamed
-    to ``out`` on success so a failure leaves no ``PATH``. One query per entity (N+1). Setup errors
+    Entities stream in ascending id via :func:`iter_entities` and are batched
+    (``ATTRIBUTES_EXPORT_BATCH`` ids) into one
+    :func:`core.attribute_store.current_attribute_values_many` query per batch (AT-04). Entities
+    without values are skipped and counted; the rest are written one line at a time, attribute ids
+    sorted, to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup
+    errors
     or an unwritable output directory exit 2. Production caller: the ``attributes-export``
     command; consumer is the later static-site row.
     """
@@ -939,18 +948,31 @@ def run_attributes_export(scope: Path, out: Path) -> None:
         with handle:
             engine = _open_engine(settings)
             try:
-                for entity in iter_entities(engine, pack.scope.id):
+                batch: list[int] = []
+
+                def flush() -> None:
+                    nonlocal count, skipped
                     with Session(engine) as session:
-                        values = current_attribute_values(session, entity.id)
-                    if not values:
-                        skipped += 1
-                        continue
-                    attributes = {
-                        attribute_id: values[attribute_id] for attribute_id in sorted(values)
-                    }
-                    obj = {"entity_id": entity.id, "attributes": attributes}
-                    handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
-                    count += 1
+                        many = current_attribute_values_many(session, batch)
+                    for entity_id in batch:
+                        values = many.get(entity_id)
+                        if not values:
+                            skipped += 1
+                            continue
+                        attributes = {
+                            attribute_id: values[attribute_id] for attribute_id in sorted(values)
+                        }
+                        obj = {"entity_id": entity_id, "attributes": attributes}
+                        handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        count += 1
+                    batch.clear()
+
+                for entity in iter_entities(engine, pack.scope.id):
+                    batch.append(entity.id)
+                    if len(batch) >= ATTRIBUTES_EXPORT_BATCH:
+                        flush()
+                if batch:
+                    flush()
             except SQLAlchemyError as exc:
                 _exit_database_unavailable(engine, None, exc)
             finally:

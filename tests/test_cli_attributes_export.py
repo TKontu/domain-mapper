@@ -125,3 +125,31 @@ def test_unwritable_directory_exits_2_and_leaves_nothing(engine, tmp_path) -> No
     assert "cannot write" in result.stderr
     assert not out.exists()
     assert not Path(f"{out}.tmp").exists()
+
+
+def test_export_in_batches_same_lines_one_query_per_batch(engine, tmp_path, monkeypatch) -> None:
+    ids = [add_entity(engine, f"e{i}") for i in range(5)]
+    for i, entity_id in enumerate(ids):
+        if i != 2:
+            add_value(engine, entity_id, HEADCOUNT, i)
+            add_value(engine, entity_id, HEADCOUNT, i * 10)
+            add_value(engine, entity_id, PRICING, "per_page")
+    calls: list[list[int]] = []
+    real = cli.current_attribute_values_many
+
+    def counting(session, entity_ids):
+        calls.append(list(entity_ids))
+        return real(session, entity_ids)
+
+    monkeypatch.setattr(cli, "ATTRIBUTES_EXPORT_BATCH", 2)
+    monkeypatch.setattr(cli, "current_attribute_values_many", counting)
+    out = tmp_path / "attributes.jsonl"
+    result = export(out)
+    assert result.exit_code == 0, result.output
+    assert calls == [ids[0:2], ids[2:4], ids[4:5]]
+    lines = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert lines == [
+        {"entity_id": ids[i], "attributes": {"headcount": i * 10, "pricing_model": "per_page"}}
+        for i in (0, 1, 3, 4)
+    ]
+    assert f"exported 4 entities to {out} (skipped 1 without attributes)" in result.output
