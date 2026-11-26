@@ -169,6 +169,113 @@ class SyntheticTest(unittest.TestCase):
         )
         self.assertEqual(t.check().returncode, 0, t.check().stdout)
 
+    def test_call_decorator_rooted_at_production_name_counts_as_reference(self) -> None:
+        # Framework registration (e.g. @app.command(...)) is a production caller.
+        t = self._tree(
+            {
+                "app/cli.py": (
+                    "app = Typer()\n\n"
+                    '@app.command("run")\n'
+                    "def run() -> int:\n"
+                    "    return 1\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_attribute_decorator_rooted_at_production_name_counts_as_reference(self) -> None:
+        t = self._tree(
+            {
+                "app/cli.py": (
+                    "app = Typer()\n\n"
+                    "@app.command\n"
+                    "def run() -> int:\n"
+                    "    return 1\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_registered_class_counts_as_reference(self) -> None:
+        t = self._tree(
+            {
+                "app/cli.py": (
+                    "app = Typer()\n\n"
+                    '@app.command("run")\n'
+                    "class Runner:\n"
+                    "    pass\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_dataclass_decorator_alone_does_not_count_as_reference(self) -> None:
+        # Bare-name pure wrappers are not production registration.
+        t = self._tree(
+            {
+                "core/a.py": (
+                    "from dataclasses import dataclass\n\n"
+                    "@dataclass\n"
+                    "class Widget:\n"
+                    "    x: int = 1\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("core/a.py", r.stdout)
+        self.assertIn("Widget", r.stdout)
+
+    def test_dataclass_call_decorator_alone_does_not_count_as_reference(self) -> None:
+        t = self._tree(
+            {
+                "core/a.py": (
+                    "from dataclasses import dataclass\n\n"
+                    "@dataclass(frozen=True)\n"
+                    "class Widget:\n"
+                    "    x: int = 1\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Widget", r.stdout)
+
+    def test_stdlib_attribute_decorator_does_not_count_as_reference(self) -> None:
+        t = self._tree(
+            {
+                "core/a.py": (
+                    "import functools\n\n"
+                    "@functools.cache\n"
+                    "def compute() -> int:\n"
+                    "    return 1\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("compute", r.stdout)
+
+    def test_bare_name_decorator_does_not_count_as_reference(self) -> None:
+        # Even a production name does not count unless the expression is a call or attribute.
+        t = self._tree(
+            {
+                "core/a.py": (
+                    "def register(fn):\n"
+                    "    return fn\n\n"
+                    "@register\n"
+                    "def handler() -> int:\n"
+                    "    return 1\n"
+                ),
+            }
+        )
+        r = t.check()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("handler", r.stdout)
+
     def test_print_emits_seeded_toml(self) -> None:
         t = self._tree({"core/a.py": "def lonely():\n    return 1\n"})
         r = t.print_()
