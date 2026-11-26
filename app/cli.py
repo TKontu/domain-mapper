@@ -1283,7 +1283,14 @@ def _export_object(row: CurrentAssessment) -> dict[str, object]:
         "run_id": row.run_id,
         "created_at": row.created_at.isoformat(),
         "evidence": [
-            {"chunk_id": ev.chunk_id, "quote": ev.quote, "grounded": ev.grounded}
+            {
+                "chunk_id": ev.chunk_id,
+                "quote": ev.quote,
+                "grounded": ev.grounded,
+                "snapshot_id": ev.snapshot_id,
+                "url": ev.url,
+                "fetched_at": ev.fetched_at.isoformat() if ev.fetched_at else None,
+            }
             for ev in row.evidence
         ],
     }

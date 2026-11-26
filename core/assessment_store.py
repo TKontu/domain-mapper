@@ -32,7 +32,9 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import TypeDecorator
 
 from core.assess import Extraction
+from core.chunk_store import ChunkRow
 from core.runs import Base
+from core.snapshot_store import SnapshotRow
 from core.verify import Route
 
 DECIDED_BY_AUTO: Final = "auto"
@@ -176,6 +178,9 @@ class CurrentEvidence:
     chunk_id: int
     quote: str
     grounded: bool
+    snapshot_id: int | None = None
+    url: str | None = None
+    fetched_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -308,15 +313,18 @@ def _evidence_for(session: Session, ids: Sequence[int]) -> dict[int, list[Curren
     found: dict[int, list[CurrentEvidence]] = {}
     for start in range(0, len(ids), _IN_CHUNK):
         chunk = ids[start : start + _IN_CHUNK]
+        # LEFT OUTER JOINs keep evidence whose chunk or snapshot row is absent (no FKs).
         stmt = (
-            sa.select(EvidenceRow)
+            sa.select(EvidenceRow, SnapshotRow.id, SnapshotRow.final_url, SnapshotRow.fetched_at)
+            .outerjoin(ChunkRow, ChunkRow.id == EvidenceRow.chunk_id)
+            .outerjoin(SnapshotRow, SnapshotRow.id == ChunkRow.snapshot_id)
             .where(EvidenceRow.assessment_id.in_(chunk))
             .order_by(EvidenceRow.assessment_id, EvidenceRow.id)
         )
-        for ev in session.scalars(stmt):
+        for ev, snapshot_id, url, fetched_at in session.execute(stmt):
             if ev.assessment_id is None:  # pragma: no cover - excluded by the IN filter
                 continue
             found.setdefault(ev.assessment_id, []).append(
-                CurrentEvidence(ev.chunk_id, ev.quote, ev.grounded)
+                CurrentEvidence(ev.chunk_id, ev.quote, ev.grounded, snapshot_id, url, fetched_at)
             )
     return found
