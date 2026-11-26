@@ -100,6 +100,14 @@ def attribute_schema(attribute: Attribute, chunk_ids: Sequence[int]) -> dict[str
     }
 
 
+def attribute_query(attribute: Attribute) -> str:
+    """BM25 query text for ``attribute``: its label, plus the allowed values of an enum."""
+    parts = [attribute.label]
+    if attribute.type == "enum":
+        parts.extend(attribute.values)
+    return " ".join(parts)
+
+
 def build_prompt(attribute: Attribute, chunks: Sequence[tuple[int, str]]) -> str:
     details = f"Attribute: {attribute.label} ({attribute.id})\nType: {attribute.type}"
     if attribute.unit:

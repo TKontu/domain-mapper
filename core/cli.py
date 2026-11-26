@@ -104,6 +104,12 @@ from core.assessment_store import (
     iter_current_assessments,
     record_assessment,
 )
+from core.attribute_extract import (
+    AttributeExtractError,
+    attribute_query,
+    extract_attribute,
+    store_attribute_extraction,
+)
 from core.attribute_store import (
     current_attribute_values,
     current_attribute_values_many,
@@ -117,7 +123,7 @@ from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.resolve import apply_resolution, group_candidates
-from core.retrieve import retrieve_evidence
+from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
 from core.scope_pack import (
     Attribute,
@@ -1396,6 +1402,79 @@ def run_assess(
         raise typer.Exit(1)
 
 
+def run_attributes_extract(
+    scope: Path, entity_id: int | None, attribute_id: str | None, n: int, dry_run: bool
+) -> None:
+    """Extract one entity × attribute value inside an ``attributes_extract`` run (AT-07).
+
+    BM25 retrieves up to ``n`` of the entity's chunks for :func:`attribute_query`; the extractor
+    (``_make_assess_llm``) runs via :func:`extract_attribute` and the value plus its evidence is
+    stored by :func:`store_attribute_extraction` in one committed transaction (null or failed
+    extractions write nothing). Prints ``value V checks pass|fail chunks N``, ``quote ...`` and
+    ``failure ...`` lines and ``attribute_value ID|-``. Exits 0 when checks pass, 1 when they fail
+    (run ``finished``) or on ``AttributeExtractError``/``LlmError`` (run ``failed``), 2 on bad
+    input or setup (unknown attribute and ``--n < 1`` open no run).
+    """
+    settings = _load(scope)
+    if dry_run:
+        _print_plan("attributes-extract", scope, None, None, settings)
+        return
+    if entity_id is None or attribute_id is None:
+        typer.echo("error: --entity and --attribute are required", err=True)
+        raise typer.Exit(2)
+    pack = _load_pack_or_exit(scope)
+    attribute = next((a for a in pack.attributes.attributes if a.id == attribute_id), None)
+    if attribute is None:
+        typer.echo(f"error: unknown attribute {attribute_id!r}", err=True)
+        raise typer.Exit(2)
+    if n < 1:
+        typer.echo("error: --n must be at least 1", err=True)
+        raise typer.Exit(2)
+
+    engine = _open_engine(settings)
+    run_id: int | None = None
+    try:
+        try:
+            llm = _make_assess_llm(settings, engine)
+        except (ValueError, LlmError) as exc:  # unbuildable backend: bad setup, exit 2
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
+        run_id = _open_run(engine, "attributes_extract")
+        try:
+            hits = search_chunks(engine, attribute_query(attribute), limit=n, entity_id=entity_id)
+            chunks = _with_texts(engine, [hit.chunk_id for hit in hits])
+            extraction = extract_attribute(llm, attribute, chunks, run_id=run_id)
+            with Session(engine) as session, session.begin():
+                value_id = store_attribute_extraction(
+                    session, entity_id, attribute, extraction, run_id=run_id
+                )
+        except (AttributeExtractError, LlmError) as exc:
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            _close_run(engine, run_id, FAILED)
+            raise typer.Exit(1) from None
+        except SQLAlchemyError:
+            raise  # the outer handler closes the run best-effort and prints one line
+        except BaseException as exc:
+            _close_run_aborting(engine, run_id, exc)
+            raise
+        _close_run(engine, run_id, FINISHED)
+    except SQLAlchemyError as exc:  # URL never echoed
+        _exit_database_unavailable(engine, run_id, exc)
+    finally:
+        engine.dispose()
+
+    checks = "pass" if extraction.checks_passed else "fail"
+    typer.echo(f"value {json.dumps(extraction.value)} checks {checks} chunks {len(chunks)}")
+    for quote in extraction.quotes:
+        grounded = "grounded" if quote.grounded else "ungrounded"
+        typer.echo(f'quote chunk {quote.chunk_id} {grounded} "{quote.text}"')
+    for failure in extraction.failures:
+        typer.echo(f"failure {failure}")
+    typer.echo(f"attribute_value {value_id if value_id is not None else '-'}")
+    if not extraction.checks_passed:
+        raise typer.Exit(1)
+
+
 def _register(stage: str) -> None:
     if stage == "crawl":
 
@@ -1539,6 +1618,20 @@ def attributes_export(
 ) -> None:
     """Write one attributes object per entity of the scope to ``--out``."""
     run_attributes_export(scope, out)
+
+
+@app.command(
+    name="attributes-extract", help="Extract one attribute value for an entity with evidence."
+)
+def attributes_extract(
+    scope: ScopeOpt,
+    entity_id: Annotated[int | None, typer.Option("--entity", help="Entity id.")] = None,
+    attribute: Annotated[str | None, typer.Option("--attribute", help="Pack attribute id.")] = None,
+    n: Annotated[int, typer.Option("--n", help="Evidence chunks sent to the extractor.")] = 6,
+    dry_run: DryRunOpt = False,
+) -> None:
+    """Retrieve BM25 evidence for the entity and extract the attribute's typed value."""
+    run_attributes_extract(scope, entity_id, attribute, n, dry_run)
 
 
 @app.command(name="scores", help="Print per-topic score and coverage for one entity.")
