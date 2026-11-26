@@ -124,11 +124,12 @@ from core.candidate_store import NewCandidate, record_candidates
 from core.chunk_store import ChunkRow
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
-from core.entity_store import STATUS_UNSCREENED, EntityRef, iter_entities
+from core.entity_store import STATUS_UNSCREENED, Entity, EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.log import configure_logging
+from core.presence_store import check_presence, layer_ids_for, presences_many, record_presence
 from core.resolve import apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import (
@@ -984,6 +985,62 @@ def run_attribute_set(scope: Path, entity_id: int, attribute_id: str, text: str)
     finally:
         engine.dispose()
     typer.echo(f"attribute_value {row_id} entity {entity_id} attribute {attribute_id}")
+
+
+def _entity_in_scope(session: Session, entity_id: int, scope_id: str) -> bool:
+    entity = session.get(Entity, entity_id)
+    return entity is not None and entity.scope_id == scope_id
+
+
+def run_presence_set(scope: Path, entity_id: int, country: str, presence_type: str) -> None:
+    """Record one manual market presence (MP-01) and commit; evidence_id stays NULL.
+
+    An invalid type or country, or an entity not in the scope, exits 2 with one line and writes
+    nothing.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    try:
+        check_presence(country, presence_type)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    engine = _open_engine(settings)
+    try:
+        with Session(engine) as session, session.begin():
+            if not _entity_in_scope(session, entity_id, pack.scope.id):
+                typer.echo(f"error: unknown entity {entity_id}", err=True)
+                raise typer.Exit(2)
+            row_id = record_presence(session, entity_id, country, presence_type)
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    typer.echo(f"market_presence {row_id} entity {entity_id} {country} {presence_type}")
+
+
+def run_presences(scope: Path, entity_id: int) -> None:
+    """Print ``country type`` lines (sorted) then ``layers: a, b`` via ``layer_ids_for`` (MP-01).
+
+    An entity not in the scope exits 2 with one line.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    engine = _open_engine(settings)
+    try:
+        with Session(engine) as session:
+            if not _entity_in_scope(session, entity_id, pack.scope.id):
+                typer.echo(f"error: unknown entity {entity_id}", err=True)
+                raise typer.Exit(2)
+            rows = presences_many(session, [entity_id]).get(entity_id, [])
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    for country, presence_type in rows:
+        typer.echo(f"{country} {presence_type}")
+    layers = layer_ids_for(pack.scope.layers, {country for country, _ in rows})
+    typer.echo(f"layers: {', '.join(layers)}")
 
 
 def run_attributes(scope: Path, entity_id: int) -> None:
@@ -2048,6 +2105,28 @@ def attribute_set(
 def sources(scope: ScopeOpt) -> None:
     """Upsert the pack's sources into the ``source`` table and print the counts."""
     run_sources(scope)
+
+
+@app.command(name="presence-set", help="Record one manual market presence for an entity.")
+def presence_set(
+    scope: ScopeOpt,
+    entity_id: Annotated[int, typer.Option("--entity", help="Entity id.")],
+    country: Annotated[str, typer.Option("--country", help="ISO-3166 alpha-2, uppercase.")],
+    presence_type: Annotated[
+        str, typer.Option("--type", help="hq, site, field_service, sales or remote.")
+    ],
+) -> None:
+    """Validate and store one presence row; print its id."""
+    run_presence_set(scope, entity_id, country, presence_type)
+
+
+@app.command(name="presences", help="List an entity's market presence and derived layers.")
+def presences(
+    scope: ScopeOpt,
+    entity_id: Annotated[int, typer.Option("--entity", help="Entity id.")],
+) -> None:
+    """Print presence rows and the layers they place the entity in."""
+    run_presences(scope, entity_id)
 
 
 @app.command(name="attributes", help="List the current attribute values of one entity.")
