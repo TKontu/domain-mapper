@@ -21,6 +21,13 @@ from tests import test_cli_crawl_entities as entity_tests
 SCOPE_ID = entity_tests.SCOPE_ID
 
 
+def _assert_db_unavailable_line(test: unittest.TestCase, result: object) -> None:
+    """One stderr line names the close failure; the database URL never appears in the output."""
+    test.assertEqual(result.stderr.count("error: database unavailable"), 1)
+    test.assertIn("error: database unavailable (OperationalError)", result.stderr)
+    test.assertNotIn(str(test.db), result.output)
+
+
 def _runs(db: object) -> list[tuple[str, str, bool]]:
     engine = sa.create_engine(f"sqlite+pysqlite:///{db}")
     try:
@@ -41,7 +48,7 @@ class _Boom:
     def __init__(self, exc: BaseException) -> None:
         self.exc = exc
 
-    def fetch(self, url: str) -> object:
+    def fetch(self, url: str, *, render_js: bool = False) -> object:
         raise self.exc
 
 
@@ -77,6 +84,22 @@ class UrlCrawlRunTest(unittest.TestCase):
             result = self.crawl(self.base + "/page")
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual(_runs(self.db), [("crawl", "failed", True)])
+
+    def test_interrupt_with_close_db_error_propagates_original(self) -> None:  # CR-17
+        err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        with mock.patch.object(cli, "_make_fetcher", return_value=_Boom(KeyboardInterrupt())):
+            with mock.patch.object(cli, "_close_run", side_effect=err):
+                result = self.crawl(self.base + "/page")
+        self.assertEqual(result.exit_code, 130, result.output)
+        _assert_db_unavailable_line(self, result)
+
+    def test_runtime_error_with_close_db_error_propagates_original(self) -> None:  # CR-17
+        err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        with mock.patch.object(cli._Crawler, "crawl", side_effect=RuntimeError("boom")):
+            with mock.patch.object(cli, "_close_run", side_effect=err):
+                result = self.crawl(self.base + "/page")
+        self.assertIsInstance(result.exception, RuntimeError)
+        _assert_db_unavailable_line(self, result)
 
     def test_missing_fetcher_config_exits_2_without_run_row(self) -> None:
         del os.environ["FIRECRAWL_URL"]
@@ -167,6 +190,24 @@ class EntityCrawlRunTest(unittest.TestCase):
             result = self.crawl()
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual(_runs(self.db), [("crawl", "failed", True)])
+
+    def test_interrupt_with_close_db_error_propagates_original(self) -> None:  # CR-17
+        self.seed([(SCOPE_ID, "a.example.com")])
+        err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        with mock.patch.object(cli, "_make_fetcher", return_value=_Boom(KeyboardInterrupt())):
+            with mock.patch.object(cli, "_close_run", side_effect=err):
+                result = self.crawl()
+        self.assertEqual(result.exit_code, 130, result.output)
+        _assert_db_unavailable_line(self, result)
+
+    def test_runtime_error_with_close_db_error_propagates_original(self) -> None:  # CR-17
+        self.seed([(SCOPE_ID, "a.example.com")])
+        err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        with mock.patch.object(cli._Crawler, "crawl", side_effect=RuntimeError("boom")):
+            with mock.patch.object(cli, "_close_run", side_effect=err):
+                result = self.crawl()
+        self.assertIsInstance(result.exception, RuntimeError)
+        _assert_db_unavailable_line(self, result)
 
     def test_page_read_failure_closes_run_failed_and_exits_2(self) -> None:
         self.seed([(SCOPE_ID, "a.example.com")])

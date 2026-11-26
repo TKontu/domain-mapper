@@ -281,9 +281,10 @@ def _crawl_urls(settings: Settings, urls: list[str]) -> None:
             failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls), run_id=run_id)
         except SQLAlchemyError:
             raise  # closed best-effort below
-        except BaseException:
-            # An unexpected error or interrupt must not leave the run row open (CR-14).
-            _close_run(engine, run_id, FAILED)
+        except BaseException as exc:
+            # An unexpected error or interrupt must not leave the run row open (CR-14); a
+            # failed close names itself and never replaces the original exception (CR-17).
+            _close_run_aborting(engine, run_id, exc)
             raise
         _close_run(engine, run_id, FAILED if failed else FINISHED)
     except SQLAlchemyError as exc:  # CR-16: like entity mode, URL never echoed
@@ -328,9 +329,10 @@ def _crawl_entities(
         try:
             for entity in chain((first,), entities):
                 _crawl_entity(crawler, entity, policy, scheme)
-        except BaseException:
-            # An unexpected error, interrupt or page-read failure must not leave the run open.
-            _close_run(engine, run_id, FAILED)
+        except BaseException as exc:
+            # An unexpected error, interrupt or page-read failure must not leave the run
+            # open; a failed close names itself and never replaces the original exception.
+            _close_run_aborting(engine, run_id, exc)
             raise
         failed = crawler.failed
         _close_run(engine, run_id, FAILED if failed else FINISHED)
@@ -559,6 +561,21 @@ def _close_run(engine: Engine, run_id: int, status: str) -> None:
             raise RuntimeError(f"run {run_id} disappeared")
         run.status = status
         run.finished_at = datetime.now(UTC)
+
+
+def _close_run_aborting(engine: Engine, run_id: int | None, exc: BaseException) -> None:
+    """Best-effort FAILED close for a crawl that aborts with ``exc`` (CR-17).
+
+    If the close raises ``SQLAlchemyError``, one stderr line names it (the database URL is
+    never echoed); the caller then re-raises ``exc``, so a close failure never replaces the
+    original exception.
+    """
+    if run_id is None:
+        return
+    try:
+        _close_run(engine, run_id, FAILED)
+    except SQLAlchemyError as close_exc:
+        typer.echo(f"error: database unavailable ({type(close_exc).__name__})", err=True)
 
 
 def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool) -> None:
