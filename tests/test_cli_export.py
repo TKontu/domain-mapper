@@ -15,6 +15,8 @@ from typer.testing import CliRunner
 from app import cli
 from core.assess import Extraction, Quote
 from core.assessment_store import AssessmentRow, record_assessment
+from core.chunk_store import ChunkRow
+from core.snapshot_store import SnapshotRow
 from core.runs import Run, create_all
 from core.verify import Route
 
@@ -121,11 +123,11 @@ def test_writes_json_lines_with_key_set_and_view_order(engine, tmp_path) -> None
         "route_kind": "accept",
         "run_id": rid,
         "created_at": first["created_at"],
-        "evidence": [{"chunk_id": 9, "quote": "old", "grounded": True}],
+        "evidence": [{"chunk_id": 9, "quote": "old", "grounded": True, "snapshot_id": None, "url": None, "fetched_at": None}],
     }
     assert second["evidence"] == [
-        {"chunk_id": 3, "quote": "a", "grounded": True},
-        {"chunk_id": 4, "quote": "b", "grounded": False},
+        {"chunk_id": 3, "quote": "a", "grounded": True, "snapshot_id": None, "url": None, "fetched_at": None},
+        {"chunk_id": 4, "quote": "b", "grounded": False, "snapshot_id": None, "url": None, "fetched_at": None},
     ]
     for row in rows:
         parsed = datetime.fromisoformat(str(row["created_at"]))
@@ -144,7 +146,7 @@ def test_newer_write_supersedes_older(engine, tmp_path) -> None:
     assert result.exit_code == 0, result.output
     rows = read_rows(out)
     assert [row["id"] for row in rows] == [new]
-    assert rows[0]["evidence"] == [{"chunk_id": 3, "quote": "new", "grounded": True}]
+    assert rows[0]["evidence"] == [{"chunk_id": 3, "quote": "new", "grounded": True, "snapshot_id": None, "url": None, "fetched_at": None}]
 
 
 @pytest.mark.parametrize(
@@ -233,3 +235,75 @@ def test_export_consumes_streaming_generator(engine, tmp_path, monkeypatch) -> N
     assert result.exit_code == 0, result.output
     assert seen == ids
     assert [row["id"] for row in read_rows(out)] == ids
+
+
+def _add_source(engine: Engine, *, with_snapshot: bool) -> int:
+    """Store a chunk (and optionally its snapshot); return the chunk id."""
+    with Session(engine) as session, session.begin():
+        snapshot_id = 777
+        if with_snapshot:
+            snap = SnapshotRow(
+                entity_id=5,
+                url="https://example.org/start",
+                final_url="https://example.org/final",
+                content_type="text/html",
+                sha256="0" * 64,
+                fetched_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+                source_kind="web",
+            )
+            session.add(snap)
+            session.flush()
+            snapshot_id = snap.id
+        chunk = ChunkRow(
+            snapshot_id=snapshot_id,
+            seq=0,
+            text="quote text",
+            heading_path=[],
+            char_start=0,
+            char_end=10,
+        )
+        session.add(chunk)
+        session.flush()
+        return chunk.id
+
+
+def test_evidence_carries_snapshot_source(engine, tmp_path) -> None:
+    rid = add_run(engine)
+    chunk_id = _add_source(engine, with_snapshot=True)
+    add(engine, rid, 5, quotes=[Quote(chunk_id, "q", True, "exact", (0, 1))])
+    out = tmp_path / "current.jsonl"
+    assert invoke(out).exit_code == 0
+    [row] = read_rows(out)
+    [ev] = row["evidence"]
+    with Session(engine) as session:
+        snap_id = session.query(SnapshotRow.id).scalar()
+    assert ev == {
+        "chunk_id": chunk_id,
+        "quote": "q",
+        "grounded": True,
+        "snapshot_id": snap_id,
+        "url": "https://example.org/final",
+        "fetched_at": "2026-01-02T03:04:05+00:00",
+    }
+
+
+@pytest.mark.parametrize("chunk_present", [True, False])
+def test_evidence_source_null_when_chunk_or_snapshot_missing(
+    engine, tmp_path, chunk_present
+) -> None:
+    rid = add_run(engine)
+    chunk_id = _add_source(engine, with_snapshot=False) if chunk_present else 4242
+    add(engine, rid, 5, quotes=[Quote(chunk_id, "q", False, None, None)])
+    out = tmp_path / "current.jsonl"
+    assert invoke(out).exit_code == 0
+    [row] = read_rows(out)
+    assert row["evidence"] == [
+        {
+            "chunk_id": chunk_id,
+            "quote": "q",
+            "grounded": False,
+            "snapshot_id": None,
+            "url": None,
+            "fetched_at": None,
+        }
+    ]
