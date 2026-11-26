@@ -97,7 +97,12 @@ from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.assess import AssessError, extract_criterion
-from core.assessment_store import CurrentAssessment, current_assessments, record_assessment
+from core.assessment_store import (
+    CurrentAssessment,
+    current_assessments,
+    iter_current_assessments,
+    record_assessment,
+)
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -864,19 +869,18 @@ def run_export(
         with handle:
             engine = _open_engine(settings)
             try:
-                rows = current_assessments(
+                for row in iter_current_assessments(
                     engine,
                     entity_id=entity_id,
                     criterion_id=criterion_id,
                     rubric_version=rubric_version,
-                )
+                ):
+                    handle.write(json.dumps(_export_object(row), ensure_ascii=False) + "\n")
+                    count += 1
             except SQLAlchemyError as exc:
                 _exit_database_unavailable(engine, None, exc)
             finally:
                 engine.dispose()
-            for row in rows:
-                handle.write(json.dumps(_export_object(row), ensure_ascii=False) + "\n")
-                count += 1
         os.replace(tmp, out)
     except OSError as exc:
         tmp.unlink(missing_ok=True)

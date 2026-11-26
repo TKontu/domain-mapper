@@ -21,7 +21,7 @@ and reporting) are later rows, unwired by design; the production writer is ``lan
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
@@ -200,11 +200,47 @@ def current_assessments(
 ) -> list[CurrentAssessment]:
     """Return the latest assessment per (entity, criterion, rubric version); read-only.
 
-    Latest is the highest ``created_at``, ties broken by the highest ``id``. One windowed SQL
-    statement (SQLite >= 3.25 and PostgreSQL) selects the rows, filters applied before ranking;
-    one evidence query per 500 selected ids fetches their quotes. Ordered by entity id,
-    criterion id and rubric version.
+    The whole view as a list of :func:`iter_current_assessments`; same order and filters.
     """
+    return list(
+        iter_current_assessments(
+            engine,
+            entity_id=entity_id,
+            criterion_id=criterion_id,
+            rubric_version=rubric_version,
+        )
+    )
+
+
+def iter_current_assessments(
+    engine: Engine,
+    *,
+    entity_id: int | None = None,
+    criterion_id: str | None = None,
+    rubric_version: str | None = None,
+    batch_size: int = 500,
+) -> Iterator[CurrentAssessment]:
+    """Yield the latest assessment per (entity, criterion, rubric version) in batches; read-only.
+
+    Latest is the highest ``created_at``, ties broken by the highest ``id``. One windowed SQL
+    statement (SQLite >= 3.25 and PostgreSQL) selects the rows, filters applied before ranking,
+    fetched ``batch_size`` rows at a time; each batch's evidence is fetched with it, so at most
+    one batch plus its evidence is held. Ordered by entity id, criterion id and rubric version.
+    The session stays open until the generator is exhausted or closed. Production callers:
+    ``core.cli.run_export`` and :func:`current_assessments`.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    return _iter_current(engine, entity_id, criterion_id, rubric_version, batch_size)
+
+
+def _iter_current(
+    engine: Engine,
+    entity_id: int | None,
+    criterion_id: str | None,
+    rubric_version: str | None,
+    batch_size: int,
+) -> Iterator[CurrentAssessment]:
     a = AssessmentRow
     rank = (
         sa.func.row_number()
@@ -222,34 +258,35 @@ def current_assessments(
     if rubric_version is not None:
         inner = inner.where(a.rubric_version == rubric_version)
     ranked = inner.subquery()
+    table = AssessmentRow.__table__
     stmt = (
-        sa.select(a)
-        .join(ranked, ranked.c.id == a.id)
+        sa.select(table)
+        .join(ranked, ranked.c.id == table.c.id)
         .where(ranked.c.rank == 1)
-        .order_by(a.entity_id, a.criterion_id, a.rubric_version)
+        .order_by(table.c.entity_id, table.c.criterion_id, table.c.rubric_version)
+        .execution_options(yield_per=batch_size)
     )
     with Session(engine) as session:
-        rows = list(session.scalars(stmt))
-        evidence = _evidence_for(session, [row.id for row in rows])
-        return [
-            CurrentAssessment(
-                id=row.id,
-                entity_id=row.entity_id,
-                criterion_id=row.criterion_id,
-                status=row.status,
-                confidence=row.confidence,
-                rationale=row.rationale,
-                rubric_version=row.rubric_version,
-                extractor_model=row.extractor_model,
-                verifier_model=row.verifier_model,
-                decided_by=row.decided_by,
-                route_kind=row.route_kind,
-                run_id=row.run_id,
-                created_at=row.created_at,
-                evidence=tuple(evidence.get(row.id, ())),
-            )
-            for row in rows
-        ]
+        for batch in session.execute(stmt).partitions():
+            rows = list(batch)
+            evidence = _evidence_for(session, [row.id for row in rows])
+            for row in rows:
+                yield CurrentAssessment(
+                    id=row.id,
+                    entity_id=row.entity_id,
+                    criterion_id=row.criterion_id,
+                    status=row.status,
+                    confidence=row.confidence,
+                    rationale=row.rationale,
+                    rubric_version=row.rubric_version,
+                    extractor_model=row.extractor_model,
+                    verifier_model=row.verifier_model,
+                    decided_by=row.decided_by,
+                    route_kind=row.route_kind,
+                    run_id=row.run_id,
+                    created_at=row.created_at,
+                    evidence=tuple(evidence.get(row.id, ())),
+                )
 
 
 def _evidence_for(session: Session, ids: Sequence[int]) -> dict[int, list[CurrentEvidence]]:
