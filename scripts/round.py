@@ -197,6 +197,11 @@ def resolve(repo, root, manifest, args):
         assignment["state"] not in {"merged", "cancelled"}, "Assignment is terminal"
     )
     require(text(args.evidence), "Resolution needs review or cancellation evidence")
+    if args.waive is not None:
+        require(
+            args.outcome == "merged", "--waive is only valid with --outcome merged"
+        )
+        require(text(args.waive), "--waive needs a reason")
     if args.outcome == "merged":
         bound_packet(root, assignment)
         require(assignment["state"] == "result-ready", "No candidate result to resolve")
@@ -207,10 +212,20 @@ def resolve(repo, root, manifest, args):
             args.head == result["head_sha"],
             "Review does not match the current result head",
         )
-        require(
-            all(c["status"] == "passed" for c in result["checks"]),
-            "Not all checks passed",
-        )
+        not_passed = [c for c in result["checks"] if c["status"] != "passed"]
+        if args.waive is None:
+            require(not not_passed, "Not all checks passed")
+        else:
+            require(
+                not_passed, "--waive is only for non-passed checks; all checks passed"
+            )
+            assignment["waived"] = {
+                "reason": args.waive,
+                "checks": [
+                    {"command": check["command"], "status": check["status"]}
+                    for check in not_passed
+                ],
+            }
         require(
             args.merge and FULL_SHA.fullmatch(args.merge),
             "Supply the actual full merge SHA",
@@ -322,6 +337,11 @@ def parser():
             )
             sub.add_argument("--head")
             sub.add_argument("--merge")
+            sub.add_argument(
+                "--waive",
+                metavar="REASON",
+                help="Record non-passed checks as waived (merged outcome only)",
+            )
             sub.add_argument("--evidence", required=True)
         elif name == "close":
             sub.add_argument(

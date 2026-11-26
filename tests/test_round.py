@@ -652,6 +652,181 @@ class RoundTests(unittest.TestCase):
         (self.repo / "README.md").write_text("dirty\n")
         self.cli("init", "R1", "--base", "main", ok=False)
 
+    def test_failed_check_can_be_waived_with_reason(self):
+        self.start()
+        checks = [
+            {
+                "command": ["uv", "run", "pytest", "-q"],
+                "status": "failed",
+                "evidence": "Pre-existing failure at base",
+            },
+            {
+                "command": ["git", "diff", "--check"],
+                "status": "passed",
+                "evidence": "clean",
+            },
+        ]
+        self.cli("record", "R1", "--result", str(self.submit(checks=checks)))
+        self.cli(
+            "resolve",
+            "R1",
+            "A1",
+            "--outcome",
+            "merged",
+            "--head",
+            self.base,
+            "--merge",
+            self.base,
+            "--waive",
+            "Pre-existing failure waived under the standing operator ruling",
+            "--evidence",
+            "Independent review and actual merge verified",
+        )
+        assignment = self.manifest()["assignments"]["A1"]
+        self.assertEqual(assignment["state"], "merged")
+        self.assertEqual(
+            assignment["waived"],
+            {
+                "reason": "Pre-existing failure waived under the standing operator ruling",
+                "checks": [{"command": ["uv", "run", "pytest", "-q"], "status": "failed"}],
+            },
+        )
+
+    def test_waive_is_refused_for_blank_reason_cancelled_or_all_passed(self):
+        self.start()
+        self.cli("record", "R1", "--result", str(self.submit()))
+        cases = [
+            (
+                ["--outcome", "merged", "--head", self.base, "--merge", self.base],
+                ["--waive", ""],
+                "reason",
+            ),
+            (
+                ["--outcome", "merged", "--head", self.base, "--merge", self.base],
+                ["--waive", "   "],
+                "reason",
+            ),
+            (
+                ["--outcome", "cancelled"],
+                ["--waive", "pre-existing failures"],
+                "--outcome merged",
+            ),
+            (
+                ["--outcome", "merged", "--head", self.base, "--merge", self.base],
+                ["--waive", "pre-existing failures"],
+                "all checks passed",
+            ),
+        ]
+        for outcome_args, waive_args, diagnostic in cases:
+            with self.subTest(waive_args=waive_args, outcome_args=outcome_args):
+                rejected = self.cli(
+                    "resolve",
+                    "R1",
+                    "A1",
+                    *outcome_args,
+                    *waive_args,
+                    "--evidence",
+                    "review",
+                    ok=False,
+                )
+                self.assertIn(diagnostic, rejected.stderr)
+                assignment = self.manifest()["assignments"]["A1"]
+                self.assertEqual(assignment["state"], "result-ready")
+                self.assertNotIn("waived", assignment)
+
+    def test_waive_does_not_bypass_head_or_merge_checks(self):
+        self.start()
+        checks = [{"command": ["test"], "status": "unavailable", "evidence": "offline"}]
+        self.cli("record", "R1", "--result", str(self.submit(checks=checks)))
+        for extra, diagnostic in [
+            (["--head", "3" * 40, "--merge", self.base], "current result head"),
+            (["--head", self.base], "merge"),
+        ]:
+            with self.subTest(extra=extra):
+                rejected = self.cli(
+                    "resolve",
+                    "R1",
+                    "A1",
+                    "--outcome",
+                    "merged",
+                    *extra,
+                    "--waive",
+                    "pre-existing",
+                    "--evidence",
+                    "review",
+                    ok=False,
+                )
+                self.assertIn(diagnostic, rejected.stderr)
+                self.assertEqual(self.manifest()["assignments"]["A1"]["state"], "result-ready")
+
+    def test_status_shows_waiver_after_waived_merge(self):
+        self.start()
+        checks = [
+            {"command": ["uv", "run", "pytest", "-q"], "status": "skipped", "evidence": "no db"}
+        ]
+        self.cli("record", "R1", "--result", str(self.submit(checks=checks)))
+        self.cli(
+            "resolve",
+            "R1",
+            "A1",
+            "--outcome",
+            "merged",
+            "--head",
+            self.base,
+            "--merge",
+            self.base,
+            "--waive",
+            "Database unavailable offline; waived under the standing operator ruling",
+            "--evidence",
+            "review",
+        )
+        shown = self.cli("status", "R1")
+        self.assertIn("waived", shown.stdout)
+        self.assertIn("Database unavailable offline", shown.stdout)
+        status = json.loads(shown.stdout)
+        self.assertEqual(
+            status["assignments"]["A1"]["waived"]["checks"],
+            [{"command": ["uv", "run", "pytest", "-q"], "status": "skipped"}],
+        )
+
+    def test_round_with_waived_assignment_closes(self):
+        self.start()
+        checks = [{"command": ["test"], "status": "failed", "evidence": "pre-existing"}]
+        self.cli("record", "R1", "--result", str(self.submit(checks=checks)))
+        self.cli(
+            "resolve",
+            "R1",
+            "A1",
+            "--outcome",
+            "merged",
+            "--head",
+            self.base,
+            "--merge",
+            self.base,
+            "--waive",
+            "Pre-existing failure waived under the standing operator ruling",
+            "--evidence",
+            "review",
+        )
+        (self.repo / "HANDOFF.md").write_text(self.handoff())
+        self.cli(
+            "close",
+            "R1",
+            "--main",
+            "main",
+            "--reconciliation",
+            "README.md",
+            "--handoff",
+            "HANDOFF.md",
+            "--evidence",
+            "final check passed",
+        )
+        self.assertEqual(self.manifest()["state"], "closed")
+        self.assertEqual(
+            self.manifest()["assignments"]["A1"]["waived"]["reason"],
+            "Pre-existing failure waived under the standing operator ruling",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
