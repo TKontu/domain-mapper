@@ -401,3 +401,133 @@ def test_embedding_model_blank_exit_2(engine, value: str) -> None:
     assert "error: --embedding-model must be non-empty" in result.output
     assert seam.call_count == 0
     assert runs(engine) == []
+
+
+# AS-09: --rerank-model wires a Reranker into retrieval.
+
+TERMS_A = "Alpha general terms and conditions apply."
+TERMS_B = "Beta general terms and conditions apply."
+
+
+class FakeReranker:
+    def __init__(self, error: Exception | None = None, bad_index: bool = False) -> None:
+        self.model = "fake-rerank"
+        self.error = error
+        self.bad_index = bad_index
+        self.calls: list[tuple[str, list[str], int]] = []
+
+    def rerank(self, query: str, documents: Any, top_n: int) -> list[Any]:
+        from adapters.embedding import RerankHit
+
+        docs = list(documents)
+        self.calls.append((query, docs, top_n))
+        if self.error is not None:
+            raise self.error
+        if self.bad_index:
+            return [RerankHit(index=len(docs) + 5, score=1.0)]
+        # Prefer the Beta chunk: reverse of any keyword order tie-break.
+        return [RerankHit(index=i, score=1.0 if "Beta" in d else 0.1) for i, d in enumerate(docs)]
+
+
+def invoke_rerank(
+    reranker: Any, *args: str, llm: FakeLLM | None = None, embedder: Any = None
+) -> tuple[Any, Any]:
+    built = mock.MagicMock(side_effect=reranker) if isinstance(reranker, Exception) else None
+    seam = built or mock.MagicMock(return_value=reranker)
+    with (
+        mock.patch.object(cli, "_make_reranker", seam),
+        mock.patch.object(cli, "_make_embedder", mock.MagicMock(return_value=embedder)),
+    ):
+        result = invoke(llm, *args)
+    return result, seam
+
+
+def _assert_beta_first(llm: FakeLLM) -> None:
+    prompt = llm.prompts[0]
+    assert prompt.index(TERMS_B) < prompt.index(TERMS_A)
+
+
+def test_rerank_model_order_reaches_extractor(engine) -> None:
+    eid, _ = seed(engine, "acme", [TERMS_A, TERMS_B])
+    llm = FakeLLM({"status": "silent", "quotes": [], "rationale": "none"})
+    fake = FakeReranker()
+    result, seam = invoke_rerank(
+        fake, "--entity", str(eid), "--criterion", CRIT, "--n", "1", "--k", "4",
+        "--rerank-model", "rr", llm=llm,
+    )  # fmt: skip
+    assert result.exit_code in (0, 1), result.output
+    assert seam.call_args.args[1] == "rr"
+    assert len(fake.calls) == 1 and fake.calls[0][2] == 1
+    assert "chunks 1" in result.output
+    assert TERMS_B in llm.prompts[0] and TERMS_A not in llm.prompts[0]
+
+
+def test_rerank_model_with_embedding_model(engine) -> None:
+    eid, ids = seed(engine, "acme", [TERMS_A, TERMS_B])
+    for cid in ids:
+        _set_embedding(engine, cid, [1.0, 0.0], "stored-embed")
+    llm = FakeLLM({"status": "silent", "quotes": [], "rationale": "none"})
+    fake = FakeReranker()
+    embedder = FakeEmbedder()
+    result, _ = invoke_rerank(
+        fake, "--entity", str(eid), "--criterion", CRIT, "--embedding-model", "stored-embed",
+        "--rerank-model", "rr", llm=llm, embedder=embedder,
+    )  # fmt: skip
+    assert result.exit_code in (0, 1), result.output
+    assert len(embedder.calls) == 1 and len(fake.calls) == 1
+    assert "chunks 2" in result.output
+    _assert_beta_first(llm)
+
+
+def test_without_rerank_model_no_reranker(engine) -> None:
+    eid, _ = seed(engine, "acme", [TERMS_A, TERMS_B])
+    llm = FakeLLM({"status": "silent", "quotes": [], "rationale": "none"})
+    result, seam = invoke_rerank(FakeReranker(), "--entity", str(eid), "--criterion", CRIT, llm=llm)
+    assert seam.call_count == 0
+    assert "chunks 2" in result.output
+
+
+def test_rerank_model_bad_backend_exit_2_no_run(engine) -> None:
+    eid, _ = seed(engine, "acme", [TERMS_A])
+    result, _ = invoke_rerank(
+        ValueError("bad reranker url"),
+        "--entity", str(eid), "--criterion", CRIT, "--rerank-model", "rr",
+    )  # fmt: skip
+    assert result.exit_code == 2, result.output
+    assert "error: bad reranker url" in result.output
+    assert runs(engine) == []
+
+
+def test_rerank_error_exit_1_run_failed(engine) -> None:
+    from adapters.embedding import EmbeddingError
+
+    eid, _ = seed(engine, "acme", [TERMS_A])
+    result, _ = invoke_rerank(
+        FakeReranker(EmbeddingError("rerank down")),
+        "--entity", str(eid), "--criterion", CRIT, "--rerank-model", "rr",
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert "error EmbeddingError: rerank down" in result.output
+    assert runs(engine) == [("assess", FAILED)]
+
+
+def test_rerank_out_of_range_exit_1_run_failed(engine) -> None:
+    eid, _ = seed(engine, "acme", [TERMS_A])
+    result, _ = invoke_rerank(
+        FakeReranker(bad_index=True),
+        "--entity", str(eid), "--criterion", CRIT, "--rerank-model", "rr",
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert "error ValueError:" in result.output
+    assert runs(engine) == [("assess", FAILED)]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_rerank_model_blank_exit_2(engine, value: str) -> None:
+    result, seam = invoke_rerank(
+        FakeReranker(), "--entity", "1", "--criterion", CRIT, "--rerank-model", value
+    )
+    assert result.exit_code == 2, result.output
+    assert "error: --rerank-model must be non-empty" in result.output
+    assert seam.call_count == 0
+    assert runs(engine) == []
