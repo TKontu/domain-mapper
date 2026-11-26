@@ -81,7 +81,7 @@ from sqlalchemy.orm import Session
 
 from adapters.blob_store import FilesystemBlobStore, raw_store_root
 from adapters.crawl_policy import HostRateLimiter, RobotsPolicy
-from adapters.embedding import Embedder, EmbeddingError, build_embedder
+from adapters.embedding import Embedder, EmbeddingError, Reranker, build_embedder, build_reranker
 from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFetchError
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
@@ -683,6 +683,11 @@ def _make_embedder(settings: Settings, model: str) -> Embedder:
     return build_embedder(settings, model)
 
 
+def _make_reranker(settings: Settings, model: str) -> Reranker:
+    """Build the Assess reranker (``DM_RERANKER_URL``); the test seam for a fake adapter."""
+    return build_reranker(settings, model)
+
+
 def run_index(model: str, batch_size: int, limit: int | None) -> None:
     """Embed pending chunks via the configured embedding service inside a ``run`` row (IX-02).
 
@@ -794,6 +799,7 @@ def run_assess(
     k: int,
     dry_run: bool,
     embedding_model: str | None = None,
+    rerank_model: str | None = None,
 ) -> None:
     """Retrieve evidence and run the extractor for one entity × criterion inside an ``assess`` run.
 
@@ -806,6 +812,9 @@ def run_assess(
     With ``embedding_model`` set (AS-07), an Embedder is built via :func:`_make_embedder` before
     the run row opens (``ValueError`` exits 2, no run row) and retrieval is hybrid with that
     stored model; ``EmbeddingError`` closes the run ``failed`` and exits 1.
+    With ``rerank_model`` set (AS-09), a Reranker is built via :func:`_make_reranker` the same way
+    and reranks the top-``k`` pool to ``n``; ``EmbeddingError`` or an out-of-range hit
+    ``ValueError`` closes the run ``failed`` and exits 1.
     """
     settings = _load(scope)
     if dry_run:
@@ -832,6 +841,9 @@ def run_assess(
     if embedding_model is not None and not embedding_model.strip():
         typer.echo("error: --embedding-model must be non-empty", err=True)
         raise typer.Exit(2)
+    if rerank_model is not None and not rerank_model.strip():
+        typer.echo("error: --rerank-model must be non-empty", err=True)
+        raise typer.Exit(2)
 
     engine = _open_engine(settings)
     run_id: int | None = None
@@ -842,14 +854,15 @@ def run_assess(
             embedder = (
                 _make_embedder(settings, embedding_model) if embedding_model is not None else None
             )
+            reranker = _make_reranker(settings, rerank_model) if rerank_model is not None else None
         except (ValueError, LlmError) as exc:  # unbuildable backend: bad setup, exit 2
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from None
         run_id = _open_run(engine, "assess")
         try:
-            if embedder is None:
+            if reranker is None and embedder is None:
                 chunks = retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
-            else:
+            elif reranker is None:
                 chunks = retrieve_evidence(
                     engine,
                     criterion,
@@ -859,6 +872,22 @@ def run_assess(
                     embedder=embedder,
                     model=embedding_model,
                 )
+            else:
+                try:
+                    chunks = retrieve_evidence(
+                        engine,
+                        criterion,
+                        entity_id=entity_id,
+                        n=n,
+                        k=k,
+                        embedder=embedder,
+                        model=embedding_model,
+                        reranker=reranker,
+                    )
+                except ValueError as exc:  # out-of-range rerank hit (AS-08)
+                    typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+                    _close_run(engine, run_id, FAILED)
+                    raise typer.Exit(1) from None
             extraction = extract_criterion(llm, pack.rubric, criterion, chunks, run_id=run_id)
             verification = verify_extraction(
                 verify_llm, pack.rubric, criterion, chunks, extraction, run_id=run_id
@@ -962,9 +991,13 @@ def assess(
         str | None,
         typer.Option("--embedding-model", help="Stored embedding model; enables hybrid retrieval."),
     ] = None,
+    rerank_model: Annotated[
+        str | None,
+        typer.Option("--rerank-model", help="Reranker model (DM_RERANKER_URL) over the top-k."),
+    ] = None,
 ) -> None:
     """Retrieve evidence for the entity and run the local extractor for the criterion."""
-    run_assess(scope, entity_id, criterion, n, k, dry_run, embedding_model)
+    run_assess(scope, entity_id, criterion, n, k, dry_run, embedding_model, rerank_model)
 
 
 @app.command(name="index", help="Embed pending chunks with the configured embedding service.")
