@@ -56,6 +56,13 @@ any other error or interrupt after the run opens closes it ``failed`` before pro
 chunk has a heading path, or ``no hits`` on stdout when it has none. Read-only: no ``run`` row and
 nothing is written. Exit 2 on an empty or whitespace query or a ``--limit`` below 1, before the
 database is opened.
+
+``export`` (AS-12) writes the ``assessments`` current view (AS-11) to ``--out`` as JSON Lines:
+one object per latest assessment with its evidence, in :func:`~core.assessment_store.
+current_assessments` order and filtered the same way. Rows are written one at a time to
+``<out>.tmp``, renamed to ``<out>`` on success, then ``exported N assessments to PATH`` prints
+(N may be 0, exit 0). A format other than ``json``, a missing scope or an unwritable output
+directory exits 2 and leaves no ``PATH``.
 """
 
 from __future__ import annotations
@@ -90,7 +97,7 @@ from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.assess import AssessError, extract_criterion
-from core.assessment_store import current_assessments, record_assessment
+from core.assessment_store import CurrentAssessment, current_assessments, record_assessment
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -805,6 +812,82 @@ def run_assessments(
             typer.echo(f"  evidence chunk {ev.chunk_id} grounded {'yes' if ev.grounded else 'no'}")
 
 
+def _export_object(row: CurrentAssessment) -> dict[str, object]:
+    """One JSON Lines object for a current assessment, with its evidence nested per row."""
+    return {
+        "id": row.id,
+        "entity_id": row.entity_id,
+        "criterion_id": row.criterion_id,
+        "status": row.status,
+        "confidence": row.confidence,
+        "rationale": row.rationale,
+        "rubric_version": row.rubric_version,
+        "extractor_model": row.extractor_model,
+        "verifier_model": row.verifier_model,
+        "decided_by": row.decided_by,
+        "route_kind": row.route_kind,
+        "run_id": row.run_id,
+        "created_at": row.created_at.isoformat(),
+        "evidence": [
+            {"chunk_id": ev.chunk_id, "quote": ev.quote, "grounded": ev.grounded}
+            for ev in row.evidence
+        ],
+    }
+
+
+def run_export(
+    scope: Path,
+    format: str,
+    out: Path,
+    entity_id: int | None,
+    criterion_id: str | None,
+    rubric_version: str | None,
+) -> None:
+    """Write the current view (AS-11) as JSON Lines to ``out``; read-only, exit 2 on bad setup.
+
+    Rows go one at a time to ``<out>.tmp``, renamed to ``out`` on success, so a failed export
+    leaves no ``PATH``. Bad input or an unwritable output directory exits 2; an empty view writes
+    an empty file and prints ``exported 0 assessments to PATH``.
+    """
+    if format != "json":
+        typer.echo(f"error: unsupported format {format} (known: json)", err=True)
+        raise typer.Exit(2)
+    settings = _load(scope)
+    tmp = Path(f"{out}.tmp")
+    count = 0
+    try:
+        try:
+            handle = tmp.open("w", encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+            raise typer.Exit(2) from None
+        with handle:
+            engine = _open_engine(settings)
+            try:
+                rows = current_assessments(
+                    engine,
+                    entity_id=entity_id,
+                    criterion_id=criterion_id,
+                    rubric_version=rubric_version,
+                )
+            except SQLAlchemyError as exc:
+                _exit_database_unavailable(engine, None, exc)
+            finally:
+                engine.dispose()
+            for row in rows:
+                handle.write(json.dumps(_export_object(row), ensure_ascii=False) + "\n")
+                count += 1
+        os.replace(tmp, out)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(2) from None
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    typer.echo(f"exported {count} assessments to {out}")
+
+
 def _make_assess_llm(settings: Settings, db: DbTarget) -> LLM:
     """Build the local extractor model for assess (§6 routing); the test seam for a fake adapter."""
     return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
@@ -1081,6 +1164,21 @@ def assessments(
 ) -> None:
     """Print the latest assessment per (entity, criterion, rubric version) and its evidence."""
     run_assessments(scope, entity_id, criterion, rubric_version)
+
+
+@app.command(name="export", help="Export the current assessment view as JSON Lines.")
+def export(
+    scope: ScopeOpt,
+    format: Annotated[str, typer.Option("--format", help="Output format; only json is defined.")],
+    out: Annotated[Path, typer.Option("--out", help="Output file path.")],
+    entity_id: Annotated[int | None, typer.Option("--entity", help="Entity id.")] = None,
+    criterion: Annotated[str | None, typer.Option("--criterion", help="Criterion id.")] = None,
+    rubric_version: Annotated[
+        str | None, typer.Option("--rubric-version", help="Rubric version.")
+    ] = None,
+) -> None:
+    """Write one JSON Lines object per current assessment (with evidence) to ``--out``."""
+    run_export(scope, format, out, entity_id, criterion, rubric_version)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
