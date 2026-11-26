@@ -188,7 +188,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Cost report per stage; cloud budget per run
 - [ ] Governance ratchets (operator direction 2026-11-26; in the local gate; layering rule recorded in docs/decisions.md via an operator-parked PR)
   - [x] **GV-01** → [docs/items/GV-01.md](docs/items/GV-01.md) shrink-only import-direction ratchet (core must not import concrete adapters, adapters must not import core; seed today's 11+2 files as allowlist; modelled on an external project's ratchet script)
-  - [ ] **GV-02** → [docs/items/GV-02.md](docs/items/GV-02.md) module reachability ratchet: every public symbol has a production caller or an 'unwired by design' row
+  - [x] **GV-02** → [docs/items/GV-02.md](docs/items/GV-02.md) module reachability ratchet: every public symbol has a production caller or an 'unwired by design' row
   - [x] **GV-03** → [docs/items/GV-03.md](docs/items/GV-03.md) move the CLI composition root (~2k lines) out of `core` to `app/cli.py`
 
 **Milestone M2:** one layer meets thresholds; review effort per entity measured.
