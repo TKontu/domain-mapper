@@ -156,9 +156,9 @@ class Config:
     max_recycles: int = 2
     max_no_advance: int = 3
     # Stall backoff: the k-th consecutive stalled round at or past max_no_advance (k = 0, 1, ...)
-    # waits min(backoff_base_s * 2**k, backoff_max_s) before the next round. Never a halt.
-    backoff_base_s: int = 10 * 60
-    backoff_max_s: int = 4 * 3600
+    # waits backoff_schedule_s[min(k, len - 1)] before the next round: 5 min, 30 min, then 2 h,
+    # holding at the last entry. Never a halt.
+    backoff_schedule_s: tuple[int, ...] = (5 * 60, 30 * 60, 2 * 3600)
     gap_s: int = 60
 
 
@@ -252,7 +252,7 @@ def after_round(cfg: Config, t: Tracker, *, recycled: bool, main_sha: str) -> Ac
         return Action("halt", f"{t.recycles} consecutive recycled rounds")
     if t.no_advance >= cfg.max_no_advance:
         k = t.no_advance - cfg.max_no_advance
-        delay = min(cfg.backoff_base_s * 2 ** min(k, 32), cfg.backoff_max_s)
+        delay = cfg.backoff_schedule_s[min(k, len(cfg.backoff_schedule_s) - 1)]
         reason = f"main unchanged across {t.no_advance} rounds; backing off {delay // 60} min"
         return Action("backoff", reason, delay)
     return None
