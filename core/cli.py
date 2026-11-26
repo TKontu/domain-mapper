@@ -104,6 +104,7 @@ from core.assessment_store import (
     iter_current_assessments,
     record_assessment,
 )
+from core.attribute_store import current_attribute_values, record_attribute_value
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -115,9 +116,11 @@ from core.resolve import apply_resolution, group_candidates
 from core.retrieve import retrieve_evidence
 from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
 from core.scope_pack import (
+    Attribute,
     CrawlPolicy,
     Criterion,
     Rubric,
+    ScopePack,
     ScopePackError,
     load_scope_pack,
     scope_pack_json_schemas,
@@ -823,6 +826,96 @@ def run_assessments(
             typer.echo(f"  evidence chunk {ev.chunk_id} grounded {'yes' if ev.grounded else 'no'}")
 
 
+def _parse_attribute_text(attribute: Attribute, text: str) -> object:
+    """Parse CLI ``text`` per ``attribute.type``; raise ``ValueError`` when it does not parse.
+
+    int uses ``int()``; float uses ``float()``; bool takes ``true``/``false`` only; enum and date
+    pass the string through for :func:`core.attribute_store.record_attribute_value` to validate.
+    """
+    kind = attribute.type
+    if kind == "int":
+        try:
+            return int(text)
+        except ValueError:
+            raise ValueError(f"attribute {attribute.id!r} expects an int, got {text!r}") from None
+    if kind == "float":
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(f"attribute {attribute.id!r} expects a float, got {text!r}") from None
+    if kind == "bool":
+        if text in ("true", "false"):
+            return text == "true"
+        raise ValueError(f"attribute {attribute.id!r} expects true or false, got {text!r}")
+    return text
+
+
+def _load_pack_or_exit(scope: Path) -> ScopePack:
+    try:
+        return load_scope_pack(scope)
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+
+
+def run_attribute_set(scope: Path, entity_id: int, attribute_id: str, text: str) -> None:
+    """Record one manual attribute value (AT-02) via ``record_attribute_value`` and commit.
+
+    An attribute id not in the pack's attributes.yaml, an unparsable value or one that fails
+    validation exits 2 with one line and writes nothing.
+    Manual values carry no run (``run_id`` None).
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    attribute = next((a for a in pack.attributes.attributes if a.id == attribute_id), None)
+    if attribute is None:
+        typer.echo(f"error: unknown attribute {attribute_id!r}", err=True)
+        raise typer.Exit(2)
+    try:
+        value = _parse_attribute_text(attribute, text)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    engine = _open_engine(settings)
+    try:
+        with Session(engine) as session, session.begin():
+            row_id = record_attribute_value(session, entity_id, attribute, value)
+    except ValueError as exc:  # validation runs before the session is touched; nothing written
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    typer.echo(f"attribute_value {row_id} entity {entity_id} attribute {attribute_id}")
+
+
+def run_attributes(scope: Path, entity_id: int) -> None:
+    """Print ``<attr_id> <value json> <unit or ->`` per current value (AT-02), sorted by id.
+
+    Read-only via ``current_attribute_values``; ``no attributes`` when empty (exit 0). The unit
+    is the pack attribute's; an id no longer in the pack prints ``-``.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    units = {a.id: a.unit for a in pack.attributes.attributes}
+    engine = _open_engine(settings)
+    try:
+        with Session(engine) as session:
+            values = current_attribute_values(session, entity_id)
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    if not values:
+        typer.echo("no attributes")
+        return
+    for attribute_id in sorted(values):
+        typer.echo(
+            f"{attribute_id} {json.dumps(values[attribute_id])} {units.get(attribute_id) or '-'}"
+        )
+
+
 def _fmt_ratio(value: float | None) -> str:
     return "-" if value is None else f"{value:.4f}"
 
@@ -1322,6 +1415,26 @@ def assessments(
 ) -> None:
     """Print the latest assessment per (entity, criterion, rubric version) and its evidence."""
     run_assessments(scope, entity_id, criterion, rubric_version)
+
+
+@app.command(name="attribute-set", help="Record one manual attribute value for an entity.")
+def attribute_set(
+    scope: ScopeOpt,
+    entity_id: Annotated[int, typer.Option("--entity", help="Entity id.")],
+    attribute: Annotated[str, typer.Option("--attribute", help="Pack attribute id.")],
+    value: Annotated[str, typer.Option("--value", help="Value text, parsed per the type.")],
+) -> None:
+    """Parse, validate and store one attribute value; print its row id."""
+    run_attribute_set(scope, entity_id, attribute, value)
+
+
+@app.command(name="attributes", help="List the current attribute values of one entity.")
+def attributes(
+    scope: ScopeOpt,
+    entity_id: Annotated[int, typer.Option("--entity", help="Entity id.")],
+) -> None:
+    """Print the latest value per attribute for one entity."""
+    run_attributes(scope, entity_id)
 
 
 @app.command(name="scores", help="Print per-topic score and coverage for one entity.")
