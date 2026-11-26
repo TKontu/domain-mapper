@@ -10,7 +10,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.assess import Extraction, Quote
-from core.assessment_store import AssessmentRow, EvidenceRow, record_assessment
+from core.assessment_store import (
+    AssessmentRow,
+    CurrentEvidence,
+    EvidenceRow,
+    current_assessments,
+    record_assessment,
+)
 from core.entity_store import Entity
 from core.runs import Run, create_all
 from core.verify import Route
@@ -178,3 +184,96 @@ def test_failure_writes_nothing_in_one_transaction(engine) -> None:
     assessments, evidence = assert_rows(engine)
     assert assessments == []
     assert evidence == []
+
+
+# --- AS-11: current view ---------------------------------------------------------------------
+
+
+def record_v(
+    engine,
+    entity_id: int,
+    run_id: int,
+    *quotes: Quote,
+    criterion_id: str = CRIT,
+    rubric_version: str = RUBRIC_VERSION,
+    status: str = "strong",
+    kind: str = "accept",
+) -> int:
+    return record_assessment(
+        engine,
+        entity_id=entity_id,
+        criterion_id=criterion_id,
+        extraction=extraction(*quotes, status=status),
+        route=Route(kind, None, "r"),  # type: ignore[arg-type]
+        rubric_version=rubric_version,
+        extractor_model="extractor-x",
+        verifier_model="verifier-y",
+        run_id=run_id,
+    )
+
+
+def set_created(engine, assessment_id: int, when: datetime) -> None:
+    with Session(engine) as session, session.begin():
+        session.get(AssessmentRow, assessment_id).created_at = when  # type: ignore[union-attr]
+
+
+def test_current_empty_db(engine) -> None:
+    assert current_assessments(engine) == []
+
+
+def test_current_returns_newer_with_own_evidence(engine) -> None:
+    eid, rid = add_entity(engine), add_run(engine)
+    old = record_v(engine, eid, rid, Quote(1, "old", True, "exact", (0, 3)), status="weak")
+    new = record_v(engine, eid, rid, Quote(2, "new", False, None, None))
+    set_created(engine, old, datetime(2026, 1, 1, tzinfo=UTC))
+    set_created(engine, new, datetime(2026, 1, 2, tzinfo=UTC))
+    rows = current_assessments(engine)
+    assert [r.id for r in rows] == [new]
+    assert rows[0].status == "strong"
+    assert rows[0].evidence == (CurrentEvidence(2, "new", False),)
+
+
+def test_current_older_id_with_later_time_wins(engine) -> None:
+    eid, rid = add_entity(engine), add_run(engine)
+    first = record_v(engine, eid, rid)
+    second = record_v(engine, eid, rid)
+    set_created(engine, first, datetime(2026, 1, 3, tzinfo=UTC))
+    set_created(engine, second, datetime(2026, 1, 2, tzinfo=UTC))
+    assert [r.id for r in current_assessments(engine)] == [first]
+
+
+def test_current_tie_resolves_by_id(engine) -> None:
+    eid, rid = add_entity(engine), add_run(engine)
+    same = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = [record_v(engine, eid, rid) for _ in range(3)]
+    for i in ids:
+        set_created(engine, i, same)
+    assert [r.id for r in current_assessments(engine)] == [max(ids)]
+
+
+def test_current_per_rubric_version_and_filters(engine) -> None:
+    a, b, rid = add_entity(engine, "Acme"), add_entity(engine, "Bolt"), add_run(engine)
+    a1 = record_v(engine, a, rid, rubric_version="1")
+    a2 = record_v(engine, a, rid, rubric_version="2")
+    a3 = record_v(engine, a, rid, criterion_id="other", rubric_version="1")
+    b1 = record_v(engine, b, rid, rubric_version="1")
+    rows = current_assessments(engine)
+    assert [(r.entity_id, r.criterion_id, r.rubric_version) for r in rows] == [
+        (a, "other", "1"),
+        (a, CRIT, "1"),
+        (a, CRIT, "2"),
+        (b, CRIT, "1"),
+    ]
+    assert [r.id for r in rows] == [a3, a1, a2, b1]
+    assert [r.id for r in current_assessments(engine, entity_id=b)] == [b1]
+    assert [r.id for r in current_assessments(engine, criterion_id="other")] == [a3]
+    assert [r.id for r in current_assessments(engine, rubric_version="2")] == [a2]
+    assert current_assessments(engine, entity_id=b, rubric_version="2") == []
+
+
+def test_current_silent_row_has_no_evidence(engine) -> None:
+    eid, rid = add_entity(engine), add_run(engine)
+    aid = record_v(engine, eid, rid, status="unknown", kind="silent")
+    (row,) = current_assessments(engine)
+    assert (row.id, row.route_kind, row.evidence) == (aid, "silent", ())
+    assert row.run_id == rid and row.decided_by == "auto" and row.created_at.tzinfo == UTC

@@ -90,7 +90,7 @@ from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.assess import AssessError, extract_criterion
-from core.assessment_store import record_assessment
+from core.assessment_store import current_assessments, record_assessment
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -773,6 +773,38 @@ def run_search(query: str, entity_id: int | None, limit: int) -> None:
         typer.echo(line)
 
 
+def run_assessments(
+    scope: Path, entity_id: int | None, criterion_id: str | None, rubric_version: str | None
+) -> None:
+    """Print the current view (AS-11): one line per latest assessment plus its evidence lines.
+
+    Read-only via :func:`core.assessment_store.current_assessments`; ``no assessments`` when
+    empty (exit 0); setup errors exit 2. ``scope`` is validated and loads settings; assessments
+    carry no scope column, so the listing is not narrowed by it.
+    """
+    settings = _load(scope)
+    engine = _open_engine(settings)
+    try:
+        rows = current_assessments(
+            engine, entity_id=entity_id, criterion_id=criterion_id, rubric_version=rubric_version
+        )
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    if not rows:
+        typer.echo("no assessments")
+        return
+    for row in rows:
+        typer.echo(
+            f"assessment {row.id} entity {row.entity_id} criterion {row.criterion_id}"
+            f" rubric {row.rubric_version} status {row.status} route {row.route_kind}"
+            f" decided_by {row.decided_by} run {row.run_id}"
+        )
+        for ev in row.evidence:
+            typer.echo(f"  evidence chunk {ev.chunk_id} grounded {'yes' if ev.grounded else 'no'}")
+
+
 def _make_assess_llm(settings: Settings, db: DbTarget) -> LLM:
     """Build the local extractor model for assess (§6 routing); the test seam for a fake adapter."""
     return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
@@ -1036,6 +1068,19 @@ def search(
 ) -> None:
     """Print ``score chunk C snapshot S seq N`` per hit, plus the heading tail when nonempty."""
     run_search(query, entity_id, limit)
+
+
+@app.command(name="assessments", help="List the current assessment per entity and criterion.")
+def assessments(
+    scope: ScopeOpt,
+    entity_id: Annotated[int | None, typer.Option("--entity", help="Entity id.")] = None,
+    criterion: Annotated[str | None, typer.Option("--criterion", help="Criterion id.")] = None,
+    rubric_version: Annotated[
+        str | None, typer.Option("--rubric-version", help="Rubric version.")
+    ] = None,
+) -> None:
+    """Print the latest assessment per (entity, criterion, rubric version) and its evidence."""
+    run_assessments(scope, entity_id, criterion, rubric_version)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")
