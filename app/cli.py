@@ -81,7 +81,6 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
-from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -128,7 +127,7 @@ from core.links import crawl_key, extract_links
 from core.log import configure_logging
 from core.resolve import apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
-from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
+from core.runs import FAILED, FINISHED, RUNNING, Run, create_all, create_db_engine
 from core.scope_pack import (
     Attribute,
     CrawlPolicy,
@@ -333,7 +332,7 @@ def _make_fetcher() -> FirecrawlFetcher:
 def _open_engine(settings: Settings) -> Engine:
     """Create the schema on the configured database; any failure exits 2, URL never echoed."""
     try:
-        engine = create_engine(settings.database_url)
+        engine = create_db_engine(settings.database_url)
         create_all(engine)
     except Exception as exc:  # noqa: BLE001 - never echo the database URL
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
@@ -575,7 +574,7 @@ def run_resolve(scope: Path, apply: bool = False) -> None:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(1) from None
         try:
-            engine = create_engine(settings.database_url)
+            engine = create_db_engine(settings.database_url)
             try:
                 create_all(engine)
                 applied = apply_resolution(engine, scope_id)
@@ -587,7 +586,7 @@ def run_resolve(scope: Path, apply: bool = False) -> None:
         typer.echo(f"created {applied.created} linked {applied.linked} skipped {applied.skipped}")
         return
     try:
-        engine = create_engine(settings.database_url)
+        engine = create_db_engine(settings.database_url)
         try:
             create_all(engine)
             summary = group_candidates(engine)
@@ -2042,7 +2041,7 @@ def web_search(
         for r in sorted(results, key=lambda r: r.rank)
     ]
     try:
-        engine = create_engine(settings.database_url)
+        engine = create_db_engine(settings.database_url)
         try:
             create_all(engine)
             saved = record_candidates(engine, rows)
