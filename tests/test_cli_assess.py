@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from adapters.llm import LlmError, LlmResult
 from core import cli
+from core.assessment_store import AssessmentRow, EvidenceRow
 from core.chunk_store import store_chunks
 from core.chunking import Chunk
 from core.entity_store import Entity
@@ -112,6 +113,21 @@ def runs(engine) -> list[tuple[str, str]]:
         return [(r.stage, r.status) for r in session.query(Run).all()]
 
 
+def assessments(engine) -> list[AssessmentRow]:
+    with Session(engine) as session:
+        return list(session.scalars(sa.select(AssessmentRow).order_by(AssessmentRow.id)))
+
+
+def evidence(engine) -> list[EvidenceRow]:
+    with Session(engine) as session:
+        return list(session.scalars(sa.select(EvidenceRow).order_by(EvidenceRow.id)))
+
+
+def run_id(engine) -> int:
+    with Session(engine) as session:
+        return session.scalar(sa.select(Run.id))
+
+
 AGREE = {"agree": True, "reason": "Quote supports the status."}
 
 
@@ -137,13 +153,23 @@ def test_happy_path_grounded(engine) -> None:
     )
     result = invoke(llm, "--entity", str(eid), "--criterion", CRIT)
     assert result.exit_code == 0, result.output
+    [row] = assessments(engine)
     lines = result.output.splitlines()
     assert lines[0] == "status strong checks pass chunks 1"
     assert lines[1] == f'quote chunk {ids[0]} grounded exact "general terms and conditions"'
     assert lines[2] == "rationale Published."
     assert lines[3] == "route accept confidence high reason Quote supports the status."
-    assert len(lines) == 4
+    assert len(lines) == 5
+    assert lines[4] == f"assessment {row.id}"
     assert runs(engine) == [("assess", FINISHED)]
+    assert (row.entity_id, row.criterion_id) == (eid, CRIT)
+    assert (row.status, row.route_kind, row.decided_by) == ("strong", "accept", "auto")
+    assert row.confidence is None and row.run_id == run_id(engine)
+    assert row.rubric_version == "0.0.1"
+    assert (row.extractor_model, row.verifier_model) == ("fake-local", "fake-local")
+    assert [(e.chunk_id, e.quote, e.grounded) for e in evidence(engine)] == [
+        (ids[0], "general terms and conditions", True)
+    ]
     # (f) only this entity's chunks reach the prompt
     assert len(llm.prompts) == 1 and OTHER_MARKER not in llm.prompts[0]
 
@@ -164,6 +190,11 @@ def test_ungrounded_fails_checks(engine) -> None:
     assert "failure quote 0: not found verbatim" in result.output
     assert "failure evidence_min:" in result.output
     assert runs(engine) == [("assess", FINISHED)]
+    # A failed-checks outcome is still an outcome: one adjudicate row, evidence ungrounded.
+    [row] = assessments(engine)
+    assert (row.status, row.route_kind) == ("strong", "adjudicate")
+    assert result.output.splitlines()[-1] == f"assessment {row.id}"
+    assert [(e.chunk_id, e.grounded) for e in evidence(engine)] == [(ids[0], False)]
 
 
 def test_no_chunks_is_silent(engine) -> None:
@@ -173,6 +204,9 @@ def test_no_chunks_is_silent(engine) -> None:
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[0] == "status silent checks pass chunks 0"
     assert llm.prompts == []
+    [row] = assessments(engine)
+    assert (row.status, row.route_kind) == ("silent", "silent")
+    assert evidence(engine) == []
 
 
 def test_silent_makes_no_verifier_call(engine) -> None:
@@ -180,7 +214,9 @@ def test_silent_makes_no_verifier_call(engine) -> None:
     verifier = FakeLLM(AGREE)
     result = invoke(FakeLLM(), "--entity", str(eid), "--criterion", CRIT, verifier=verifier)
     assert result.exit_code == 0, result.output
-    assert result.output.splitlines()[-1].startswith("route silent confidence - reason ")
+    lines = result.output.splitlines()
+    assert lines[-2].startswith("route silent confidence - reason ")
+    assert lines[-1] == f"assessment {assessments(engine)[0].id}"
     assert verifier.prompts == []
 
 
@@ -198,11 +234,16 @@ def test_verifier_disagree_adjudicates_exit_1(engine) -> None:
         FakeLLM(_grounded(ids)), "--entity", str(eid), "--criterion", CRIT, verifier=verifier
     )
     assert result.exit_code == 1, result.output
-    assert result.output.splitlines()[-1] == (
+    lines = result.output.splitlines()
+    assert lines[-2] == (
         "route adjudicate confidence - reason verifier disagrees: Quote is too generic."
     )
+    assert lines[-1] == f"assessment {assessments(engine)[0].id}"
     assert len(verifier.prompts) == 1
     assert runs(engine) == [("assess", FINISHED)]
+    [row] = assessments(engine)
+    assert (row.status, row.route_kind) == ("strong", "adjudicate")
+    assert len(evidence(engine)) == 1
 
 
 @pytest.mark.parametrize(
@@ -218,7 +259,9 @@ def test_verifier_failure_exit_1_run_failed(engine, verifier: FakeLLM) -> None:
         result.output
     )
     assert "route " not in result.output
+    assert "assessment " not in result.output
     assert runs(engine) == [("assess", FAILED)]
+    assert assessments(engine) == []
 
 
 def test_verifier_built_from_verifier_model(engine, monkeypatch) -> None:
@@ -266,6 +309,7 @@ def test_bad_args_exit_2_no_run(engine, extra: list[str]) -> None:
     result = invoke(None, "--entity", "1", *extra)
     assert result.exit_code == 2, result.output
     assert runs(engine) == []
+    assert assessments(engine) == []
     if extra[:2] == ["--criterion", "nope"]:
         assert "error: unknown criterion nope" in result.output
 
@@ -280,6 +324,7 @@ def test_llm_failure_exit_1_run_failed(engine, llm: FakeLLM) -> None:
     assert result.exit_code == 1, result.output
     assert "error LlmError: boom" in result.output or "error AssessError:" in result.output
     assert runs(engine) == [("assess", FAILED)]
+    assert assessments(engine) == []
 
 
 def test_database_unavailable(tmp_path, monkeypatch) -> None:
@@ -390,6 +435,7 @@ def test_embedding_error_exit_1_run_failed(engine) -> None:
     assert result.exit_code == 1, result.output
     assert "error EmbeddingError: embed down" in result.output
     assert runs(engine) == [("assess", FAILED)]
+    assert assessments(engine) == []
 
 
 @pytest.mark.parametrize("value", ["", "   "])
@@ -509,6 +555,7 @@ def test_rerank_error_exit_1_run_failed(engine) -> None:
     assert result.exit_code == 1, result.output
     assert "error EmbeddingError: rerank down" in result.output
     assert runs(engine) == [("assess", FAILED)]
+    assert assessments(engine) == []
 
 
 def test_rerank_out_of_range_exit_1_run_failed(engine) -> None:
@@ -520,6 +567,7 @@ def test_rerank_out_of_range_exit_1_run_failed(engine) -> None:
     assert result.exit_code == 1, result.output
     assert "error ValueError:" in result.output
     assert runs(engine) == [("assess", FAILED)]
+    assert assessments(engine) == []
 
 
 @pytest.mark.parametrize("value", ["", "   "])

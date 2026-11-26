@@ -90,6 +90,7 @@ from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from core.assess import AssessError, extract_criterion
+from core.assessment_store import record_assessment
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -808,7 +809,10 @@ def run_assess(
     they fail or on ``AssessError``/``LlmError`` (run ``failed``), 2 on bad input or setup.
     Then runs the verifier (``_make_verify_llm``, ``verifier_model``; no call when silent) and
     :func:`core.verify.route`, printing ``route KIND confidence C|- reason R``; ``adjudicate``
-    exits 1. Nothing is persisted beyond the run row.
+    exits 1. Every reached outcome (accept, adjudicate or silent) appends one ``assessment`` row
+    plus one ``evidence`` row per quote through :func:`core.assessment_store.record_assessment`
+    before the run closes ``finished``, and prints ``assessment ID`` after the route line.
+    ``AssessError``/``LlmError``/``EmbeddingError`` and setup errors write no assessment row.
     With ``embedding_model`` set (AS-07), an Embedder is built via :func:`_make_embedder` before
     the run row opens (``ValueError`` exits 2, no run row) and retrieval is hybrid with that
     stored model; ``EmbeddingError`` closes the run ``failed`` and exits 1.
@@ -893,6 +897,17 @@ def run_assess(
                 verify_llm, pack.rubric, criterion, chunks, extraction, run_id=run_id
             )
             routed = route(extraction, verification)
+            assessment_id = record_assessment(
+                engine,
+                entity_id=entity_id,
+                criterion_id=criterion.id,
+                extraction=extraction,
+                route=routed,
+                rubric_version=pack.scope.version,
+                extractor_model=llm.model,
+                verifier_model=verify_llm.model,
+                run_id=run_id,
+            )
         except (AssessError, LlmError, EmbeddingError) as exc:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
@@ -917,6 +932,7 @@ def run_assess(
         typer.echo(f"failure {failure}")
     typer.echo(f"rationale {extraction.rationale}")
     typer.echo(f"route {routed.kind} confidence {routed.confidence or '-'} reason {routed.reason}")
+    typer.echo(f"assessment {assessment_id}")
     if not extraction.checks_passed or routed.kind == "adjudicate":
         raise typer.Exit(1)
 
