@@ -10,7 +10,9 @@ links. Export lines are folded into a dict keyed ``(entity_id, criterion_id)``.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import hashlib
+import re
+from collections.abc import Callable, Iterable, Mapping
 from html import escape
 from typing import Any
 
@@ -78,8 +80,13 @@ def render_mosaic(
     pack: ScopePack,
     scores_lines: Iterable[Mapping[str, Any]],
     export_lines: Iterable[Mapping[str, Any]],
+    entity_href: Callable[[str], str] | None = None,
 ) -> str:
-    """Return the mosaic page as one HTML string; production caller is ``landscape mosaic``."""
+    """Return the mosaic page as one HTML string; production caller is ``landscape mosaic``.
+
+    ``entity_href`` (FE-02) maps an entity id to a relative link for its row header; without it
+    the output is unchanged from FE-01.
+    """
     scale = {s.id: (s.label, s.color) for s in pack.rubric.status_scale}
     cells: dict[tuple[str, str], Mapping[str, Any]] = {}
     for row in export_lines:
@@ -107,7 +114,10 @@ def render_mosaic(
     for line in scores_lines:
         entity = str(line.get("entity_id"))
         by_topic = {str(t.get("topic_id")): t for t in line.get("topics") or []}
-        out.append(f'<tr data-entity="{_e(entity)}"><th>{_e(entity)}</th>')
+        head = _e(entity)
+        if entity_href is not None:
+            head = f'<a href="{_e(entity_href(entity))}">{head}</a>'
+        out.append(f'<tr data-entity="{_e(entity)}"><th>{head}</th>')
         for topic in topics:
             ts = by_topic.get(topic.id, {})
             out.append(
@@ -116,5 +126,76 @@ def render_mosaic(
             for c in topic.criteria:
                 out.append(_cell(cells.get((entity, c.id)), scale))
         out.append("</tr>")
+    out.append("</tbody></table></body></html>\n")
+    return "\n".join(out)
+
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def entity_slug(entity_id: str) -> str:
+    """Return a filename-safe, collision-resistant slug: ``[A-Za-z0-9_-]`` plus a short digest."""
+    digest = hashlib.sha256(entity_id.encode("utf-8")).hexdigest()[:8]
+    return f"{_UNSAFE.sub('_', entity_id)[:64]}-{digest}"
+
+
+def render_entity_page(
+    pack: ScopePack,
+    scores_line: Mapping[str, Any],
+    cells_for_entity: Mapping[str, Mapping[str, Any]],
+    mosaic_href: str,
+) -> str:
+    """Return one entity's page (FE-02): topic score/coverage, then every criterion in rubric order.
+
+    ``cells_for_entity`` maps criterion id to its export line; a criterion without one is shown as
+    a "not assessed" row. ``mosaic_href`` is the relative link back to the mosaic page.
+    """
+    scale = {s.id: (s.label, s.color) for s in pack.rubric.status_scale}
+    entity = str(scores_line.get("entity_id"))
+    by_topic = {str(t.get("topic_id")): t for t in scores_line.get("topics") or []}
+    out = [
+        "<!DOCTYPE html>",
+        '<html><head><meta charset="utf-8">',
+        f"<title>Entity {_e(entity)}</title>",
+        f"<style>{_STYLE}</style></head><body>",
+        f'<p><a href="{_e(mosaic_href)}">back to mosaic</a></p>',
+        f'<h1 data-entity="{_e(entity)}">{_e(entity)}</h1>',
+        "<table><thead><tr><th>topic</th><th>criterion</th><th>status</th><th>confidence</th>"
+        "<th>rationale</th><th>evidence</th></tr></thead><tbody>",
+    ]
+    for topic in pack.rubric.topics:
+        ts = by_topic.get(topic.id, {})
+        out.append(
+            f'<tr data-topic="{_e(topic.id)}"><th class="topic" colspan="6">{_e(topic.label)}: '
+            f"{_ratio(ts.get('score'))} / {_ratio(ts.get('coverage'))}</th></tr>"
+        )
+        for c in topic.criteria:
+            row = cells_for_entity.get(c.id)
+            first = f'<td>{_e(topic.id)}</td><td title="{_e(c.question)}">{_e(c.id)}</td>'
+            if row is None:
+                out.append(
+                    f'<tr data-criterion="{_e(c.id)}">{first}'
+                    '<td class="cell empty">not assessed</td><td></td><td></td><td></td></tr>'
+                )
+                continue
+            status = str(row.get("status"))
+            label, color = scale.get(status, (status, ""))
+            if color == "hatched":
+                attrs = ' class="cell hatched"'
+            else:
+                attrs = (
+                    f' class="cell" style="background:{_e(color)}"' if color else ' class="cell"'
+                )
+            evidence = "".join(
+                f"<li><q>{_e(ev.get('quote'))}</q><br>{_link(ev.get('url'))}"
+                f" <span>fetched {_e(ev.get('fetched_at'))}</span></li>"
+                for ev in row.get("evidence") or []
+            )
+            out.append(
+                f'<tr data-criterion="{_e(c.id)}">{first}'
+                f'<td{attrs} data-status="{_e(status)}" data-color="{_e(color)}">{_e(label)}</td>'
+                f"<td>{_e(row.get('confidence'))}</td><td>{_e(row.get('rationale'))}</td>"
+                f"<td>{f'<ul>{evidence}</ul>' if evidence else ''}</td></tr>"
+            )
     out.append("</tbody></table></body></html>\n")
     return "\n".join(out)

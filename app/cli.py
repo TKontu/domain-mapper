@@ -97,7 +97,7 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
-from app.mosaic import render_mosaic
+from app.mosaic import entity_slug, render_entity_page, render_mosaic
 from core.aggregate import TopicScore, score_topics
 from core.assess import AssessError, extract_criterion
 from core.assessment_store import (
@@ -1278,12 +1278,27 @@ def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
                 yield obj
 
 
-def run_mosaic(scope: Path, scores: Path, export: Path, out: Path) -> None:
+def _write_atomic(path: Path, text: str) -> None:
+    """Write ``text`` to ``<path>.tmp`` then rename; exit 2 on OSError."""
+    tmp = Path(f"{path}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        typer.echo(f"error: cannot write {path}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(2) from None
+
+
+def run_mosaic(
+    scope: Path, scores: Path, export: Path, out: Path, entity_dir: Path | None = None
+) -> None:
     """Write the FE-01 mosaic page for ``scores`` and ``export`` JSON Lines to ``out``.
 
-    Offline: no settings or database. The page goes to ``<out>.tmp`` and is renamed to ``out``
-    on success. A missing scope/input file, bad scope pack or unwritable output exits 2; a
-    malformed JSON line exits 1.
+    Offline: no settings or database. Each page goes to ``<file>.tmp`` and is renamed on
+    success. With ``entity_dir`` (FE-02) one page per scored entity is also written to
+    ``entity_dir/<slug>.html`` and mosaic row headers link to it. A missing scope/input file,
+    bad scope pack or unwritable output exits 2; a malformed JSON line exits 1.
     """
     if not scope.is_dir():
         typer.echo(f"error: scope directory not found: {scope}", err=True)
@@ -1294,18 +1309,33 @@ def run_mosaic(scope: Path, scores: Path, export: Path, out: Path) -> None:
             typer.echo(f"error: input file not found: {path}", err=True)
             raise typer.Exit(2)
     try:
-        page = render_mosaic(pack, _iter_jsonl(scores), _iter_jsonl(export))
+        if entity_dir is None:
+            page = render_mosaic(pack, _iter_jsonl(scores), _iter_jsonl(export))
+        else:
+            score_rows = list(_iter_jsonl(scores))
+            export_rows = list(_iter_jsonl(export))
     except ValueError as exc:  # includes json.JSONDecodeError
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from None
-    tmp = Path(f"{out}.tmp")
-    try:
-        tmp.write_text(page, encoding="utf-8")
-        os.replace(tmp, out)
-    except OSError as exc:
-        tmp.unlink(missing_ok=True)
-        typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
-        raise typer.Exit(2) from None
+    if entity_dir is not None:
+        rel_dir = Path(os.path.relpath(entity_dir.resolve(), out.resolve().parent)).as_posix()
+        back = Path(os.path.relpath(out.resolve(), entity_dir.resolve())).as_posix()
+        try:
+            entity_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            typer.echo(f"error: cannot create {entity_dir}: {exc.strerror or exc}", err=True)
+            raise typer.Exit(2) from None
+        by_entity: dict[str, dict[str, dict[str, object]]] = {}
+        for row in export_rows:
+            by_entity.setdefault(str(row.get("entity_id")), {})[str(row.get("criterion_id"))] = row
+        for line in score_rows:
+            entity = str(line.get("entity_id"))
+            text = render_entity_page(pack, line, by_entity.get(entity, {}), back)
+            _write_atomic(entity_dir / f"{entity_slug(entity)}.html", text)
+        page = render_mosaic(
+            pack, score_rows, export_rows, lambda e: f"{rel_dir}/{entity_slug(e)}.html"
+        )
+    _write_atomic(out, page)
     typer.echo(f"wrote mosaic to {out}")
 
 
@@ -2090,9 +2120,13 @@ def mosaic(
     scores: Annotated[Path, typer.Option("--scores", help="scores-export JSON Lines file.")],
     export: Annotated[Path, typer.Option("--export", help="export JSON Lines file.")],
     out: Annotated[Path, typer.Option("--out", help="Output HTML file path.")],
+    entity_dir: Annotated[
+        Path | None,
+        typer.Option("--entity-dir", help="Also write one HTML page per entity into DIR."),
+    ] = None,
 ) -> None:
-    """Write one self-contained mosaic HTML page (FE-01) to ``--out``."""
-    run_mosaic(scope, scores, export, out)
+    """Write one self-contained mosaic HTML page (FE-01) to ``--out``; entity pages (FE-02)."""
+    run_mosaic(scope, scores, export, out, entity_dir)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")
