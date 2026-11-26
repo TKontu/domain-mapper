@@ -793,6 +793,7 @@ def run_assess(
     n: int,
     k: int,
     dry_run: bool,
+    embedding_model: str | None = None,
 ) -> None:
     """Retrieve evidence and run the extractor for one entity × criterion inside an ``assess`` run.
 
@@ -802,6 +803,9 @@ def run_assess(
     Then runs the verifier (``_make_verify_llm``, ``verifier_model``; no call when silent) and
     :func:`core.verify.route`, printing ``route KIND confidence C|- reason R``; ``adjudicate``
     exits 1. Nothing is persisted beyond the run row.
+    With ``embedding_model`` set (AS-07), an Embedder is built via :func:`_make_embedder` before
+    the run row opens (``ValueError`` exits 2, no run row) and retrieval is hybrid with that
+    stored model; ``EmbeddingError`` closes the run ``failed`` and exits 1.
     """
     settings = _load(scope)
     if dry_run:
@@ -825,6 +829,9 @@ def run_assess(
     if k < n:
         typer.echo("error: --k must be at least --n", err=True)
         raise typer.Exit(2)
+    if embedding_model is not None and not embedding_model.strip():
+        typer.echo("error: --embedding-model must be non-empty", err=True)
+        raise typer.Exit(2)
 
     engine = _open_engine(settings)
     run_id: int | None = None
@@ -832,18 +839,32 @@ def run_assess(
         try:
             llm = _make_assess_llm(settings, engine)
             verify_llm = _make_verify_llm(settings, engine)
+            embedder = (
+                _make_embedder(settings, embedding_model) if embedding_model is not None else None
+            )
         except (ValueError, LlmError) as exc:  # unbuildable backend: bad setup, exit 2
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from None
         run_id = _open_run(engine, "assess")
         try:
-            chunks = retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
+            if embedder is None:
+                chunks = retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
+            else:
+                chunks = retrieve_evidence(
+                    engine,
+                    criterion,
+                    entity_id=entity_id,
+                    n=n,
+                    k=k,
+                    embedder=embedder,
+                    model=embedding_model,
+                )
             extraction = extract_criterion(llm, pack.rubric, criterion, chunks, run_id=run_id)
             verification = verify_extraction(
                 verify_llm, pack.rubric, criterion, chunks, extraction, run_id=run_id
             )
             routed = route(extraction, verification)
-        except (AssessError, LlmError) as exc:
+        except (AssessError, LlmError, EmbeddingError) as exc:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
             raise typer.Exit(1) from None
@@ -937,9 +958,13 @@ def assess(
     n: Annotated[int, typer.Option("--n", help="Evidence chunks sent to the extractor.")] = 6,
     k: Annotated[int, typer.Option("--k", help="BM25 candidates considered (>= --n).")] = 24,
     dry_run: DryRunOpt = False,
+    embedding_model: Annotated[
+        str | None,
+        typer.Option("--embedding-model", help="Stored embedding model; enables hybrid retrieval."),
+    ] = None,
 ) -> None:
     """Retrieve evidence for the entity and run the local extractor for the criterion."""
-    run_assess(scope, entity_id, criterion, n, k, dry_run)
+    run_assess(scope, entity_id, criterion, n, k, dry_run, embedding_model)
 
 
 @app.command(name="index", help="Embed pending chunks with the configured embedding service.")
