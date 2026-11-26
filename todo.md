@@ -187,7 +187,7 @@ The private scope repo is already published (initial commit `d5714f3`).
   - [x] **PI-01** → [docs/items/PI-01.md](docs/items/PI-01.md) shared injection corpus + tests against assess and attribute extract — done 2026-11-26: merged PR #198 at 613b1a4 (main 176e02e, round 87/A1; planner gate at head 1503 passed, 5 skipped; CI pass); seen: tests/test_prompt_injection.py in that gate run; no `_neutralise` gap found; residuals: fake LLM only, no live-model injection run
 - [ ] Cost report per stage; cloud budget per run
 - [ ] Governance ratchets (operator direction 2026-11-26; in the local gate; layering rule recorded in docs/decisions.md via an operator-parked PR)
-  - [ ] **GV-01** → [docs/items/GV-01.md](docs/items/GV-01.md) shrink-only import-direction ratchet (core must not import concrete adapters, adapters must not import core; seed today's 11+2 files as allowlist; modelled on an external project's ratchet script)
+  - [x] **GV-01** → [docs/items/GV-01.md](docs/items/GV-01.md) shrink-only import-direction ratchet (core must not import concrete adapters, adapters must not import core; seed today's 11+2 files as allowlist; modelled on an external project's ratchet script)
   - [ ] **GV-02** module reachability ratchet: every public symbol has a production caller or an 'unwired by design' row
   - [ ] **GV-03** move `core/cli.py` (~2k lines) out of `core`
 
