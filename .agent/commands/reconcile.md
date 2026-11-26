@@ -3,8 +3,11 @@
 Read project AGENTS.md and `.agent/config.toml`; follow [the protocol](../../SPEC.md).
 
 Inspect actual merged/cancelled outcomes and final main. Run the configured verification and any
-additional combined-state gates owed by the assignment. Record failures and their owner; failed
-required gates keep the round open. Confirm no workers still hold mutable resources.
+additional combined-state gates owed by the assignment. Record failures and their owner. Every round is reconciled and closed,
+including failed, blocked and stalled ones: a failed required gate does not keep the round open.
+Record it as the outcome. Resolve the assignment as merged with the evidence, or cancel it with its
+next owner. Add a follow-up item for the failure. Never leave a round open for a later session to
+discover; an open round blocks every later round. Confirm no workers still hold mutable resources.
 
 Update only the canonical backlog/details: acceptance met → completed outcome (for behavior, only with an observed run or artifact reference;
 merged but not yet exercised stays partial and names the run that will show it); newly discovered work
