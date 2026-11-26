@@ -16,6 +16,7 @@ caller.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any
 
@@ -149,3 +150,35 @@ def current_attribute_values(session: Session, entity_id: int) -> dict[str, Any]
         .order_by(AttributeValueRow.attribute_id)
     )
     return {attribute_id: value for attribute_id, value in session.execute(stmt)}
+
+
+def current_attribute_values_many(
+    session: Session, entity_ids: Sequence[int]
+) -> dict[int, dict[str, Any]]:
+    """Return the latest decoded value per attribute for each of ``entity_ids``; read-only (AT-04).
+
+    One query for all ids (callers bound the ``IN`` list; ``run_attributes_export`` uses <=500).
+    Latest is the highest ``id``; entities without values are absent; empty input returns ``{}``
+    without querying.
+    """
+    if not entity_ids:
+        return {}
+    latest_ids = (
+        sa.select(sa.func.max(AttributeValueRow.id).label("id"))
+        .where(AttributeValueRow.entity_id.in_(list(entity_ids)))
+        .group_by(AttributeValueRow.entity_id, AttributeValueRow.attribute_id)
+        .subquery()
+    )
+    stmt = (
+        sa.select(
+            AttributeValueRow.entity_id,
+            AttributeValueRow.attribute_id,
+            AttributeValueRow.value_json,
+        )
+        .join(latest_ids, AttributeValueRow.id == latest_ids.c.id)
+        .order_by(AttributeValueRow.entity_id, AttributeValueRow.attribute_id)
+    )
+    result: dict[int, dict[str, Any]] = {}
+    for entity_id, attribute_id, value in session.execute(stmt):
+        result.setdefault(entity_id, {})[attribute_id] = value
+    return result

@@ -157,3 +157,32 @@ def test_example_pack_attribute_stores_its_unit(engine) -> None:
         assert current_attribute_values(session, 7) == {"language_pairs": 14}
         row = session.scalars(sa.select(AttributeValueRow)).one()
         assert row.unit == "pairs"
+
+
+def test_current_values_many_matches_per_entity_and_omits_empty(engine) -> None:
+    from core.attribute_store import current_attribute_values_many
+
+    with Session(engine) as session, session.begin():
+        record_attribute_value(session, 1, INT_ATTR, 1)
+        record_attribute_value(session, 2, INT_ATTR, 5)
+        record_attribute_value(session, 1, INT_ATTR, 2)
+        record_attribute_value(session, 1, ENUM_ATTR, "per_word")
+        record_attribute_value(session, 2, BOOL_ATTR, True)
+        record_attribute_value(session, 2, INT_ATTR, 6)
+        record_attribute_value(session, 1, ENUM_ATTR, "per_page")
+    with Session(engine) as session:
+        many = current_attribute_values_many(session, [1, 2, 3])
+        assert many == {1: {"headcount": 2, "pricing": "per_page"}, 2: {"certified": True, "headcount": 6}}
+        for entity_id in (1, 2):
+            assert many[entity_id] == current_attribute_values(session, entity_id)
+        assert current_attribute_values(session, 3) == {}
+
+
+def test_current_values_many_empty_input_does_not_query(engine) -> None:
+    from core.attribute_store import current_attribute_values_many
+
+    statements: list[str] = []
+    sa.event.listen(engine, "before_cursor_execute", lambda *a: statements.append(a[2]))
+    with Session(engine) as session:
+        assert current_attribute_values_many(session, []) == {}
+    assert statements == []
