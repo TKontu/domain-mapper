@@ -16,8 +16,12 @@ python3 scripts/round.py resolve ROUND A1 --outcome merged --head FULL_REVIEWED_
 ```
 
 The CLI checks the result head and supplied check statuses; it does not call the PR host or independently
-prove review/merge correctness. That verification belongs to this phase. If work is abandoned, confirm
-its worker has stopped and resource access ended, then record cancellation with an explanation:
+prove review/merge correctness. That verification belongs to this phase. When a reviewed candidate has a
+check that did not pass for a pre-existing reason, record the merged outcome with `--waive "<reason
+citing the standing ruling>"`; the assignment stores the reason and the non-passed check
+commands/statuses, and `--waive` is refused for a blank reason, with `--outcome cancelled`, or when
+every check passed. If work is abandoned, confirm its worker has stopped and resource access ended,
+then record cancellation with an explanation:
 
 ```sh
 python3 scripts/round.py resolve ROUND A1 --outcome cancelled --evidence "Stopped; remaining work recorded in TASK-1"
