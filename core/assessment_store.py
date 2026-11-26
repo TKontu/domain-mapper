@@ -103,12 +103,19 @@ class AssessmentRow(Base):
 
 
 class EvidenceRow(Base):
-    """One extractor quote backing an assessment; ``grounded`` records the check outcome."""
+    """One extractor quote backing an assessment or an attribute value (AT-05).
+
+    ``grounded`` records the check outcome. Assessment evidence sets ``assessment_id``; attribute
+    evidence sets ``attribute_value_id`` and leaves ``assessment_id`` NULL.
+    """
 
     __tablename__ = "evidence"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    assessment_id: Mapped[int] = mapped_column(sa.ForeignKey("assessment.id"), index=True)
+    assessment_id: Mapped[int | None] = mapped_column(sa.ForeignKey("assessment.id"), index=True)
+    attribute_value_id: Mapped[int | None] = mapped_column(
+        sa.ForeignKey("attribute_value.id"), index=True
+    )
     chunk_id: Mapped[int] = mapped_column(index=True)
     quote: Mapped[str] = mapped_column(sa.Text)
     grounded: Mapped[bool] = mapped_column()
@@ -307,6 +314,8 @@ def _evidence_for(session: Session, ids: Sequence[int]) -> dict[int, list[Curren
             .order_by(EvidenceRow.assessment_id, EvidenceRow.id)
         )
         for ev in session.scalars(stmt):
+            if ev.assessment_id is None:  # pragma: no cover - excluded by the IN filter
+                continue
             found.setdefault(ev.assessment_id, []).append(
                 CurrentEvidence(ev.chunk_id, ev.quote, ev.grounded)
             )

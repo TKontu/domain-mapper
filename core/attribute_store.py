@@ -8,8 +8,9 @@ the latest row per attribute for one entity.
 
 The declarative base is ``core.runs.Base`` (reused, not duplicated), so ``core.runs.create_all``
 creates the ``attribute_value`` table alongside the other tables. Schema migrations remain a
-separate item. Evidence linkage (``evidence.attribute_value_id``), extraction and export are later
-rows: both functions are unwired by design, and AT-02 (attribute extraction) is their production
+separate item. AT-05 links evidence: ``record_attribute_value(evidence=...)`` appends
+``evidence`` rows with ``attribute_value_id`` set, and :func:`attribute_evidence_many` reads them
+back in batches of <=500 ids. Both are unwired by design; attribute extraction is their production
 caller.
 """
 
@@ -23,6 +24,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from core.assessment_store import CurrentEvidence, EvidenceRow
 from core.runs import Base
 from core.scope_pack import Attribute
 
@@ -111,12 +113,15 @@ def record_attribute_value(
     *,
     confidence: float | None = None,
     run_id: int | None = None,
+    evidence: Sequence[tuple[int, str, bool]] = (),
 ) -> int:
     """Validate ``value`` and append one ``attribute_value`` row; return its id.
 
     The value is checked against ``attribute`` before the session is touched, so an invalid value
     writes nothing. The row stores the validated ``value_json`` and the attribute's ``unit``. The
-    caller owns the transaction; this function flushes but does not commit.
+    caller owns the transaction; this function flushes but does not commit. Each
+    ``(chunk_id, quote, grounded)`` in ``evidence`` appends one ``evidence`` row linked by
+    ``attribute_value_id`` (``assessment_id`` NULL) in the same session.
     """
     stored = _checked_value(attribute, value)
     row = AttributeValueRow(
@@ -129,7 +134,45 @@ def record_attribute_value(
     )
     session.add(row)
     session.flush()
+    for chunk_id, quote, grounded in evidence:
+        session.add(
+            EvidenceRow(
+                attribute_value_id=row.id, chunk_id=chunk_id, quote=quote, grounded=grounded
+            )
+        )
+    if evidence:
+        session.flush()
     return row.id
+
+
+ATTRIBUTE_EVIDENCE_BATCH = 500
+
+
+def attribute_evidence_many(
+    session: Session, attribute_value_ids: Sequence[int]
+) -> dict[int, list[CurrentEvidence]]:
+    """Return evidence per attribute value id, in evidence id order; read-only (AT-05).
+
+    One query per <=500 ids; values without evidence are absent; empty input returns ``{}``
+    without querying.
+    """
+    ids = list(attribute_value_ids)
+    found: dict[int, list[CurrentEvidence]] = {}
+    for start in range(0, len(ids), ATTRIBUTE_EVIDENCE_BATCH):
+        stmt = (
+            sa.select(EvidenceRow)
+            .where(
+                EvidenceRow.attribute_value_id.in_(ids[start : start + ATTRIBUTE_EVIDENCE_BATCH])
+            )
+            .order_by(EvidenceRow.attribute_value_id, EvidenceRow.id)
+        )
+        for ev in session.scalars(stmt):
+            if ev.attribute_value_id is None:  # pragma: no cover - excluded by the IN filter
+                continue
+            found.setdefault(ev.attribute_value_id, []).append(
+                CurrentEvidence(ev.chunk_id, ev.quote, ev.grounded)
+            )
+    return found
 
 
 def current_attribute_values(session: Session, entity_id: int) -> dict[str, Any]:
