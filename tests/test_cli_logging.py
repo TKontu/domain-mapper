@@ -14,18 +14,6 @@ from core.log import StructuredFormatter
 runner = CliRunner()
 
 
-@pytest.fixture(autouse=True)
-def _restore_root_logger() -> Iterator[None]:
-    root = logging.getLogger()
-    handlers, level = list(root.handlers), root.level
-    yield
-    for handler in list(root.handlers):
-        if handler not in handlers:
-            root.removeHandler(handler)
-            handler.close()
-    root.setLevel(level)
-
-
 def _structured_handlers() -> list[logging.Handler]:
     return [h for h in logging.getLogger().handlers if isinstance(h.formatter, StructuredFormatter)]
 
