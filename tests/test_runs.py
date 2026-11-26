@@ -297,3 +297,26 @@ class PostgresRunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkUnitStatusConstraintTest(unittest.TestCase):
+    def test_constraint_covers_statuses_and_rejects_unknown(self) -> None:
+        from sqlalchemy.schema import CreateTable
+
+        from core.runs import WORK_UNIT_STATUSES, Base, WorkUnit
+
+        engine = create_engine("sqlite://", poolclass=StaticPool)
+        ddl = str(CreateTable(WorkUnit.__table__).compile(engine))
+        self.assertIn("status IN ('pending', 'done', 'failed', 'needs_review')", ddl)
+        for status in WORK_UNIT_STATUSES:
+            self.assertIn(f"'{status}'", ddl)
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(sa.text("INSERT INTO run (stage, status, started_at) VALUES ('s', 'running', '2026-01-01')"))
+        with self.assertRaises(sa.exc.IntegrityError), engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO work_unit (run_id, stage, unit_key, input_hash, status, attempts)"
+                    " VALUES (1, 's', 'k', 'h', 'bogus', 0)"
+                )
+            )
