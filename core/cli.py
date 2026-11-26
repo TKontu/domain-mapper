@@ -271,18 +271,29 @@ def _open_engine(settings: Settings) -> Engine:
 
 
 def _crawl_urls(settings: Settings, urls: list[str]) -> None:
-    """Crawl explicit URLs with ``entity_id`` None; exit 1 if any failed."""
+    """Crawl explicit URLs with ``entity_id`` None; exit 1 if any failed, 2 on a database error."""
     fetcher = _make_fetcher()
     engine = _open_engine(settings)
+    run_id: int | None = None
     try:
         run_id = _open_run(engine, "crawl")
         try:
             failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls), run_id=run_id)
+        except SQLAlchemyError:
+            raise  # closed best-effort below
         except BaseException:
             # An unexpected error or interrupt must not leave the run row open (CR-14).
             _close_run(engine, run_id, FAILED)
             raise
         _close_run(engine, run_id, FAILED if failed else FINISHED)
+    except SQLAlchemyError as exc:  # CR-16: like entity mode, URL never echoed
+        if run_id is not None:
+            try:  # best effort: a second failure must not mask the exit 2
+                _close_run(engine, run_id, FAILED)
+            except SQLAlchemyError:
+                pass
+        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+        raise typer.Exit(2) from None
     finally:
         engine.dispose()
     if failed:

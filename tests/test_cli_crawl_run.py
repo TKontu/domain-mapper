@@ -84,6 +84,50 @@ class UrlCrawlRunTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertEqual(_runs(self.db), [])
 
+    def _assert_db_exit_2(self, result: object) -> None:
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("error: database unavailable (OperationalError)", result.stderr)
+        self.assertNotIn(str(self.db), result.output)
+        self.assertNotIn("sqlite", result.output)
+
+    def test_open_run_db_error_exits_2(self) -> None:  # CR-16
+        err = sa.exc.OperationalError("INSERT", {}, Exception("gone"))
+        with mock.patch.object(cli, "_open_run", side_effect=err):
+            result = self.crawl(self.base + "/page")
+        self._assert_db_exit_2(result)
+        self.assertEqual(_runs(self.db), [])
+
+    def test_close_run_db_error_exits_2_and_retries_close_failed(self) -> None:  # CR-16
+        err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        real = cli._close_run
+        calls: list[str] = []
+
+        def close(engine: object, run_id: int, status: str) -> None:
+            calls.append(status)
+            if len(calls) == 1:  # the final close fails; the best-effort close succeeds
+                raise err
+            real(engine, run_id, status)
+
+        with mock.patch.object(cli, "_close_run", side_effect=close):
+            result = self.crawl(self.base + "/page")
+        self._assert_db_exit_2(result)
+        self.assertEqual(calls, ["finished", "failed"])
+        self.assertEqual(_runs(self.db), [("crawl", "failed", True)])
+
+    def test_close_run_db_error_when_close_impossible_still_exits_2(self) -> None:  # CR-16
+        err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        with mock.patch.object(cli, "_close_run", side_effect=err):
+            result = self.crawl(self.base + "/page")
+        self._assert_db_exit_2(result)
+        self.assertEqual(_runs(self.db), [("crawl", "running", False)])
+
+    def test_target_write_db_error_closes_run_failed_and_exits_2(self) -> None:  # CR-16
+        err = sa.exc.OperationalError("INSERT", {}, Exception("gone"))
+        with mock.patch.object(cli._Crawler, "crawl", side_effect=err):
+            result = self.crawl(self.base + "/page")
+        self._assert_db_exit_2(result)
+        self.assertEqual(_runs(self.db), [("crawl", "failed", True)])
+
     def test_dry_run_opens_no_run_row(self) -> None:
         result = self.runner.invoke(
             cli.app,
