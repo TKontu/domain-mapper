@@ -19,6 +19,7 @@ from core.screen_store import (
     STATUS_OUT_OF_SCOPE,
     ScreenResultRow,
     latest_screen_segments,
+    latest_screen_segments_many,
     load_entity_text,
     record_screen_result,
     status_for_result,
@@ -271,3 +272,23 @@ def test_latest_screen_segments_ties_by_highest_id(engine) -> None:
 
 def test_latest_screen_segments_none_without_row(engine) -> None:
     assert latest_screen_segments(engine, 1) is None
+
+
+def test_latest_screen_segments_many_latest_per_entity_and_omits_unscreened(engine) -> None:
+    run_id = add_run(engine)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    add_screen_row(engine, 1, run_id, ["old"], t0)
+    add_screen_row(engine, 1, run_id, ["a", "b"], t0 + timedelta(days=1))
+    add_screen_row(engine, 2, run_id, ["other"], t0 + timedelta(days=5))
+    many = latest_screen_segments_many(engine, [1, 2, 3])
+    assert many == {1: ("a", "b"), 2: ("other",)}
+    for entity_id in (1, 2):
+        assert many[entity_id] == latest_screen_segments(engine, entity_id)
+    assert 3 not in many
+
+
+def test_latest_screen_segments_many_empty_input_does_not_query(engine) -> None:
+    statements: list[str] = []
+    sa.event.listen(engine, "before_cursor_execute", lambda *a: statements.append(a[2]))
+    assert latest_screen_segments_many(engine, []) == {}
+    assert statements == []

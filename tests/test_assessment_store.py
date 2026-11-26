@@ -341,6 +341,26 @@ def test_iter_current_filters_match_list(engine, filters) -> None:
     assert got and got == current_assessments(engine, **filters)
 
 
+def test_iter_current_entity_ids_filter_matches_unfiltered_subset(engine) -> None:
+    a, b, c = add_entity(engine, "Acme"), add_entity(engine, "Bolt"), add_entity(engine, "Crisp")
+    rid = add_run(engine)
+    record_v(engine, a, rid, criterion_id="c1")
+    record_v(engine, a, rid, criterion_id="c2")
+    record_v(engine, b, rid)
+    record_v(engine, c, rid, rubric_version="2")
+    full = current_assessments(engine)
+    got = list(iter_current_assessments(engine, entity_ids=[a, c]))
+    assert [r.id for r in got] == [r.id for r in full if r.entity_id in (a, c)]
+
+
+def test_iter_current_empty_entity_ids_yields_nothing_without_query(engine) -> None:
+    streaming_fixture(engine)
+    statements: list[str] = []
+    sa.event.listen(engine, "before_cursor_execute", lambda *a: statements.append(a[2]))
+    assert list(iter_current_assessments(engine, entity_ids=[])) == []
+    assert statements == []
+
+
 def test_iter_current_is_lazy_generator(engine) -> None:
     streaming_fixture(engine)
     gen = iter_current_assessments(engine, batch_size=2)

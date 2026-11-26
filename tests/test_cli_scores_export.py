@@ -189,3 +189,48 @@ def test_failure_mid_stream_leaves_no_output(engine, tmp_path, monkeypatch) -> N
     assert len(calls) == 2
     assert not out.exists()
     assert not Path(f"{out}.tmp").exists()
+
+
+def test_export_batches_queries_and_matches_single_batch(engine, tmp_path, monkeypatch) -> None:
+    rid = add_run(engine)
+    ids = [add_entity(engine, f"e{i}") for i in range(5)]
+    for i, entity_id in enumerate(ids):
+        if i == 2:
+            continue  # unscreened: skipped in both runs
+        add_screen(engine, rid, entity_id, ["agency"])
+        add(engine, rid, entity_id, "iso17100", "strong")
+
+    monkeypatch.setattr(cli, "SCORES_EXPORT_BATCH", 500)
+    out_all = tmp_path / "all.jsonl"
+    full = export(out_all)
+    assert full.exit_code == 0, full.output
+
+    calls: list[list[int]] = []
+    real = cli.latest_screen_segments_many
+
+    def counting(engine_, entity_ids):
+        calls.append(list(entity_ids))
+        return real(engine_, entity_ids)
+
+    assessment_calls: list[list[int]] = []
+    real_assessments = cli.iter_current_assessments
+
+    def counting_assessments(engine_, **kwargs):
+        assessment_calls.append(list(kwargs["entity_ids"]))
+        return real_assessments(engine_, **kwargs)
+
+    monkeypatch.setattr(cli, "SCORES_EXPORT_BATCH", 2)
+    monkeypatch.setattr(cli, "latest_screen_segments_many", counting)
+    monkeypatch.setattr(cli, "iter_current_assessments", counting_assessments)
+    out_batched = tmp_path / "batched.jsonl"
+    batched = export(out_batched)
+    assert batched.exit_code == 0, batched.output
+    assert calls == [ids[0:2], ids[2:4], ids[4:5]]
+    assert assessment_calls == calls
+    assert out_batched.read_bytes() == out_all.read_bytes()
+    assert batched.stdout == (
+        f"exported 4 entities to {out_batched} (skipped 1 without screen result)\n"
+    )
+    assert full.stdout == (
+        f"exported 4 entities to {out_all} (skipped 1 without screen result)\n"
+    )
