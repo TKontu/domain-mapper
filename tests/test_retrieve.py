@@ -1,4 +1,4 @@
-"""Tests for core.retrieve (AS-02, AS-06): keyword and hybrid evidence retrieval. Offline, SQLite."""
+"""Tests for core.retrieve (AS-02, AS-06, AS-08): keyword/hybrid retrieval and reranking."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
 
+from adapters.embedding import RerankHit
 from adapters.llm import LlmResult
 from core.assess import extract_criterion
 from core.chunk_store import ChunkRow, store_chunks
@@ -92,6 +93,43 @@ class BadShapeEmbedder:
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return self.vectors
+
+
+class FakeReranker:
+    """Score documents by position (descending unless ``scores`` is given)."""
+
+    model = "fake-rerank"
+
+    def __init__(self, scores: Sequence[float] | None = None) -> None:
+        self.scores = None if scores is None else list(scores)
+        self.queries: list[str] = []
+        self.documents: list[list[str]] = []
+        self.top_ns: list[int] = []
+
+    def rerank(self, query: str, documents: Sequence[str], top_n: int) -> list[RerankHit]:
+        docs = list(documents)
+        self.queries.append(query)
+        self.documents.append(docs)
+        self.top_ns.append(top_n)
+        if self.scores is None:
+            scores = [float(len(docs) - position) for position in range(len(docs))]
+        else:
+            scores = (self.scores + [0.0] * len(docs))[: len(docs)]
+        hits = [RerankHit(index=index, score=score) for index, score in enumerate(scores)]
+        hits.sort(key=lambda hit: (-hit.score, hit.index))
+        return hits[:top_n]
+
+
+class FixedReranker:
+    """Return a fixed hit list, ignoring ``top_n``, to exercise the caller's checks."""
+
+    model = "fake-rerank"
+
+    def __init__(self, hits: list[RerankHit]) -> None:
+        self.hits = hits
+
+    def rerank(self, query: str, documents: Sequence[str], top_n: int) -> list[RerankHit]:
+        return list(self.hits)
 
 
 def _rubric(hints: list[str] | None = None) -> tuple[Rubric, Criterion]:
@@ -336,3 +374,127 @@ def test_hybrid_propagates_dimension_mismatch(tmp_path: Path) -> None:
     _, crit = _rubric([])
     with pytest.raises(ValueError):
         retrieve_evidence(engine, crit, entity_id=1, embedder=FakeEmbedder([1.0, 0.0, 0.0]))
+
+
+def test_reranker_reorders_keyword_pool_and_receives_question(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    snap = add_snapshot(engine, 1)
+    add_chunks(engine, snap, [f"terms passage {i}" for i in range(5)])
+    _, crit = _rubric(["terms"])
+    pool_ids = [
+        hit.chunk_id for hit in search_chunks(engine, build_query(crit), limit=4, entity_id=1)
+    ]
+    assert len(pool_ids) == 4
+    texts = stored_texts(engine)
+    reranker = FakeReranker(scores=[0.1, 0.2, 0.3, 0.4])
+
+    out = retrieve_evidence(engine, crit, entity_id=1, n=2, k=4, reranker=reranker)
+
+    assert reranker.queries == [crit.question]
+    assert reranker.top_ns == [2]
+    assert reranker.documents == [[texts[cid] for cid in pool_ids]]
+    assert len(reranker.documents[0]) <= 4
+    assert [cid for cid, _ in out] == [pool_ids[3], pool_ids[2]]
+    assert [text for _, text in out] == [texts[cid] for cid in (pool_ids[3], pool_ids[2])]
+
+
+def test_reranker_reorders_hybrid_fused_pool(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    own = add_snapshot(engine, 1)
+    add_chunks(engine, own, ["hint only", "nothing relevant", "hint relevant", "other words"])
+    ids = ids_by_text(engine)
+    set_embedding(engine, ids["hint only"], [-1.0, 0.0])
+    set_embedding(engine, ids["nothing relevant"], [1.0, 0.0])
+    set_embedding(engine, ids["hint relevant"], [0.0, 1.0])
+    set_embedding(engine, ids["other words"], [0.6, 0.8])
+    _, crit = _rubric(["hint"])
+    embedder = FakeEmbedder([1.0, 0.0])
+    fused_pool = retrieve_evidence(engine, crit, entity_id=1, n=4, k=4, embedder=embedder)
+    pool_ids = [cid for cid, _ in fused_pool]
+    assert len(pool_ids) == 4
+    reranker = FakeReranker(scores=[0.1, 0.2, 0.3, 0.4])
+
+    out = retrieve_evidence(
+        engine, crit, entity_id=1, n=2, k=4, embedder=embedder, reranker=reranker
+    )
+
+    assert reranker.queries == [crit.question]
+    assert reranker.top_ns == [2]
+    assert reranker.documents == [[text for _, text in fused_pool]]
+    assert [cid for cid, _ in out] == [pool_ids[3], pool_ids[2]]
+
+
+def test_reranker_orders_distinct_scores_descending(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    snap = add_snapshot(engine, 1)
+    add_chunks(engine, snap, [f"terms passage {i}" for i in range(4)])
+    _, crit = _rubric(["terms"])
+    pool_ids = [
+        hit.chunk_id for hit in search_chunks(engine, build_query(crit), limit=4, entity_id=1)
+    ]
+    reranker = FixedReranker(
+        [
+            RerankHit(index=0, score=0.2),
+            RerankHit(index=2, score=0.9),
+            RerankHit(index=1, score=0.5),
+        ]
+    )
+
+    out = retrieve_evidence(engine, crit, entity_id=1, n=3, k=4, reranker=reranker)
+
+    assert [cid for cid, _ in out] == [pool_ids[2], pool_ids[1], pool_ids[0]]
+
+
+def test_reranker_ties_break_by_chunk_id_ascending(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    snap = add_snapshot(engine, 1)
+    add_chunks(engine, snap, [f"terms passage {i}" for i in range(4)])
+    _, crit = _rubric(["terms"])
+    pool_ids = [
+        hit.chunk_id for hit in search_chunks(engine, build_query(crit), limit=4, entity_id=1)
+    ]
+    reranker = FixedReranker(
+        [
+            RerankHit(index=3, score=0.9),
+            RerankHit(index=1, score=0.9),
+            RerankHit(index=2, score=0.5),
+            RerankHit(index=0, score=0.5),
+        ]
+    )
+
+    out = retrieve_evidence(engine, crit, entity_id=1, n=2, k=4, reranker=reranker)
+
+    assert [cid for cid, _ in out] == [pool_ids[1], pool_ids[3]]
+
+
+def test_reranker_output_is_capped_at_n(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    snap = add_snapshot(engine, 1)
+    add_chunks(engine, snap, [f"terms passage {i}" for i in range(4)])
+    _, crit = _rubric(["terms"])
+    pool_ids = [
+        hit.chunk_id for hit in search_chunks(engine, build_query(crit), limit=4, entity_id=1)
+    ]
+    reranker = FixedReranker(
+        [
+            RerankHit(index=0, score=0.9),
+            RerankHit(index=1, score=0.8),
+            RerankHit(index=2, score=0.7),
+        ]
+    )
+
+    out = retrieve_evidence(engine, crit, entity_id=1, n=1, k=4, reranker=reranker)
+
+    assert [cid for cid, _ in out] == [pool_ids[0]]
+
+
+def test_reranker_rejects_out_of_range_index(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    snap = add_snapshot(engine, 1)
+    add_chunks(engine, snap, [f"terms passage {i}" for i in range(4)])
+    _, crit = _rubric(["terms"])
+
+    for bad_index in (4, -1):
+        reranker = FixedReranker([RerankHit(index=bad_index, score=0.9)])
+        with pytest.raises(ValueError):
+            retrieve_evidence(engine, crit, entity_id=1, n=2, k=4, reranker=reranker)
