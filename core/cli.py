@@ -89,6 +89,7 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
+from core.assess import AssessError, extract_criterion
 from core.candidate_store import NewCandidate, record_candidates
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -97,8 +98,16 @@ from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.resolve import apply_resolution, group_candidates
+from core.retrieve import retrieve_evidence
 from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
-from core.scope_pack import CrawlPolicy, ScopePackError, load_scope_pack, scope_pack_json_schemas
+from core.scope_pack import (
+    CrawlPolicy,
+    Criterion,
+    Rubric,
+    ScopePackError,
+    load_scope_pack,
+    scope_pack_json_schemas,
+)
 from core.screen import ScreenError, screen_entity
 from core.screen_store import DEFAULT_MAX_CHARS, load_entity_text, record_screen_result
 
@@ -757,6 +766,96 @@ def run_search(query: str, entity_id: int | None, limit: int) -> None:
         typer.echo(line)
 
 
+def _make_assess_llm(settings: Settings, db: DbTarget) -> LLM:
+    """Build the local extractor model for assess (§6 routing); the test seam for a fake adapter."""
+    return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
+
+
+def _find_criterion(rubric: Rubric, criterion_id: str) -> Criterion | None:
+    for topic in rubric.topics:
+        for criterion in topic.criteria:
+            if criterion.id == criterion_id:
+                return criterion
+    return None
+
+
+def run_assess(
+    scope: Path,
+    entity_id: int | None,
+    criterion_id: str | None,
+    n: int,
+    k: int,
+    dry_run: bool,
+) -> None:
+    """Retrieve evidence and run the extractor for one entity × criterion inside an ``assess`` run.
+
+    Prints ``status S checks pass|fail chunks N``, one ``quote ...`` line per quote, one
+    ``failure ...`` line per failed check and ``rationale ...``. Exits 0 when checks pass, 1 when
+    they fail or on ``AssessError``/``LlmError`` (run ``failed``), 2 on bad input or setup.
+    Nothing is persisted beyond the run row.
+    """
+    settings = _load(scope)
+    if dry_run:
+        _print_plan("assess", scope, None, None, settings)
+        return
+    if entity_id is None or criterion_id is None:
+        typer.echo("error: --entity and --criterion are required", err=True)
+        raise typer.Exit(2)
+    try:
+        pack = load_scope_pack(scope)
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    criterion = _find_criterion(pack.rubric, criterion_id)
+    if criterion is None:
+        typer.echo(f"error: unknown criterion {criterion_id}", err=True)
+        raise typer.Exit(2)
+    if n < 1:
+        typer.echo("error: --n must be at least 1", err=True)
+        raise typer.Exit(2)
+    if k < n:
+        typer.echo("error: --k must be at least --n", err=True)
+        raise typer.Exit(2)
+
+    engine = _open_engine(settings)
+    run_id: int | None = None
+    try:
+        try:
+            llm = _make_assess_llm(settings, engine)
+        except (ValueError, LlmError) as exc:  # unbuildable backend: bad setup, exit 2
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
+        run_id = _open_run(engine, "assess")
+        try:
+            chunks = retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
+            extraction = extract_criterion(llm, pack.rubric, criterion, chunks, run_id=run_id)
+        except (AssessError, LlmError) as exc:
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            _close_run(engine, run_id, FAILED)
+            raise typer.Exit(1) from None
+        except SQLAlchemyError:
+            raise  # the outer handler closes the run best-effort and prints one line (AB-01)
+        except BaseException as exc:
+            _close_run_aborting(engine, run_id, exc)
+            raise
+        _close_run(engine, run_id, FINISHED)
+    except SQLAlchemyError as exc:  # URL never echoed (AB-01)
+        _exit_database_unavailable(engine, run_id, exc)
+    finally:
+        engine.dispose()
+
+    checks = "pass" if extraction.checks_passed else "fail"
+    typer.echo(f"status {extraction.status} checks {checks} chunks {len(chunks)}")
+    for quote in extraction.quotes:
+        grounded = "grounded" if quote.grounded else "ungrounded"
+        typer.echo(f'quote chunk {quote.chunk_id} {grounded} {quote.method or "-"} "{quote.text}"')
+    for failure in extraction.failures:
+        typer.echo(f"failure {failure}")
+    typer.echo(f"rationale {extraction.rationale}")
+    if not extraction.checks_passed:
+        raise typer.Exit(1)
+
+
 def _register(stage: str) -> None:
     if stage == "crawl":
 
@@ -788,8 +887,8 @@ def _register(stage: str) -> None:
 
 
 for _stage in STAGES:
-    # resolve, screen and index have their own bodies below
-    if _stage not in ("resolve", "screen", "index"):
+    # resolve, screen, index and assess have their own bodies below
+    if _stage not in ("resolve", "screen", "index", "assess"):
         _register(_stage)
 
 
@@ -813,6 +912,19 @@ def screen(
 ) -> None:
     """Classify each ``unscreened`` entity of the scope from its stored chunk text."""
     run_screen(scope, layer, limit, dry_run)
+
+
+@app.command(name="assess", help="Assess one entity against one rubric criterion.")
+def assess(
+    scope: ScopeOpt,
+    entity_id: Annotated[int | None, typer.Option("--entity", help="Entity id.")] = None,
+    criterion: Annotated[str | None, typer.Option("--criterion", help="Criterion id.")] = None,
+    n: Annotated[int, typer.Option("--n", help="Evidence chunks sent to the extractor.")] = 6,
+    k: Annotated[int, typer.Option("--k", help="BM25 candidates considered (>= --n).")] = 24,
+    dry_run: DryRunOpt = False,
+) -> None:
+    """Retrieve evidence for the entity and run the local extractor for the criterion."""
+    run_assess(scope, entity_id, criterion, n, k, dry_run)
 
 
 @app.command(name="index", help="Embed pending chunks with the configured embedding service.")
