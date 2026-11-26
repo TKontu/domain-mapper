@@ -12,7 +12,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from core import cli
+from app import cli
 from core.chunk_store import ChunkRow
 from core.keyword_search import KeywordHit, search_chunks
 from core.runs import Run, create_all

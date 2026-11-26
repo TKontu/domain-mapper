@@ -13,7 +13,7 @@ from unittest import mock
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from core import cli
+from app import cli
 from core.runs import Run
 from tests import test_cli_crawl as url_tests  # module import: its tests are not re-collected
 from tests import test_cli_crawl_entities as entity_tests

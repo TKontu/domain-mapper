@@ -11,7 +11,7 @@ from unittest import mock
 
 from typer.testing import CliRunner
 
-from core.cli import STAGES, app
+from app.cli import STAGES, app
 
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
 

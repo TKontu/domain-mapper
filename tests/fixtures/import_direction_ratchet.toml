@@ -20,10 +20,6 @@ local = 0
 module = 1
 local = 0
 
-["core/cli.py".adapters]
-module = 10
-local = 0
-
 ["core/embed_store.py".adapters]
 module = 1
 local = 0

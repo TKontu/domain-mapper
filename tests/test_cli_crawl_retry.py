@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from adapters.fetcher import FetchError, FetchResult, TransientFetchError
-from core import cli
-from core.cli import app
+from app import cli
+from app.cli import app
 from core.runs import create_all
 from core.snapshot_store import SnapshotRow
 

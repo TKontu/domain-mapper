@@ -20,9 +20,9 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from core import cli
+from app import cli
 from core.chunk_store import ChunkRow
-from core.cli import app
+from app.cli import app
 from core.runs import Run
 from core.snapshot_store import SnapshotRow
 

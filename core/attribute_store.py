@@ -204,7 +204,7 @@ def current_attribute_value_rows_many(
     Read-only (AT-10, AT-11). One query for all ids (callers bound the ``IN`` list); latest is the
     highest ``id``; ``unit`` is the stored row's unit (``None`` when it has none); entities without
     values are absent; empty input returns ``{}`` without querying.
-    Production caller: ``core.cli.run_attributes_export`` (to look up current-value evidence
+    Production caller: ``app.cli.run_attributes_export`` (to look up current-value evidence
     and unit).
     """
     if not entity_ids:

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from core.candidate_store import Candidate
-from core.cli import app
+from app.cli import app
 from core.runs import create_all
 
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
@@ -139,7 +139,7 @@ class ResolveCliTest(_CliFixture):
 
     def test_db_failure_exits_2_without_url(self) -> None:
         os.environ["DM_DATABASE_URL"] = "postgresql+psycopg://user:hunter2@db.invalid:1/x"
-        with mock.patch("core.cli.create_engine", side_effect=RuntimeError("db.invalid hunter2")):
+        with mock.patch("app.cli.create_engine", side_effect=RuntimeError("db.invalid hunter2")):
             result = self.invoke()
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("error: database unavailable (RuntimeError)", result.stderr)

@@ -16,7 +16,7 @@ item, as in ``core.screen_store``.
 The declarative base is ``core.runs.Base`` (reused, not duplicated), so
 ``core.runs.create_all`` creates both tables. Consumers (the review queue, current-view queries
 and reporting) are later rows, unwired by design; the production writer is ``landscape assess``
-(:func:`core.cli.run_assess`).
+(:func:`app.cli.run_assess`).
 """
 
 from __future__ import annotations
@@ -236,7 +236,7 @@ def iter_current_assessments(
     one batch plus its evidence is held. Ordered by entity id, criterion id and rubric version.
     ``entity_ids`` restricts the view to those entities (an empty sequence yields nothing
     without querying). The session stays open until the generator is exhausted or closed.
-    Production callers: ``core.cli.run_export``, ``core.cli.run_scores_export`` and
+    Production callers: ``app.cli.run_export``, ``app.cli.run_scores_export`` and
     :func:`current_assessments`.
     """
     if batch_size < 1:

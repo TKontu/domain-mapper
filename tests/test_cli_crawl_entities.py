@@ -1,7 +1,7 @@
 """Tests for entity-driven ``landscape crawl`` (CR-04); offline fakes only.
 
 A local ``http.server`` plays Firecrawl's ``/v1/scrape`` API only; ``robots.txt`` is a patched
-``core.cli.get_robots`` fake (no page URL is fetched directly: the fetcher is Firecrawl). The
+``app.cli.get_robots`` fake (no page URL is fetched directly: the fetcher is Firecrawl). The
 database is a temp SQLite file and the raw store a temp directory. Entity hosts use
 ``example.com``/``.invalid`` only (D-003).
 """
@@ -24,8 +24,8 @@ import yaml
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from core import cli
-from core.cli import app
+from app import cli
+from app.cli import app
 from core.entity_store import STATUS_UNSCREENED, Entity
 from core.runs import Run, create_all
 from core.snapshot_store import SnapshotRow
@@ -356,7 +356,7 @@ class EntityCrawlCliTest(unittest.TestCase):
 
     def test_db_setup_failure_exits_2_without_echoing_url(self) -> None:
         os.environ["DM_DATABASE_URL"] = "postgresql+psycopg://user:hunter2@db.invalid:1/x"
-        with mock.patch("core.cli.create_engine", side_effect=RuntimeError("db.invalid hunter2")):
+        with mock.patch("app.cli.create_engine", side_effect=RuntimeError("db.invalid hunter2")):
             result = self.crawl()
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("error: database unavailable (RuntimeError)", result.stderr)

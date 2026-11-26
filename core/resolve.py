@@ -20,7 +20,7 @@ Semantics:
   transaction; a failure rolls back that batch only and re-raises. Unnormalisable URLs are
   counted as skipped and stay NULL, so a rerun reports them again and creates/links nothing new.
 
-Production caller: ``landscape resolve`` (``core.cli.run_resolve``). Consumer: the future Resolve
+Production caller: ``landscape resolve`` (``app.cli.run_resolve``). Consumer: the future Resolve
 merge-suggestion row (unwired by design). Rows are streamed with ``yield_per``, so memory is
 bounded by the number of distinct domains, not by the number of rows.
 """

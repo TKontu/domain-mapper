@@ -22,6 +22,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY core ./core
 COPY adapters ./adapters
+COPY app ./app
 RUN uv sync --frozen --no-dev
 
 # No entrypoint yet: the CLI row owns the real command.
