@@ -37,6 +37,9 @@ _UNICODE_DASHES = str.maketrans(
     }
 )
 
+# Verbatim tiers -> method label; used by core.assess and core.attribute_extract.
+VERBATIM_TIER_METHODS: dict[int, str] = {1: "exact", 2: "normalised"}
+
 
 @dataclass
 class GroundingResult:
