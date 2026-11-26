@@ -82,6 +82,7 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -119,6 +120,7 @@ from core.attribute_store import (
     record_attribute_value,
 )
 from core.candidate_store import NewCandidate, record_candidates
+from core.chunk_store import ChunkRow
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, EntityRef, iter_entities
@@ -156,6 +158,7 @@ from core.screen_store import (
     load_entity_text,
     record_screen_result,
 )
+from core.snapshot_store import SnapshotRow
 from core.source_catalogue import seed_sources
 from core.verify import route, verify_extraction
 
@@ -1562,6 +1565,12 @@ def _run_attributes_extract_batch(
     null) is skipped: no retrieval or LLM call, prints ``entity E attribute A skipped existing``,
     counted in ``skipped`` and ``pairs`` (``pairs == stored + null + failed + errors +
     skipped``), and never affects the exit code.
+
+    RT-01: every non-skipped pair runs through :class:`core.runs.StageRunner` under ``run_id``
+    (unit key ``"<entity_id>:<attribute_id>"``; input hash over the scope id, the attribute's
+    canonical JSON, ``n`` and the entity's chunk count/max id from one aggregate query per page).
+    A pair already ``done`` for the same hash is skipped silently and counted in ``skipped``; a
+    pair whose checks fail is still ``done``; an errored pair is a ``failed`` unit, retried later.
     """
     pairs = stored = null = failed = errors = skipped = 0
     stream = iter_entities(
@@ -1572,12 +1581,19 @@ def _run_attributes_extract_batch(
         batch=ATTRIBUTE_EXTRACT_PAGE,
     )
 
-    def process_page(entities: list[EntityRef]) -> None:
-        nonlocal pairs, stored, null, failed, errors, skipped
+    definitions = {
+        attribute.id: json.dumps(attribute.model_dump(mode="json"), sort_keys=True)
+        for attribute in attributes
+    }
+    in_flight: dict[str, tuple[int, Attribute]] = {}  # the one pair the runner is handling
+
+    def units(entities: list[EntityRef]) -> Iterator[tuple[str, str]]:
+        nonlocal pairs, skipped
         current: dict[int, dict[str, Any]] = {}
         if skip_existing:
             with Session(engine) as session:
                 current = current_attribute_values_many(session, [entity.id for entity in entities])
+        fingerprints = _chunk_fingerprints(engine, [entity.id for entity in entities])
         for entity in entities:
             for attribute in attributes:
                 pairs += 1
@@ -1585,38 +1601,73 @@ def _run_attributes_extract_batch(
                     skipped += 1
                     typer.echo(f"entity {entity.id} attribute {attribute.id} skipped existing")
                     continue
-                try:
-                    result = _extract_pair(engine, llm, run_id, entity.id, attribute, n)
-                except (AttributeExtractError, LlmError) as exc:
-                    errors += 1
-                    typer.echo(
-                        f"entity {entity.id} attribute {attribute.id} "
-                        f"error {type(exc).__name__}: {exc}"
-                    )
-                    continue
-                checks = "pass" if result.extraction.checks_passed else "fail"
-                attribute_value = result.value_id if result.value_id is not None else "-"
-                typer.echo(
-                    f"entity {result.entity_id} attribute {result.attribute_id} "
-                    f"value {json.dumps(result.extraction.value)} checks {checks} "
-                    f"chunks {result.num_chunks} attribute_value {attribute_value}"
-                )
-                if result.value_id is not None:
-                    stored += 1
-                elif not result.extraction.checks_passed:
-                    failed += 1
-                else:
-                    null += 1
+                count, max_id = fingerprints.get(entity.id, (0, 0))
+                key = f"{entity.id}:{attribute.id}"
+                digest = hashlib.sha256(
+                    f"{pack.scope.id}\0{definitions[attribute.id]}\0{n}\0{count}\0{max_id}".encode()
+                ).hexdigest()
+                in_flight.clear()
+                in_flight[key] = (entity.id, attribute)
+                yield key, digest
 
-    page: list[EntityRef] = []
-    for entity in stream:
-        page.append(entity)
-        if len(page) >= ATTRIBUTE_EXTRACT_PAGE:
-            process_page(page)
-            page = []
-    if page:
-        process_page(page)
+    def handle(key: str) -> None:
+        nonlocal stored, null, failed, errors
+        entity_id, attribute = in_flight.pop(key)
+        try:
+            result = _extract_pair(engine, llm, run_id, entity_id, attribute, n)
+        except (AttributeExtractError, LlmError) as exc:
+            errors += 1
+            typer.echo(
+                f"entity {entity_id} attribute {attribute.id} error {type(exc).__name__}: {exc}"
+            )
+            raise
+        checks = "pass" if result.extraction.checks_passed else "fail"
+        attribute_value = result.value_id if result.value_id is not None else "-"
+        typer.echo(
+            f"entity {result.entity_id} attribute {result.attribute_id} "
+            f"value {json.dumps(result.extraction.value)} checks {checks} "
+            f"chunks {result.num_chunks} attribute_value {attribute_value}"
+        )
+        if result.value_id is not None:
+            stored += 1
+        elif not result.extraction.checks_passed:
+            failed += 1
+        else:
+            null += 1
+
+    def pages() -> Iterator[list[EntityRef]]:
+        page: list[EntityRef] = []
+        for entity in stream:
+            page.append(entity)
+            if len(page) >= ATTRIBUTE_EXTRACT_PAGE:
+                yield page
+                page = []
+        if page:
+            yield page
+
+    # A pair already done for the same input is skipped by the runner (RT-01).
+    summary = StageRunner(engine).run(
+        "attributes_extract",
+        chain.from_iterable(units(page) for page in pages()),
+        handle,
+        run_id=run_id,
+        catch=(AttributeExtractError, LlmError),
+    )
+    skipped += summary.skipped
     return pairs, stored, null, failed, errors, skipped
+
+
+def _chunk_fingerprints(engine: Engine, entity_ids: list[int]) -> dict[int, tuple[int, int]]:
+    """``entity_id -> (chunk count, max chunk id)`` for one page in one aggregate query (RT-01)."""
+    stmt = (
+        select(SnapshotRow.entity_id, func.count(ChunkRow.id), func.max(ChunkRow.id))
+        .join(ChunkRow, ChunkRow.snapshot_id == SnapshotRow.id)
+        .where(SnapshotRow.entity_id.in_(entity_ids))
+        .group_by(SnapshotRow.entity_id)
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    return {eid: (int(count), int(max_id or 0)) for eid, count, max_id in rows if eid is not None}
 
 
 def run_attributes_extract(
