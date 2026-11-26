@@ -148,6 +148,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Attributes: founded, employees band, sites, scope-defined counts
 - [ ] Claim verification framework + first register verifier
 - [ ] Aggregate: topic scores + coverage
+  - [ ] **AG-01** → [docs/items/AG-01.md](docs/items/AG-01.md) `core.aggregate.score_topics` returns per-topic score and coverage over current assessments (`na` removes, `silent` neutral, segment-filtered) — partial 2026-11-26: merged-pending (assignment 71/A1); seen offline only; unwired until the scores CLI row
 - [ ] Export JSON for the frontend
 
 ### Minimal frontend
