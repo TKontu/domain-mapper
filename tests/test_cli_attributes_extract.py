@@ -1,8 +1,10 @@
-"""Tests for ``landscape attributes-extract`` (AT-07); SQLite under a temp dir, fake local LLM."""
+"""Tests for ``landscape attributes-extract`` (AT-07, AT-08); SQLite temp dir, fake local LLM."""
 
 from __future__ import annotations
 
 import os
+import re
+import shutil
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -238,3 +240,334 @@ def test_attribute_query_includes_enum_values() -> None:
     )
     assert attribute_query(attribute) == "Pricing model per_word per_page"
     assert attribute_query(Attribute(id="h", label="Headcount", type="int")) == "Headcount"
+
+
+# --- AT-08: batch mode (--all) -------------------------------------------------
+
+BATCH_TEXT = "Our agency has a headcount of 42 staff translators."
+QUOTE = "headcount of 42"
+SCOPE_ID = "example"
+
+
+class GroundingFake:
+    """Fake LLM returning a grounded quote citing the first chunk id in the prompt."""
+
+    model = "fake-local"
+
+    def __init__(self, value: object = 42, quote: str = QUOTE) -> None:
+        self.value = value
+        self.quote = quote
+        self.prompts: list[str] = []
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        purpose: str,
+        run_id: int,
+        json_schema: Mapping[str, object] | None = None,
+    ) -> LlmResult:
+        self.prompts.append(prompt)
+        match = re.search(r"\[chunk (\d+)\]", prompt)
+        assert match is not None
+        chunk_id = int(match.group(1))
+        return LlmResult(
+            text="{}",
+            parsed={"value": self.value, "quotes": [{"chunk_id": chunk_id, "quote": self.quote}]},
+            tokens_in=1,
+            tokens_out=1,
+            cost=0.0,
+            cache_hit=False,
+        )
+
+
+def batch_scope(tmp_path: Path, attributes_yaml: str) -> Path:
+    """Copy the neutral ``_example`` pack to tmp and replace ``attributes.yaml``."""
+    dst = tmp_path / "scope"
+    shutil.copytree(EXAMPLE_SCOPE, dst)
+    (dst / "attributes.yaml").write_text(attributes_yaml)
+    return dst
+
+
+TWO_ATTRS = (
+    "attributes:\n"
+    "  - id: attr_a\n    label: Headcount\n    type: int\n"
+    "  - id: attr_b\n    label: staff translators\n    type: int\n"
+)
+
+
+def seed_status(
+    engine, name: str, texts: list[str], status: str, scope_id: str = SCOPE_ID
+) -> int:
+    with Session(engine) as session, session.begin():
+        entity = Entity(
+            scope_id=scope_id,
+            name=name,
+            primary_domain=f"{name}.example",
+            status=status,
+        )
+        session.add(entity)
+        session.flush()
+        entity_id = entity.id
+        snap = SnapshotRow(
+            entity_id=entity_id,
+            url=f"https://{name}.example/",
+            final_url=f"https://{name}.example/",
+            content_type="text/html",
+            sha256="0" * 64,
+            fetched_at=datetime.now(UTC),
+            source_kind="web",
+        )
+        session.add(snap)
+        session.flush()
+        snap_id = snap.id
+    chunks = [
+        Chunk(seq=i, text=t, page=None, heading_path=("S",), char_start=0, char_end=len(t))
+        for i, t in enumerate(texts)
+    ]
+    store_chunks(engine, snap_id, chunks)
+    return entity_id
+
+
+def invoke_batch(fake, scope: Path, *args: str):
+    with mock.patch.object(cli, "_make_assess_llm", return_value=fake) as make:
+        result = CliRunner().invoke(cli.app, ["attributes-extract", "--scope", str(scope), *args])
+    return result, make
+
+
+def test_all_two_in_scope_two_attributes_makes_four_calls(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    out_id = seed_status(engine, "gamma", [BATCH_TEXT], "out_of_scope")
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 4
+    assert sum("gamma.example" in p for p in fake.prompts) == 0
+    # none of the out-of-scope entity's chunks are cited
+    out_chunks = [p for p in fake.prompts if f"[chunk {out_id}]" in p]
+    assert out_chunks == []
+    rows = values(engine)
+    assert len(rows) == 4
+    assert {r.attribute_id for r in rows} == {"attr_a", "attr_b"}
+    assert len(evidence(engine)) == 4
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+    lines = result.output.splitlines()
+    pair_lines = [ln for ln in lines if ln.startswith("entity ")]
+    assert len(pair_lines) == 4
+    for ln in pair_lines:
+        assert re.match(
+            r"entity \d+ attribute attr_[ab] value 42 checks pass chunks 1 attribute_value \d+", ln
+        ), ln
+    assert lines[-1] == "pairs 4 stored 4 null 0 failed 0 errors 0"
+
+
+def test_all_attribute_filter_makes_two_calls(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all", "--attribute", "attr_a")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 2
+    rows = values(engine)
+    assert len(rows) == 2 and {r.attribute_id for r in rows} == {"attr_a"}
+    assert result.output.splitlines()[-1] == "pairs 2 stored 2 null 0 failed 0 errors 0"
+
+
+def test_all_limit_caps_entities_not_pairs(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all", "--limit", "1")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 2  # one entity × two attributes
+    entities_seen = {r.entity_id for r in values(engine)}
+    assert len(entities_seen) == 1
+    assert result.output.splitlines()[-1] == "pairs 2 stored 2 null 0 failed 0 errors 0"
+
+
+def test_all_limit_below_one_exits_2_no_run(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, _ = invoke_batch(GroundingFake(), scope, "--all", "--limit", "0")
+    assert result.exit_code == 2
+    assert runs(engine) == []
+
+
+def test_all_together_with_entity_exits_2_no_run(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, make = invoke_batch(GroundingFake(), scope, "--all", "--entity", "1")
+    assert result.exit_code == 2
+    assert runs(engine) == []
+    make.assert_not_called()
+
+
+def test_neither_all_nor_entity_exits_2_no_run(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, make = invoke_batch(GroundingFake(), scope, "--attribute", "attr_a")
+    assert result.exit_code == 2
+    assert runs(engine) == []
+    make.assert_not_called()
+
+
+def test_all_unknown_attribute_exits_2_no_run(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, make = invoke_batch(GroundingFake(), scope, "--all", "--attribute", "nope")
+    assert result.exit_code == 2
+    assert runs(engine) == []
+    make.assert_not_called()
+
+
+def test_all_n_below_one_exits_2_no_run(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, _ = invoke_batch(GroundingFake(), scope, "--all", "--n", "0")
+    assert result.exit_code == 2
+    assert runs(engine) == []
+
+
+def test_all_llm_error_one_pair_is_recorded_and_batch_continues(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    second = seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    first_chunk = _first_chunk(engine, first)
+
+    class FlakyFake(GroundingFake):
+        def complete(self, prompt, *, purpose, run_id, json_schema=None):
+            # fail exactly the first pair (lowest entity id, first attribute in pack order)
+            if f"[chunk {first_chunk}]" in prompt and not self.prompts:
+                self.prompts.append(prompt)
+                raise LlmError("boom")
+            return super().complete(prompt, purpose=purpose, run_id=run_id, json_schema=json_schema)
+
+    fake = FlakyFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 1, result.output
+    lines = result.output.splitlines()
+    error_lines = [ln for ln in lines if " error " in ln]
+    assert error_lines == [f"entity {first} attribute attr_a error LlmError: boom"]
+    # later pairs still stored
+    stored = values(engine)
+    assert len(stored) == 3
+    assert any(r.entity_id == second for r in stored)
+    assert any(r.entity_id == first and r.attribute_id == "attr_b" for r in stored)
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 1"
+
+
+def test_all_invalid_output_one_pair_is_recorded_and_batch_continues(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+
+    class BadOnce(GroundingFake):
+        def __init__(self):
+            super().__init__(value=42)
+            self.calls = 0
+
+        def complete(self, prompt, *, purpose, run_id, json_schema=None):
+            self.calls += 1
+            if self.calls == 1:
+                self.prompts.append(prompt)
+                return LlmResult(
+                    text="{}", parsed="not an object", tokens_in=1, tokens_out=1,
+                    cost=0.0, cache_hit=False,
+                )
+            return super().complete(prompt, purpose=purpose, run_id=run_id, json_schema=json_schema)
+
+    result, _ = invoke_batch(BadOnce(), scope, "--all")
+    assert result.exit_code == 1, result.output
+    lines = result.output.splitlines()
+    assert any(" error AttributeExtractError:" in ln for ln in lines)
+    assert len(values(engine)) == 3
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 1"
+
+
+def test_all_ungrounded_pair_exits_1_not_written_others_written(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    first_chunk = _first_chunk(engine, first)
+
+    class UngroundedOnce(GroundingFake):
+        def complete(self, prompt, *, purpose, run_id, json_schema=None):
+            match = re.search(r"\[chunk (\d+)\]", prompt)
+            assert match is not None
+            cid = int(match.group(1))
+            self.prompts.append(prompt)
+            quote = "invented words" if cid == first_chunk and len(self.prompts) == 1 else QUOTE
+            return LlmResult(
+                text="{}",
+                parsed={"value": 42, "quotes": [{"chunk_id": cid, "quote": quote}]},
+                tokens_in=1, tokens_out=1, cost=0.0, cache_hit=False,
+            )
+
+    result, _ = invoke_batch(UngroundedOnce(), scope, "--all")
+    assert result.exit_code == 1, result.output
+    lines = result.output.splitlines()
+    # the ungrounded pair is a checks-fail line, not an error line, and writes nothing
+    fail_lines = [ln for ln in lines if " checks fail " in ln]
+    assert len(fail_lines) == 1
+    assert fail_lines[0].endswith("attribute_value -")
+    stored = values(engine)
+    assert len(stored) == 3
+    assert not any(r.entity_id == first and r.attribute_id == "attr_a" for r in stored)
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 1 errors 0"
+
+
+def test_all_null_value_counts_null_exit_0(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    # null value with no quotes -> checks pass, nothing stored
+    class NullFake(GroundingFake):
+        def complete(self, prompt, *, purpose, run_id, json_schema=None):
+            self.prompts.append(prompt)
+            return LlmResult(
+                text="{}", parsed={"value": None, "quotes": []},
+                tokens_in=1, tokens_out=1, cost=0.0, cache_hit=False,
+            )
+
+    result, _ = invoke_batch(NullFake(), scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert values(engine) == []
+    assert result.output.splitlines()[-1] == "pairs 2 stored 0 null 2 failed 0 errors 0"
+
+
+def test_all_dry_run_writes_nothing(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, make = invoke_batch(GroundingFake(), scope, "--all", "--dry-run")
+    assert result.exit_code == 0
+    assert "stage: attributes-extract" in result.output
+    assert runs(engine) == []
+    make.assert_not_called()
+
+
+def test_all_one_run_row_covers_whole_batch(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    result, _ = invoke_batch(GroundingFake(value=42), scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+
+
+def _first_chunk(engine, entity_id: int) -> int:
+    with engine.connect() as conn:
+        row = conn.execute(
+            sa.text(
+                "SELECT c.id FROM chunk c JOIN snapshot s ON c.snapshot_id = s.id "
+                "WHERE s.entity_id = :e ORDER BY c.id LIMIT 1"
+            ),
+            {"e": entity_id},
+        ).first()
+    assert row is not None
+    return int(row[0])

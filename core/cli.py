@@ -72,7 +72,7 @@ import json
 import os
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import chain, islice
@@ -106,6 +106,7 @@ from core.assessment_store import (
 )
 from core.attribute_extract import (
     AttributeExtractError,
+    AttributeExtraction,
     attribute_query,
     extract_attribute,
     store_attribute_extraction,
@@ -138,6 +139,7 @@ from core.scope_pack import (
 from core.screen import ScreenError, screen_entity
 from core.screen_store import (
     DEFAULT_MAX_CHARS,
+    STATUS_IN_SCOPE,
     latest_screen_segments,
     latest_screen_segments_many,
     load_entity_text,
@@ -1402,33 +1404,137 @@ def run_assess(
         raise typer.Exit(1)
 
 
-def run_attributes_extract(
-    scope: Path, entity_id: int | None, attribute_id: str | None, n: int, dry_run: bool
-) -> None:
-    """Extract one entity × attribute value inside an ``attributes_extract`` run (AT-07).
+@dataclasses.dataclass(frozen=True)
+class _PairExtraction:
+    """One entity × attribute result shared by single and ``--all`` batch modes (AT-07/AT-08)."""
+
+    entity_id: int
+    attribute_id: str
+    extraction: AttributeExtraction
+    num_chunks: int
+    value_id: int | None
+
+
+def _extract_pair(
+    engine: Engine, llm: LLM, run_id: int, entity_id: int, attribute: Attribute, n: int
+) -> _PairExtraction:
+    """Per-pair work shared by single and batch modes (one code path).
 
     BM25 retrieves up to ``n`` of the entity's chunks for :func:`attribute_query`; the extractor
-    (``_make_assess_llm``) runs via :func:`extract_attribute` and the value plus its evidence is
-    stored by :func:`store_attribute_extraction` in one committed transaction (null or failed
-    extractions write nothing). Prints ``value V checks pass|fail chunks N``, ``quote ...`` and
-    ``failure ...`` lines and ``attribute_value ID|-``. Exits 0 when checks pass, 1 when they fail
-    (run ``finished``) or on ``AttributeExtractError``/``LlmError`` (run ``failed``), 2 on bad
-    input or setup (unknown attribute and ``--n < 1`` open no run).
+    runs via :func:`extract_attribute`; the value plus its evidence is stored by
+    :func:`store_attribute_extraction` in its own committed transaction (null or failed
+    extractions write nothing). ``AttributeExtractError``/``LlmError`` propagate; a pair's
+    transaction never rolls back an earlier pair. ``SQLAlchemyError`` propagates.
+    """
+    hits = search_chunks(engine, attribute_query(attribute), limit=n, entity_id=entity_id)
+    chunks = _with_texts(engine, [hit.chunk_id for hit in hits])
+    extraction = extract_attribute(llm, attribute, chunks, run_id=run_id)
+    with Session(engine) as session, session.begin():
+        value_id = store_attribute_extraction(
+            session, entity_id, attribute, extraction, run_id=run_id
+        )
+    return _PairExtraction(entity_id, attribute.id, extraction, len(chunks), value_id)
+
+
+def _run_attributes_extract_batch(
+    engine: Engine,
+    llm: LLM,
+    run_id: int,
+    pack: ScopePack,
+    attributes: Sequence[Attribute],
+    n: int,
+    limit: int | None,
+) -> tuple[int, int, int, int, int]:
+    """AT-08 batch: every ``in_scope`` entity × each attribute, sequentially.
+
+    Entities stream in ascending id via :func:`iter_entities` keyset paging (one page in memory,
+    at most ``limit`` entities); per-pair ``AttributeExtractError``/``LlmError`` is recorded and
+    the batch continues. Prints one line per pair. Returns ``(pairs, stored, null, failed,
+    errors)``. One committed transaction per pair; earlier pairs are never rolled back.
+    """
+    pairs = stored = null = failed = errors = 0
+    for entity in iter_entities(engine, pack.scope.id, status=STATUS_IN_SCOPE, limit=limit):
+        for attribute in attributes:
+            pairs += 1
+            try:
+                result = _extract_pair(engine, llm, run_id, entity.id, attribute, n)
+            except (AttributeExtractError, LlmError) as exc:
+                errors += 1
+                typer.echo(
+                    f"entity {entity.id} attribute {attribute.id} error {type(exc).__name__}: {exc}"
+                )
+                continue
+            checks = "pass" if result.extraction.checks_passed else "fail"
+            attribute_value = result.value_id if result.value_id is not None else "-"
+            typer.echo(
+                f"entity {result.entity_id} attribute {result.attribute_id} "
+                f"value {json.dumps(result.extraction.value)} checks {checks} "
+                f"chunks {result.num_chunks} attribute_value {attribute_value}"
+            )
+            if result.value_id is not None:
+                stored += 1
+            elif not result.extraction.checks_passed:
+                failed += 1
+            else:
+                null += 1
+    return pairs, stored, null, failed, errors
+
+
+def run_attributes_extract(
+    scope: Path,
+    entity_id: int | None,
+    attribute_id: str | None,
+    n: int,
+    dry_run: bool,
+    *,
+    all_entities: bool = False,
+    limit: int | None = None,
+) -> None:
+    """Extract attribute values inside one ``attributes_extract`` run (AT-07, AT-08).
+
+    Single mode (AT-07, ``--entity E --attribute A``): unchanged output and behaviour.
+    ``--all`` (AT-08, no ``--entity``): every ``in_scope`` entity of the scope, every pack
+    attribute or only ``--attribute A``, ``--limit`` caps entities; one ``attributes_extract``
+    run covers the whole batch. Per entity × attribute: BM25 retrieves up to ``n`` chunks for
+    :func:`attribute_query`; the extractor (``_make_assess_llm``) runs via :func:`extract_attribute`
+    and :func:`store_attribute_extraction` stores in its own committed transaction; per-pair
+    ``AttributeExtractError``/``LlmError`` is recorded and the batch continues. Batch prints one
+    ``entity E attribute A value V checks pass|fail chunks N attribute_value ID|-`` (or ``entity E
+    attribute A error <Class>: msg``) line per pair then ``pairs P stored S null U failed F errors
+    X``.
+
+    Single mode prints ``value V checks pass|fail chunks N``, ``quote ...``, ``failure ...`` and
+    ``attribute_value ID|-``. Exit 0 when checks pass (single) / no pair failed checks or errored
+    (batch), 1 otherwise (run ``finished``); single mode also exits 1 on
+    ``AttributeExtractError``/``LlmError`` (run ``failed``); 2 on bad input or setup (unknown
+    attribute, ``--n < 1``, ``--limit < 1``, ``--all`` with ``--entity``, neither ``--all`` nor
+    ``--entity``; no run row is opened).
     """
     settings = _load(scope)
     if dry_run:
         _print_plan("attributes-extract", scope, None, None, settings)
         return
-    if entity_id is None or attribute_id is None:
-        typer.echo("error: --entity and --attribute are required", err=True)
+    if all_entities and entity_id is not None:
+        typer.echo("error: --all cannot be combined with --entity", err=True)
         raise typer.Exit(2)
-    pack = _load_pack_or_exit(scope)
-    attribute = next((a for a in pack.attributes.attributes if a.id == attribute_id), None)
-    if attribute is None:
-        typer.echo(f"error: unknown attribute {attribute_id!r}", err=True)
+    if not all_entities and entity_id is None:
+        typer.echo("error: --all or --entity is required", err=True)
         raise typer.Exit(2)
     if n < 1:
         typer.echo("error: --n must be at least 1", err=True)
+        raise typer.Exit(2)
+    if limit is not None and limit < 1:
+        typer.echo("error: --limit must be at least 1", err=True)
+        raise typer.Exit(2)
+    pack = _load_pack_or_exit(scope)
+    attribute: Attribute | None = None
+    if attribute_id is not None:
+        attribute = next((a for a in pack.attributes.attributes if a.id == attribute_id), None)
+        if attribute is None:
+            typer.echo(f"error: unknown attribute {attribute_id!r}", err=True)
+            raise typer.Exit(2)
+    elif not all_entities:
+        typer.echo("error: --entity and --attribute are required", err=True)
         raise typer.Exit(2)
 
     engine = _open_engine(settings)
@@ -1440,14 +1546,28 @@ def run_attributes_extract(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from None
         run_id = _open_run(engine, "attributes_extract")
-        try:
-            hits = search_chunks(engine, attribute_query(attribute), limit=n, entity_id=entity_id)
-            chunks = _with_texts(engine, [hit.chunk_id for hit in hits])
-            extraction = extract_attribute(llm, attribute, chunks, run_id=run_id)
-            with Session(engine) as session, session.begin():
-                value_id = store_attribute_extraction(
-                    session, entity_id, attribute, extraction, run_id=run_id
+
+        if all_entities:
+            attributes = [attribute] if attribute is not None else list(pack.attributes.attributes)
+            try:
+                pairs, stored, null, failed, errors = _run_attributes_extract_batch(
+                    engine, llm, run_id, pack, attributes, n, limit
                 )
+            except SQLAlchemyError:
+                raise  # the outer handler closes the run best-effort and prints one line
+            except BaseException as exc:
+                _close_run_aborting(engine, run_id, exc)
+                raise
+            _close_run(engine, run_id, FINISHED)
+            typer.echo(f"pairs {pairs} stored {stored} null {null} failed {failed} errors {errors}")
+            if failed or errors:
+                raise typer.Exit(1)
+            return
+
+        # single-entity mode (AT-07): unchanged output
+        assert entity_id is not None and attribute is not None
+        try:
+            pair = _extract_pair(engine, llm, run_id, entity_id, attribute, n)
         except (AttributeExtractError, LlmError) as exc:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
@@ -1463,14 +1583,15 @@ def run_attributes_extract(
     finally:
         engine.dispose()
 
+    extraction = pair.extraction
     checks = "pass" if extraction.checks_passed else "fail"
-    typer.echo(f"value {json.dumps(extraction.value)} checks {checks} chunks {len(chunks)}")
+    typer.echo(f"value {json.dumps(extraction.value)} checks {checks} chunks {pair.num_chunks}")
     for quote in extraction.quotes:
         grounded = "grounded" if quote.grounded else "ungrounded"
         typer.echo(f'quote chunk {quote.chunk_id} {grounded} "{quote.text}"')
     for failure in extraction.failures:
         typer.echo(f"failure {failure}")
-    typer.echo(f"attribute_value {value_id if value_id is not None else '-'}")
+    typer.echo(f"attribute_value {pair.value_id if pair.value_id is not None else '-'}")
     if not extraction.checks_passed:
         raise typer.Exit(1)
 
@@ -1629,9 +1750,21 @@ def attributes_extract(
     attribute: Annotated[str | None, typer.Option("--attribute", help="Pack attribute id.")] = None,
     n: Annotated[int, typer.Option("--n", help="Evidence chunks sent to the extractor.")] = 6,
     dry_run: DryRunOpt = False,
+    all_entities: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Extract every pack attribute for every in-scope entity (not with --entity).",
+        ),
+    ] = False,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Max in-scope entities to process (--all).")
+    ] = None,
 ) -> None:
-    """Retrieve BM25 evidence for the entity and extract the attribute's typed value."""
-    run_attributes_extract(scope, entity_id, attribute, n, dry_run)
+    """Retrieve BM25 evidence and extract typed values; ``--all`` batches over in-scope entities."""
+    run_attributes_extract(
+        scope, entity_id, attribute, n, dry_run, all_entities=all_entities, limit=limit
+    )
 
 
 @app.command(name="scores", help="Print per-topic score and coverage for one entity.")
