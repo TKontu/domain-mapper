@@ -82,7 +82,7 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -1568,7 +1568,7 @@ def _run_attributes_extract_batch(
 
     RT-01: every non-skipped pair runs through :class:`core.runs.StageRunner` under ``run_id``
     (unit key ``"<entity_id>:<attribute_id>"``; input hash over the scope id, the attribute's
-    canonical JSON, ``n`` and the entity's chunk count/max id from one aggregate query per page).
+    canonical JSON, ``n`` and a sha256 over the entity's chunk ids and texts, streamed per page).
     A pair already ``done`` for the same hash is skipped silently and counted in ``skipped``; a
     pair whose checks fail is still ``done``; an errored pair is a ``failed`` unit, retried later.
     """
@@ -1601,10 +1601,10 @@ def _run_attributes_extract_batch(
                     skipped += 1
                     typer.echo(f"entity {entity.id} attribute {attribute.id} skipped existing")
                     continue
-                count, max_id = fingerprints.get(entity.id, (0, 0))
+                chunks = fingerprints.get(entity.id, "")
                 key = f"{entity.id}:{attribute.id}"
                 digest = hashlib.sha256(
-                    f"{pack.scope.id}\0{definitions[attribute.id]}\0{n}\0{count}\0{max_id}".encode()
+                    f"{pack.scope.id}\0{definitions[attribute.id]}\0{n}\0{chunks}".encode()
                 ).hexdigest()
                 in_flight.clear()
                 in_flight[key] = (entity.id, attribute)
@@ -1657,17 +1657,31 @@ def _run_attributes_extract_batch(
     return pairs, stored, null, failed, errors, skipped
 
 
-def _chunk_fingerprints(engine: Engine, entity_ids: list[int]) -> dict[int, tuple[int, int]]:
-    """``entity_id -> (chunk count, max chunk id)`` for one page in one aggregate query (RT-01)."""
+def _chunk_fingerprints(engine: Engine, entity_ids: list[int]) -> dict[int, str]:
+    """``entity_id -> sha256 over its chunks' (id, text)`` for one page (RT-01).
+
+    Rows stream ordered by entity id, chunk id (one row in memory at a time), so a chunk whose
+    text is edited in place without its id changing still changes the entity's fingerprint.
+    """
     stmt = (
-        select(SnapshotRow.entity_id, func.count(ChunkRow.id), func.max(ChunkRow.id))
+        select(SnapshotRow.entity_id, ChunkRow.id, ChunkRow.text)
         .join(ChunkRow, ChunkRow.snapshot_id == SnapshotRow.id)
         .where(SnapshotRow.entity_id.in_(entity_ids))
-        .group_by(SnapshotRow.entity_id)
+        .order_by(SnapshotRow.entity_id, ChunkRow.id)
+        .execution_options(yield_per=500)
     )
+    digests: dict[int, Any] = {}
     with engine.connect() as conn:
-        rows = conn.execute(stmt).all()
-    return {eid: (int(count), int(max_id or 0)) for eid, count, max_id in rows if eid is not None}
+        for eid, chunk_id, text in conn.execute(stmt):
+            if eid is None:
+                continue
+            h = digests.get(eid)
+            if h is None:
+                h = digests[eid] = hashlib.sha256()
+            body = (text or "").encode()
+            h.update(f"{chunk_id}\0{len(body)}\0".encode())
+            h.update(body)
+    return {eid: h.hexdigest() for eid, h in digests.items()}
 
 
 def run_attributes_extract(

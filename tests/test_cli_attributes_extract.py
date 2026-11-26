@@ -22,7 +22,7 @@ from core.assessment_store import EvidenceRow
 from core.attribute_extract import attribute_query
 from core.attribute_store import AttributeValueRow, record_attribute_value
 from core.scope_pack import Attribute
-from core.chunk_store import store_chunks
+from core.chunk_store import ChunkRow, store_chunks
 from core.chunking import Chunk
 from core.entity_store import Entity
 from core.runs import FAILED, FINISHED, Run, create_all
@@ -750,6 +750,23 @@ def test_all_new_chunk_re_extracts_entity_pairs(engine, tmp_path) -> None:  # RT
     seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
     assert invoke_batch(GroundingFake(value=42), scope, "--all")[0].exit_code == 0
     _add_chunk(engine, first, BATCH_TEXT)
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 2
+    pair_lines = [ln for ln in result.output.splitlines() if ln.startswith("entity ")]
+    assert all(ln.startswith(f"entity {first} ") for ln in pair_lines) and len(pair_lines) == 2
+    assert result.output.splitlines()[-1] == "pairs 4 stored 2 null 0 failed 0 errors 0 skipped 2"
+
+
+def test_all_chunk_text_edited_in_place_re_extracts_entity_pairs(engine, tmp_path) -> None:  # RT-01
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    assert invoke_batch(GroundingFake(value=42), scope, "--all")[0].exit_code == 0
+    chunk_id = _first_chunk(engine, first)
+    with Session(engine) as session, session.begin():
+        session.get(ChunkRow, chunk_id).text = "Edited: our headcount of 42 staff translators."
     fake = GroundingFake(value=42)
     result, _ = invoke_batch(fake, scope, "--all")
     assert result.exit_code == 0, result.output
