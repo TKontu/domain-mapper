@@ -112,9 +112,16 @@ def runs(engine) -> list[tuple[str, str]]:
         return [(r.stage, r.status) for r in session.query(Run).all()]
 
 
-def invoke(llm: FakeLLM | None, *args: str) -> Any:
+AGREE = {"agree": True, "reason": "Quote supports the status."}
+
+
+def invoke(llm: FakeLLM | None, *args: str, verifier: FakeLLM | None = None) -> Any:
     fake = llm or FakeLLM()
-    with mock.patch.object(cli, "_make_assess_llm", return_value=fake):
+    vfake = verifier or FakeLLM(AGREE)
+    with (
+        mock.patch.object(cli, "_make_assess_llm", return_value=fake),
+        mock.patch.object(cli, "_make_verify_llm", return_value=vfake),
+    ):
         return CliRunner().invoke(cli.app, ["assess", "--scope", EXAMPLE_SCOPE, *args])
 
 
@@ -134,6 +141,8 @@ def test_happy_path_grounded(engine) -> None:
     assert lines[0] == "status strong checks pass chunks 1"
     assert lines[1] == f'quote chunk {ids[0]} grounded exact "general terms and conditions"'
     assert lines[2] == "rationale Published."
+    assert lines[3] == "route accept confidence high reason Quote supports the status."
+    assert len(lines) == 4
     assert runs(engine) == [("assess", FINISHED)]
     # (f) only this entity's chunks reach the prompt
     assert len(llm.prompts) == 1 and OTHER_MARKER not in llm.prompts[0]
@@ -164,6 +173,84 @@ def test_no_chunks_is_silent(engine) -> None:
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[0] == "status silent checks pass chunks 0"
     assert llm.prompts == []
+
+
+def test_silent_makes_no_verifier_call(engine) -> None:
+    eid, _ = seed(engine, "acme", ["Nothing relevant at all."])
+    verifier = FakeLLM(AGREE)
+    result = invoke(FakeLLM(), "--entity", str(eid), "--criterion", CRIT, verifier=verifier)
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[-1].startswith("route silent confidence - reason ")
+    assert verifier.prompts == []
+
+
+GROUNDED = {"status": "strong", "quotes": [], "rationale": "Published."}
+
+
+def _grounded(ids: list[int]) -> dict[str, object]:
+    return {**GROUNDED, "quotes": [{"chunk_id": ids[0], "quote": "general terms and conditions"}]}
+
+
+def test_verifier_disagree_adjudicates_exit_1(engine) -> None:
+    eid, ids = seed(engine, "acme", ["Our general terms and conditions are published here."])
+    verifier = FakeLLM({"agree": False, "reason": "Quote is too generic."})
+    result = invoke(
+        FakeLLM(_grounded(ids)), "--entity", str(eid), "--criterion", CRIT, verifier=verifier
+    )
+    assert result.exit_code == 1, result.output
+    assert result.output.splitlines()[-1] == (
+        "route adjudicate confidence - reason verifier disagrees: Quote is too generic."
+    )
+    assert len(verifier.prompts) == 1
+    assert runs(engine) == [("assess", FINISHED)]
+
+
+@pytest.mark.parametrize(
+    "verifier", [FakeLLM({"agree": "yes", "reason": "r"}), FakeLLM(error=LlmError("vboom"))]
+)
+def test_verifier_failure_exit_1_run_failed(engine, verifier: FakeLLM) -> None:
+    eid, ids = seed(engine, "acme", ["Our general terms and conditions are published here."])
+    result = invoke(
+        FakeLLM(_grounded(ids)), "--entity", str(eid), "--criterion", CRIT, verifier=verifier
+    )
+    assert result.exit_code == 1, result.output
+    assert "error AssessError: verify output" in result.output or "error LlmError: vboom" in (
+        result.output
+    )
+    assert "route " not in result.output
+    assert runs(engine) == [("assess", FAILED)]
+
+
+def test_verifier_built_from_verifier_model(engine, monkeypatch) -> None:
+    monkeypatch.setenv("DM_VERIFIER_MODEL", "verifier-x")
+    eid, ids = seed(engine, "acme", ["Our general terms and conditions are published here."])
+    built: list[tuple[str, str]] = []
+    verifier = FakeLLM(AGREE)
+
+    def fake_build(settings, backend, *, db, budget_usd=None):  # type: ignore[no-untyped-def]
+        built.append((backend, settings.local_model))
+        return verifier
+
+    with (
+        mock.patch.object(cli, "_make_assess_llm", return_value=FakeLLM(_grounded(ids))),
+        mock.patch.object(cli, "build_llm", side_effect=fake_build),
+    ):
+        result = CliRunner().invoke(
+            cli.app,
+            ["assess", "--scope", EXAMPLE_SCOPE, "--entity", str(eid), "--criterion", CRIT],
+        )
+    assert result.exit_code == 0, result.output
+    assert built == [("local", "verifier-x")]
+    assert len(verifier.prompts) == 1
+
+
+def test_verifier_model_setting_default(monkeypatch, tmp_path) -> None:
+    from core.config import DEFAULT_VERIFIER_MODEL, load_settings
+
+    monkeypatch.delenv("DM_VERIFIER_MODEL", raising=False)
+    assert load_settings(tmp_path / "none.env").verifier_model == DEFAULT_VERIFIER_MODEL
+    monkeypatch.setenv("DM_VERIFIER_MODEL", "v2")
+    assert load_settings(tmp_path / "none.env").verifier_model == "v2"
 
 
 @pytest.mark.parametrize(
