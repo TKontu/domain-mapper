@@ -209,7 +209,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Tender-source channel (e.g. TED Search API: classification codes + keywords, tenderer country filter)
 - [ ] Group resolution across countries; inherited group documents
 - [ ] Market presence model: `hq / site / field_service / sales / remote` incl. foreign providers serving a layer
-  - [ ] **MP-01** → [docs/items/MP-01.md](docs/items/MP-01.md) `core/presence_store.py` market presence per entity, `layer_ids_for` layer membership, `landscape presence-set` / `landscape presences` CLI — partial 2026-11-26: PR #247 (round 109/A1); seen offline only (SQLite); residuals: manual presence only, no evidence linkage, any presence type counts toward a layer
+  - [ ] **MP-01** → [docs/items/MP-01.md](docs/items/MP-01.md) `core/presence_store.py` market presence per entity, `layer_ids_for` layer membership, `landscape presence-set` / `landscape presences` CLI — partial 2026-11-27: merged PR #247 at 65813b8 (main adc765e, round 109/A1; planner gate at head and on main 1608 passed, 5 skipped; CI pass); seen offline only (SQLite); next consumer: mosaic --layer filter (needs layers in scores-export lines); residuals: manual presence only, no evidence linkage, any presence type counts toward a layer
 - [ ] Capture–recapture recall estimate per segment × country
 - [ ] Map view (MapLibre), layer + segment filters
 - [ ] Throughput: batch scheduling on vLLM, crawl concurrency per host, cache hit-rate metrics
