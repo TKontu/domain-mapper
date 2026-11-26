@@ -174,6 +174,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Hover/click cell → status, quote, URL, snapshot date
 - [ ] Entity page
   - [ ] **FE-02** → [docs/items/FE-02.md](docs/items/FE-02.md) `landscape mosaic --entity-dir DIR` writes one static HTML page per scored entity (every criterion in rubric order with status, confidence, rationale, evidence) linked from mosaic row headers and back — partial 2026-11-26: merged PR #243 at bbf811e (main e3a60ad, round 107/A1; planner gate at head 1583 passed, 5 skipped; CI pass); seen offline only (tests); residuals: no browser run, no run over real exports, --entity-dir holds both JSONL files in memory
+  - [ ] **FE-03** → [docs/items/FE-03.md](docs/items/FE-03.md) `landscape mosaic --segment ID` (repeatable) renders only entities in the given scope segments, entity pages only for kept entities, heading names the filter; unknown id exits 2
 
 **Milestone M1:** mosaic of ~20 providers for one layer of one scope, every cell clickable to evidence.
 

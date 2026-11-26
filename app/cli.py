@@ -73,7 +73,7 @@ import json
 import os
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import chain, islice
@@ -97,7 +97,7 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
-from app.mosaic import entity_slug, render_entity_page, render_mosaic
+from app.mosaic import entity_slug, filter_by_segments, render_entity_page, render_mosaic
 from core.aggregate import TopicScore, score_topics
 from core.assess import AssessError, extract_criterion
 from core.assessment_store import (
@@ -1291,28 +1291,48 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def run_mosaic(
-    scope: Path, scores: Path, export: Path, out: Path, entity_dir: Path | None = None
+    scope: Path,
+    scores: Path,
+    export: Path,
+    out: Path,
+    entity_dir: Path | None = None,
+    segments: list[str] | None = None,
 ) -> None:
     """Write the FE-01 mosaic page for ``scores`` and ``export`` JSON Lines to ``out``.
 
     Offline: no settings or database. Each page goes to ``<file>.tmp`` and is renamed on
     success. With ``entity_dir`` (FE-02) one page per scored entity is also written to
     ``entity_dir/<slug>.html`` and mosaic row headers link to it. A missing scope/input file,
-    bad scope pack or unwritable output exits 2; a malformed JSON line exits 1.
+    bad scope pack or unwritable output exits 2; a malformed JSON line exits 1. With ``segments``
+    (FE-03) only scores lines whose ``segments`` include one of the ids are rendered (and get
+    entity pages) and the page heading names the filter by label; an unknown id exits 2.
     """
     if not scope.is_dir():
         typer.echo(f"error: scope directory not found: {scope}", err=True)
         raise typer.Exit(2)
     pack = _load_pack_or_exit(scope)
+    heading: str | None = None
+    if segments:
+        labels = {s.id: s.label for s in pack.scope.segments}
+        for segment in segments:
+            if segment not in labels:
+                typer.echo(f"error: unknown segment id: {segment}", err=True)
+                raise typer.Exit(2)
+        heading = "segment: " + ", ".join(labels[s] for s in dict.fromkeys(segments))
     for path in (scores, export):
         if not path.is_file():
             typer.echo(f"error: input file not found: {path}", err=True)
             raise typer.Exit(2)
+
+    def score_lines() -> Iterator[Mapping[str, Any]]:
+        lines = _iter_jsonl(scores)
+        return filter_by_segments(lines, segments) if segments else lines
+
     try:
         if entity_dir is None:
-            page = render_mosaic(pack, _iter_jsonl(scores), _iter_jsonl(export))
+            page = render_mosaic(pack, score_lines(), _iter_jsonl(export), heading=heading)
         else:
-            score_rows = list(_iter_jsonl(scores))
+            score_rows = list(score_lines())
             export_rows = list(_iter_jsonl(export))
     except ValueError as exc:  # includes json.JSONDecodeError
         typer.echo(f"error: {exc}", err=True)
@@ -1333,7 +1353,11 @@ def run_mosaic(
             text = render_entity_page(pack, line, by_entity.get(entity, {}), back)
             _write_atomic(entity_dir / f"{entity_slug(entity)}.html", text)
         page = render_mosaic(
-            pack, score_rows, export_rows, lambda e: f"{rel_dir}/{entity_slug(e)}.html"
+            pack,
+            score_rows,
+            export_rows,
+            lambda e: f"{rel_dir}/{entity_slug(e)}.html",
+            heading=heading,
         )
     _write_atomic(out, page)
     typer.echo(f"wrote mosaic to {out}")
@@ -2124,9 +2148,13 @@ def mosaic(
         Path | None,
         typer.Option("--entity-dir", help="Also write one HTML page per entity into DIR."),
     ] = None,
+    segment: Annotated[
+        list[str] | None,
+        typer.Option("--segment", help="Keep only entities in this segment id (repeatable)."),
+    ] = None,
 ) -> None:
     """Write one self-contained mosaic HTML page (FE-01) to ``--out``; entity pages (FE-02)."""
-    run_mosaic(scope, scores, export, out, entity_dir)
+    run_mosaic(scope, scores, export, out, entity_dir, segment)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")
