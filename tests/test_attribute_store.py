@@ -186,3 +186,51 @@ def test_current_values_many_empty_input_does_not_query(engine) -> None:
     with Session(engine) as session:
         assert current_attribute_values_many(session, []) == {}
     assert statements == []
+
+
+def test_value_with_evidence_stores_rows_returned_in_id_order(engine) -> None:
+    from core.assessment_store import EvidenceRow
+    from core.attribute_store import attribute_evidence_many
+
+    with Session(engine) as session, session.begin():
+        with_ev = record_attribute_value(
+            session,
+            1,
+            INT_ATTR,
+            12,
+            evidence=[(7, "twelve staff", True), (3, "about a dozen", False)],
+        )
+        without_ev = record_attribute_value(session, 2, INT_ATTR, 5)
+    with Session(engine) as session:
+        rows = session.scalars(sa.select(EvidenceRow).order_by(EvidenceRow.id)).all()
+        assert [(r.attribute_value_id, r.assessment_id) for r in rows] == [
+            (with_ev, None),
+            (with_ev, None),
+        ]
+        found = attribute_evidence_many(session, [with_ev, without_ev])
+    assert list(found) == [with_ev]
+    assert [(e.chunk_id, e.quote, e.grounded) for e in found[with_ev]] == [
+        (7, "twelve staff", True),
+        (3, "about a dozen", False),
+    ]
+
+
+def test_invalid_value_writes_no_value_and_no_evidence(engine) -> None:
+    from core.assessment_store import EvidenceRow
+
+    with Session(engine) as session, session.begin():
+        with pytest.raises(ValueError):
+            record_attribute_value(session, 1, INT_ATTR, "x", evidence=[(1, "q", True)])
+    with Session(engine) as session:
+        assert session.scalars(sa.select(AttributeValueRow)).all() == []
+        assert session.scalars(sa.select(EvidenceRow)).all() == []
+
+
+def test_attribute_evidence_many_empty_input_does_not_query(engine) -> None:
+    from core.attribute_store import attribute_evidence_many
+
+    statements: list[str] = []
+    sa.event.listen(engine, "before_cursor_execute", lambda *a: statements.append(a[2]))
+    with Session(engine) as session:
+        assert attribute_evidence_many(session, []) == {}
+    assert statements == []
