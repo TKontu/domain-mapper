@@ -96,7 +96,7 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
-from core.aggregate import score_topics
+from core.aggregate import TopicScore, score_topics
 from core.assess import AssessError, extract_criterion
 from core.assessment_store import (
     CurrentAssessment,
@@ -827,6 +827,28 @@ def _fmt_ratio(value: float | None) -> str:
     return "-" if value is None else f"{value:.4f}"
 
 
+def _scores_object(
+    entity_id: int, segments: tuple[str, ...], version: str, scores: Iterable[TopicScore]
+) -> dict[str, object]:
+    """The AG-03 per-entity JSON object; shared by ``scores --format json`` and scores-export."""
+    return {
+        "entity_id": entity_id,
+        "segments": list(segments),
+        "rubric_version": version,
+        "topics": [
+            {
+                "topic_id": score.topic_id,
+                "score": score.score,
+                "coverage": score.coverage,
+                "applicable": score.applicable,
+                "scored": score.scored,
+                "evidenced": score.evidenced,
+            }
+            for score in scores
+        ],
+    }
+
+
 def run_scores(
     scope: Path, entity_id: int, segments: list[str] | None, format: str = "text"
 ) -> None:
@@ -877,23 +899,7 @@ def run_scores(
     if format == "json":
         typer.echo(
             json.dumps(
-                {
-                    "entity_id": entity_id,
-                    "segments": list(entity_segments),
-                    "rubric_version": version,
-                    "topics": [
-                        {
-                            "topic_id": score.topic_id,
-                            "score": score.score,
-                            "coverage": score.coverage,
-                            "applicable": score.applicable,
-                            "scored": score.scored,
-                            "evidenced": score.evidenced,
-                        }
-                        for score in scores
-                    ],
-                },
-                ensure_ascii=False,
+                _scores_object(entity_id, entity_segments, version, scores), ensure_ascii=False
             )
         )
         return
@@ -904,6 +910,65 @@ def run_scores(
             f" coverage {_fmt_ratio(score.coverage)} applicable {score.applicable}"
             f" scored {score.scored} evidenced {score.evidenced}"
         )
+
+
+def run_scores_export(scope: Path, out: Path) -> None:
+    """Write one AG-03 scores object per screened entity of ``scope`` to ``out`` (AG-04).
+
+    Entities stream in ascending id via :func:`iter_entities`; each one's segments are its latest
+    screen result (entities without one are skipped and counted) and its assessments the current
+    ones at the pack's version, scored and written one line at a time to ``<out>.tmp``, renamed
+    to ``out`` on success so a failure leaves no ``PATH``. One query set per entity (N+1). Setup
+    errors or an unwritable output directory exit 2; a ``ValueError`` from ``score_topics`` exits
+    1. Production caller: the ``scores-export`` command; consumer is the later frontend row.
+    """
+    settings = _load(scope)
+    try:
+        pack = load_scope_pack(scope)
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    version = pack.scope.version
+    tmp = Path(f"{out}.tmp")
+    count = skipped = 0
+    try:
+        try:
+            handle = tmp.open("w", encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+            raise typer.Exit(2) from None
+        with handle:
+            engine = _open_engine(settings)
+            try:
+                for entity in iter_entities(engine, pack.scope.id):
+                    segments = latest_screen_segments(engine, entity.id)
+                    if segments is None:
+                        skipped += 1
+                        continue
+                    assessments = iter_current_assessments(
+                        engine, entity_id=entity.id, rubric_version=version
+                    )
+                    try:
+                        scores = score_topics(pack.rubric, assessments, segments)
+                    except ValueError as exc:
+                        typer.echo(f"error: entity {entity.id}: {exc}", err=True)
+                        raise typer.Exit(1) from None
+                    obj = _scores_object(entity.id, segments, version, scores)
+                    handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                    count += 1
+            except SQLAlchemyError as exc:
+                _exit_database_unavailable(engine, None, exc)
+            finally:
+                engine.dispose()
+        os.replace(tmp, out)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(2) from None
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    typer.echo(f"exported {count} entities to {out} (skipped {skipped} without screen result)")
 
 
 def _export_object(row: CurrentAssessment) -> dict[str, object]:
@@ -1273,6 +1338,15 @@ def scores(
 ) -> None:
     """Score each rubric topic for one entity over its current assessments."""
     run_scores(scope, entity_id, segment, format)
+
+
+@app.command(name="scores-export", help="Export topic scores per screened entity as JSON Lines.")
+def scores_export(
+    scope: ScopeOpt,
+    out: Annotated[Path, typer.Option("--out", help="Output file path.")],
+) -> None:
+    """Write one AG-03 scores object per screened entity of the scope to ``--out``."""
+    run_scores_export(scope, out)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")
