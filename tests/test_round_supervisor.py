@@ -113,10 +113,33 @@ class PolicyTests(unittest.TestCase):
         t = tracker(main_at_start="a")
         self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="a"))
         self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="a"))
-        self.assertIsNotNone(rs.after_round(CFG, t, recycled=False, main_sha="a"))
+        self.assertEqual(rs.after_round(CFG, t, recycled=False, main_sha="a").kind, "backoff")
         t = tracker(main_at_start="a", recycles=1, no_advance=2)
         self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="b"))
         self.assertEqual((t.recycles, t.no_advance), (0, 0))
+
+    def test_a_frozen_main_backs_off_escalating_and_capped_never_halts(self):
+        t = tracker(main_at_start="a", no_advance=2)
+        first = rs.after_round(CFG, t, recycled=False, main_sha="a")
+        self.assertEqual((first.kind, first.delay_s), ("backoff", CFG.backoff_base_s))
+        self.assertIn("main unchanged across 3 rounds; backing off 10 min", first.reason)
+        delays = [rs.after_round(CFG, t, recycled=False, main_sha="a").delay_s for _ in range(8)]
+        self.assertEqual(delays[:3], [1200, 2400, 4800])
+        self.assertEqual(delays[-1], CFG.backoff_max_s)
+        self.assertTrue(all(d <= CFG.backoff_max_s for d in delays))
+
+    def test_an_advancing_round_resets_the_backoff(self):
+        t = tracker(main_at_start="a", no_advance=5)
+        self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="b"))
+        t.main_at_start = "b"
+        for _ in range(2):
+            self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="b"))
+        again = rs.after_round(CFG, t, recycled=False, main_sha="b")
+        self.assertEqual(again.delay_s, CFG.backoff_base_s)
+
+    def test_recycle_halt_wins_over_backoff(self):
+        t = tracker(main_at_start="a", recycles=1, no_advance=4)
+        self.assertEqual(rs.after_round(CFG, t, recycled=True, main_sha="a").kind, "halt")
 
     def test_overrides_shorten_timers_and_reject_unknown_keys(self):
         self.assertEqual(rs.with_overrides(CFG, ["silence_s=60"]).silence_s, 60)
@@ -400,3 +423,52 @@ class DashboardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackoffLoopTests(unittest.TestCase):
+    """The main loop waits out a backoff with a fake clock and notes it once."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        for name in ("STATE", "ROOT"):
+            patcher = mock.patch.object(rs, name, self.tmp)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.clock = [T0]
+        self.slept = []
+
+        def sleep(s):
+            self.slept.append(s)
+            self.clock[0] += s
+
+        for target, fake in (("sleep", sleep), ("time", lambda: self.clock[0])):
+            patcher = mock.patch.object(rs.time, target, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.sup = rs.Supervisor(CFG, (), FakeHerdr([]))
+        self.sup.t = tracker(main_at_start="a", no_advance=2)
+        self.begun = []
+        self.sup.end_session = lambda: None
+        self.sup.begin_round = self.begun.append
+        patcher = mock.patch.object(rs, "main_sha", lambda _run: "a")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_loop_waits_the_backoff_then_starts_the_next_round(self):
+        self.assertTrue(self.sup.finish_round(recycled=False))
+        self.assertEqual(self.begun, [5])
+        self.assertGreaterEqual(sum(self.slept), CFG.backoff_base_s + CFG.gap_s)
+        notes = [n for n in rs.read_news() if "backing off" in n["text"]]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["kind"], "watchdog")
+        self.assertIn("3 rounds; backing off 10 min", notes[0]["text"])
+        self.assertFalse((self.tmp / "HALT").exists())
+
+    def test_a_stop_interrupts_the_backoff(self):
+        (self.tmp / "STOP").touch()
+        self.assertFalse(self.sup.finish_round(recycled=False))
+        self.assertEqual(self.begun, [])
+        self.assertLess(sum(self.slept), CFG.backoff_base_s)
+        self.assertTrue((self.tmp / "HALT").exists())
