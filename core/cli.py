@@ -70,7 +70,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import chain, islice
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 from urllib.parse import urlsplit
 
 import typer
@@ -288,13 +288,7 @@ def _crawl_urls(settings: Settings, urls: list[str]) -> None:
             raise
         _close_run(engine, run_id, FAILED if failed else FINISHED)
     except SQLAlchemyError as exc:  # CR-16: like entity mode, URL never echoed
-        if run_id is not None:
-            try:  # best effort: a second failure must not mask the exit 2
-                _close_run(engine, run_id, FAILED)
-            except SQLAlchemyError:
-                pass
-        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
-        raise typer.Exit(2) from None
+        _exit_database_unavailable(engine, run_id, exc)
     finally:
         engine.dispose()
     if failed:
@@ -312,6 +306,7 @@ def _crawl_entities(
         raise typer.Exit(1) from None
     policy = pack.scope.crawl
     engine = _open_engine(settings)
+    run_id: int | None = None
     try:
         entities = iter_entities(engine, pack.scope.id, limit=limit)
         try:
@@ -329,6 +324,8 @@ def _crawl_entities(
         try:
             for entity in chain((first,), entities):
                 _crawl_entity(crawler, entity, policy, scheme)
+        except SQLAlchemyError:
+            raise  # closed best-effort below (CR-18)
         except BaseException as exc:
             # An unexpected error, interrupt or page-read failure must not leave the run
             # open; a failed close names itself and never replaces the original exception.
@@ -337,8 +334,7 @@ def _crawl_entities(
         failed = crawler.failed
         _close_run(engine, run_id, FAILED if failed else FINISHED)
     except SQLAlchemyError as exc:  # a page read failed: bad setup, URL never echoed
-        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
-        raise typer.Exit(2) from None
+        _exit_database_unavailable(engine, run_id, exc)
     finally:
         engine.dispose()
     if failed:
@@ -561,6 +557,23 @@ def _close_run(engine: Engine, run_id: int, status: str) -> None:
             raise RuntimeError(f"run {run_id} disappeared")
         run.status = status
         run.finished_at = datetime.now(UTC)
+
+
+def _exit_database_unavailable(
+    engine: Engine, run_id: int | None, exc: SQLAlchemyError
+) -> NoReturn:
+    """Close ``run_id`` FAILED best-effort, print one ``database unavailable`` line, exit 2.
+
+    A second database failure during the close stays silent so exactly one line is printed and
+    the database URL is never echoed (CR-16, CR-18).
+    """
+    if run_id is not None:
+        try:
+            _close_run(engine, run_id, FAILED)
+        except SQLAlchemyError:
+            pass
+    typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+    raise typer.Exit(2) from None
 
 
 def _close_run_aborting(engine: Engine, run_id: int | None, exc: BaseException) -> None:

@@ -217,6 +217,25 @@ class EntityCrawlRunTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertEqual(_runs(self.db), [("crawl", "failed", True)])
 
+    def test_page_read_failure_prints_one_db_line_and_closes_failed(self) -> None:  # CR-18
+        self.seed([(SCOPE_ID, "a.example.com")])
+        err = sa.exc.OperationalError("SELECT", {}, Exception("gone"))
+        with mock.patch.object(cli, "_crawl_entity", side_effect=err):
+            result = self.crawl()
+        self.assertEqual(result.exit_code, 2, result.output)
+        _assert_db_unavailable_line(self, result)
+        self.assertEqual(_runs(self.db), [("crawl", "failed", True)])
+
+    def test_page_read_failure_with_close_db_error_prints_one_line(self) -> None:  # CR-18
+        self.seed([(SCOPE_ID, "a.example.com")])
+        err = sa.exc.OperationalError("SELECT", {}, Exception("gone"))
+        close_err = sa.exc.OperationalError("UPDATE", {}, Exception("gone"))
+        with mock.patch.object(cli, "_crawl_entity", side_effect=err):
+            with mock.patch.object(cli, "_close_run", side_effect=close_err):
+                result = self.crawl()
+        self.assertEqual(result.exit_code, 2, result.output)
+        _assert_db_unavailable_line(self, result)
+
     def test_missing_fetcher_config_exits_2_without_run_row(self) -> None:
         self.seed([(SCOPE_ID, "a.example.com")])
         del os.environ["FIRECRAWL_URL"]
