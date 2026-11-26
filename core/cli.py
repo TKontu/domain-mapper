@@ -277,7 +277,7 @@ def _crawl_urls(settings: Settings, urls: list[str]) -> None:
     try:
         run_id = _open_run(engine, "crawl")
         try:
-            failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls))
+            failed = _crawl_targets(engine, fetcher, ((url, None) for url in urls), run_id=run_id)
         except BaseException:
             # An unexpected error or interrupt must not leave the run row open (CR-14).
             _close_run(engine, run_id, FAILED)
@@ -307,11 +307,13 @@ def _crawl_entities(
         except StopIteration:
             typer.echo("entities 0")  # no work: no run row
             return
-        # Built only once there is work: no entities needs no fetcher endpoint. Built before the
-        # run row opens, so a missing FIRECRAWL_URL exits 2 with no run row (CR-14).
+        # Built only once there is work: no entities needs no fetcher endpoint. The fetcher is
+        # built before the run row opens, so a missing FIRECRAWL_URL exits 2 with no run row
+        # (CR-14); the run row is opened before the crawler is constructed, so the snapshots the
+        # crawler writes carry the run id (CR-15).
         fetcher = _make_fetcher()
-        crawler = _Crawler(engine, fetcher)
         run_id = _open_run(engine, "crawl")
+        crawler = _Crawler(engine, fetcher, run_id=run_id)
         try:
             for entity in chain((first,), entities):
                 _crawl_entity(crawler, entity, policy, scheme)
@@ -383,10 +385,13 @@ def _homepage(entity: EntityRef, scheme: str = "https") -> str:
 
 
 def _crawl_targets(
-    engine: Engine, fetcher: Fetcher, targets: Iterable[tuple[str, int | None]]
+    engine: Engine,
+    fetcher: Fetcher,
+    targets: Iterable[tuple[str, int | None]],
+    run_id: int | None = None,
 ) -> bool:
     """Fetch ``(url, entity_id)`` targets sequentially; return whether any failed."""
-    crawler = _Crawler(engine, fetcher)
+    crawler = _Crawler(engine, fetcher, run_id=run_id)
     for url, entity_id in targets:
         crawler.crawl(url, entity_id)
     return crawler.failed
@@ -394,6 +399,10 @@ def _crawl_targets(
 
 class _Crawler:
     """Sequential fetches sharing one robots policy, per-host limiter, raw store and parser.
+
+    ``run_id`` (CR-15), when given, is the id of the invocation's ``crawl`` run row and is
+    passed to every ``ingest_page`` call, so each ``snapshot`` row written by this crawler
+    carries it.
 
     Each URL goes through the same robots check, per-host wait and ``ingest_page`` call. A target
     failure is printed and recorded in :attr:`failed` and does not stop the rest. A non-2xx
@@ -409,9 +418,11 @@ class _Crawler:
         fetcher: Fetcher,
         *,
         sleep: Callable[[float], None] = time.sleep,
+        run_id: int | None = None,
     ) -> None:
         self.engine = engine
         self.fetcher = fetcher
+        self.run_id = run_id
         self._sleep = sleep
         self.limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
         limiter = self.limiter
@@ -467,6 +478,7 @@ class _Crawler:
             entity_id=entity_id,
             source_kind=_SOURCE_KIND,
             blob_store=self.blob_store,
+            run_id=self.run_id,
         )
 
 

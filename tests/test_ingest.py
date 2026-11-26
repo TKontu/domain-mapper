@@ -95,6 +95,30 @@ def test_render_js_is_passed_to_fetcher() -> None:
     assert f.calls == [(URL, True)]
 
 
+def test_run_id_is_stored_on_the_snapshot() -> None:
+    engine = memory_engine()
+    ingest_page(
+        engine,
+        fetcher=fetcher(),
+        parser=HtmlParser(),
+        url=URL,
+        entity_id=None,
+        source_kind="web",
+        run_id=17,
+    )
+    [snap] = snapshots(engine)
+    assert snap.run_id == 17
+
+
+def test_run_id_defaults_to_none_on_the_snapshot() -> None:
+    engine = memory_engine()
+    ingest_page(
+        engine, fetcher=fetcher(), parser=HtmlParser(), url=URL, entity_id=None, source_kind="web"
+    )
+    [snap] = snapshots(engine)
+    assert snap.run_id is None
+
+
 def test_fetch_error_writes_no_snapshot() -> None:
     engine = memory_engine()
     f = InMemoryFetcher({})

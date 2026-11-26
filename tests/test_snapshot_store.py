@@ -129,6 +129,23 @@ class TestRoundTrip(StoreFixture):
         assert stored.fetched_at == FETCHED_AT
         assert stored.fetched_at.tzinfo is UTC
 
+    def test_row_round_trips_run_id(self) -> None:
+        snapshot_id = record_snapshot(
+            self.engine,
+            entity_id=None,
+            url=URL,
+            result=make_result(),
+            source_kind="page",
+            run_id=90210,
+        )
+        assert row(self.engine, snapshot_id).run_id == 90210
+
+    def test_run_id_defaults_to_none(self) -> None:
+        snapshot_id = record_snapshot(
+            self.engine, entity_id=None, url=URL, result=make_result(), source_kind="page"
+        )
+        assert row(self.engine, snapshot_id).run_id is None
+
     def test_returns_a_freshly_inserted_id(self) -> None:
         first = record_snapshot(
             self.engine, entity_id=None, url=URL, result=make_result(), source_kind="page"
@@ -203,12 +220,24 @@ class TestSchema(StoreFixture):
             "sha256",
             "fetched_at",
             "source_kind",
+            "run_id",
         }
         nullable = {
             column["name"]: column["nullable"] for column in inspector.get_columns("snapshot")
         }
         assert nullable["entity_id"] is True
+        assert nullable["run_id"] is True
         assert nullable["id"] is False
+
+    def test_run_id_is_indexed_and_fk_to_run(self) -> None:
+        inspector = sa.inspect(self.engine)
+        indexed = {
+            name for index in inspector.get_indexes("snapshot") for name in index["column_names"]
+        }
+        assert "run_id" in indexed
+        fks = inspector.get_foreign_keys("snapshot")
+        assert any(fk["referred_table"] == "run" for fk in fks)
+        assert any(fk["referred_columns"] == ["id"] for fk in fks)
 
     def test_entity_id_is_indexed_without_a_foreign_key(self) -> None:
         inspector = sa.inspect(self.engine)
@@ -216,7 +245,8 @@ class TestSchema(StoreFixture):
             name for index in inspector.get_indexes("snapshot") for name in index["column_names"]
         }
         assert "entity_id" in indexed_columns
-        assert inspector.get_foreign_keys("snapshot") == []
+        # CR-15: the only foreign key on the snapshot table is run_id -> run.id.
+        assert all(fk["referred_table"] == "run" for fk in inspector.get_foreign_keys("snapshot"))
 
     def test_sha256_is_indexed(self) -> None:
         inspector = sa.inspect(self.engine)
