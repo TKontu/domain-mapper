@@ -81,8 +81,14 @@ def test_entities_with_values_one_skipped_and_keys_sorted(engine, tmp_path) -> N
             "entity_id": a,
             "attributes": {"headcount": 42, "pricing_model": "per_word"},
             "evidence": {"headcount": [], "pricing_model": []},
+            "units": {"headcount": None, "pricing_model": None},
         },
-        {"entity_id": b, "attributes": {"headcount": 7}, "evidence": {"headcount": []}},
+        {
+            "entity_id": b,
+            "attributes": {"headcount": 7},
+            "evidence": {"headcount": []},
+            "units": {"headcount": None},
+        },
     ]
     # The attributes object is written with attribute ids sorted, not in insertion order.
     assert list(lines[0]["attributes"]) == ["headcount", "pricing_model"]
@@ -101,6 +107,7 @@ def test_latest_value_wins(engine, tmp_path) -> None:
         "entity_id": a,
         "attributes": {"headcount": 12},
         "evidence": {"headcount": []},
+        "units": {"headcount": None},
     }
 
 
@@ -116,6 +123,7 @@ def test_values_are_written_json_decoded(engine, tmp_path) -> None:
         "entity_id": a,
         "attributes": {"certified": True, "founded": "2001-05-17", "revenue": 1.5},
         "evidence": {"certified": [], "founded": [], "revenue": []},
+        "units": {"certified": None, "founded": None, "revenue": "MEUR"},
     }
 
 
@@ -162,6 +170,7 @@ def test_export_in_batches_same_lines_one_query_per_batch(engine, tmp_path, monk
             "entity_id": ids[i],
             "attributes": {"headcount": i * 10, "pricing_model": "per_page"},
             "evidence": {"headcount": [], "pricing_model": []},
+            "units": {"headcount": None, "pricing_model": None},
         }
         for i in (0, 1, 3, 4)
     ]
@@ -185,7 +194,7 @@ def test_evidence_of_current_value_only_in_id_order(engine, tmp_path) -> None:
     assert result.exit_code == 0, result.output
     (line,) = out.read_text(encoding="utf-8").splitlines()
     obj = json.loads(line)
-    assert list(obj) == ["entity_id", "attributes", "evidence"]
+    assert list(obj) == ["entity_id", "attributes", "evidence", "units"]
     assert obj["evidence"] == {
         "headcount": [
             {"chunk_id": 9, "quote": "twelve staff", "grounded": True},
@@ -235,3 +244,39 @@ def test_one_value_and_one_evidence_query_per_batch(engine, tmp_path) -> None:
     evidence_queries = [s for s in statements if "FROM evidence" in s]
     assert len(value_queries) == 2
     assert len(evidence_queries) == 2
+
+
+def test_units_map_each_attribute_to_current_row_unit(engine, tmp_path) -> None:
+    a = add_entity(engine, "alpha")
+    add_value(engine, a, HEADCOUNT, 42)
+    add_value(engine, a, REVENUE, 1.5)
+    out = tmp_path / "attributes.jsonl"
+    result = export(out)
+    assert result.exit_code == 0, result.output
+    (line,) = out.read_text(encoding="utf-8").splitlines()
+    obj = json.loads(line)
+    assert obj["units"] == {"headcount": None, "revenue": "MEUR"}
+    assert list(obj["units"]) == sorted(obj["units"])
+    assert list(obj) == ["entity_id", "attributes", "evidence", "units"]
+
+
+def test_unit_less_attribute_has_null_unit(engine, tmp_path) -> None:
+    a = add_entity(engine, "alpha")
+    add_value(engine, a, HEADCOUNT, 42)
+    add_value(engine, a, CERTIFIED, True)
+    out = tmp_path / "attributes.jsonl"
+    assert export(out).exit_code == 0
+    (line,) = out.read_text(encoding="utf-8").splitlines()
+    assert json.loads(line)["units"] == {"certified": None, "headcount": None}
+
+
+def test_superseded_row_unit_not_exported(engine, tmp_path) -> None:
+    a = add_entity(engine, "alpha")
+    add_value(engine, a, REVENUE, 1.0)  # stores unit MEUR; later superseded
+    add_value(engine, a, Attribute(id="revenue", label="Revenue", type="float", unit="EUR"), 2.0)
+    out = tmp_path / "attributes.jsonl"
+    assert export(out).exit_code == 0
+    (line,) = out.read_text(encoding="utf-8").splitlines()
+    obj = json.loads(line)
+    assert obj["attributes"] == {"revenue": 2.0}
+    assert obj["units"] == {"revenue": "EUR"}

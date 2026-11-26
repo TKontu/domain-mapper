@@ -172,7 +172,10 @@ def test_current_values_many_matches_per_entity_and_omits_empty(engine) -> None:
         record_attribute_value(session, 1, ENUM_ATTR, "per_page")
     with Session(engine) as session:
         many = current_attribute_values_many(session, [1, 2, 3])
-        assert many == {1: {"headcount": 2, "pricing": "per_page"}, 2: {"certified": True, "headcount": 6}}
+        assert many == {
+            1: {"headcount": 2, "pricing": "per_page"},
+            2: {"certified": True, "headcount": 6},
+        }
         for entity_id in (1, 2):
             assert many[entity_id] == current_attribute_values(session, entity_id)
         assert current_attribute_values(session, 3) == {}
@@ -234,3 +237,15 @@ def test_attribute_evidence_many_empty_input_does_not_query(engine) -> None:
     with Session(engine) as session:
         assert attribute_evidence_many(session, []) == {}
     assert statements == []
+
+
+def test_current_attribute_value_rows_many_returns_row_unit(engine) -> None:
+    from core.attribute_store import current_attribute_value_rows_many
+
+    with Session(engine) as session, session.begin():
+        hc_id = record_attribute_value(session, 1, INT_ATTR, 1)  # no unit
+        record_attribute_value(session, 1, FLOAT_ATTR, 2.5)  # superseded, unit points
+        rating_id = record_attribute_value(session, 1, FLOAT_ATTR, 3.5)  # current, unit points
+    with Session(engine) as session:
+        many = current_attribute_value_rows_many(session, [1, 2])
+    assert many == {1: {"headcount": (hc_id, 1, None), "rating": (rating_id, 3.5, "points")}}

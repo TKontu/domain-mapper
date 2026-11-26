@@ -197,12 +197,15 @@ def current_attribute_values(session: Session, entity_id: int) -> dict[str, Any]
 
 def current_attribute_value_rows_many(
     session: Session, entity_ids: Sequence[int]
-) -> dict[int, dict[str, tuple[int, Any]]]:
-    """Return ``(attribute_value id, decoded value)`` of the latest row per attribute per entity.
+) -> dict[int, dict[str, tuple[int, Any, str | None]]]:
+    """Return ``(attribute_value id, decoded value, unit)`` of the latest row per attribute per
+    entity.
 
-    Read-only (AT-10). One query for all ids (callers bound the ``IN`` list); latest is the highest
-    ``id``; entities without values are absent; empty input returns ``{}`` without querying.
-    Production caller: ``core.cli.run_attributes_export`` (to look up current-value evidence).
+    Read-only (AT-10, AT-11). One query for all ids (callers bound the ``IN`` list); latest is the
+    highest ``id``; ``unit`` is the stored row's unit (``None`` when it has none); entities without
+    values are absent; empty input returns ``{}`` without querying.
+    Production caller: ``core.cli.run_attributes_export`` (to look up current-value evidence
+    and unit).
     """
     if not entity_ids:
         return {}
@@ -218,13 +221,14 @@ def current_attribute_value_rows_many(
             AttributeValueRow.attribute_id,
             AttributeValueRow.id,
             AttributeValueRow.value_json,
+            AttributeValueRow.unit,
         )
         .join(latest_ids, AttributeValueRow.id == latest_ids.c.id)
         .order_by(AttributeValueRow.entity_id, AttributeValueRow.attribute_id)
     )
-    result: dict[int, dict[str, tuple[int, Any]]] = {}
-    for entity_id, attribute_id, row_id, value in session.execute(stmt):
-        result.setdefault(entity_id, {})[attribute_id] = (row_id, value)
+    result: dict[int, dict[str, tuple[int, Any, str | None]]] = {}
+    for entity_id, attribute_id, row_id, value, unit in session.execute(stmt):
+        result.setdefault(entity_id, {})[attribute_id] = (row_id, value, unit)
     return result
 
 
@@ -238,6 +242,6 @@ def current_attribute_values_many(
     without querying. Delegates to :func:`current_attribute_value_rows_many`.
     """
     return {
-        entity_id: {attribute_id: value for attribute_id, (_, value) in values.items()}
+        entity_id: {attribute_id: value for attribute_id, (_, value, _unit) in values.items()}
         for entity_id, values in current_attribute_value_rows_many(session, entity_ids).items()
     }

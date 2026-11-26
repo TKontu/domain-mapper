@@ -940,12 +940,13 @@ def run_attributes_export(scope: Path, out: Path) -> None:
     Entities stream in ascending id via :func:`iter_entities` and are batched
     (``ATTRIBUTES_EXPORT_BATCH`` ids) into one
     :func:`core.attribute_store.current_attribute_value_rows_many` query and one
-    :func:`core.attribute_store.attribute_evidence_many` query per batch (AT-04, AT-10). Entities
-    without values are skipped and counted; the rest are written one line at a time, attribute ids
-    sorted, with an ``evidence`` object (attribute id -> current value's evidence in id order) to
-    ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup errors
-    or an unwritable output directory exit 2. Production caller: the ``attributes-export``
-    command; consumer is the later static-site row.
+    :func:`core.attribute_store.attribute_evidence_many` query per batch (AT-04, AT-10, AT-11).
+    Entities without values are skipped and counted; the rest are written one line at a time,
+    attribute ids sorted, with an ``evidence`` object (attribute id -> current value's evidence
+    in id order) and a ``units`` object (attribute id -> current row's stored unit, JSON null
+    when it has none) to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no
+    ``PATH``. Setup errors or an unwritable output directory exit 2. Production caller: the
+    ``attributes-export`` command; consumer is the later static-site row.
     """
     settings = _load(scope)
     pack = _load_pack_or_exit(scope)
@@ -968,7 +969,7 @@ def run_attributes_export(scope: Path, out: Path) -> None:
                         many = current_attribute_value_rows_many(session, batch)
                         evidence = attribute_evidence_many(
                             session,
-                            [row_id for rows in many.values() for row_id, _ in rows.values()],
+                            [row_id for rows in many.values() for row_id, _, _ in rows.values()],
                         )
                     for entity_id in batch:
                         values = many.get(entity_id)
@@ -990,6 +991,7 @@ def run_attributes_export(scope: Path, out: Path) -> None:
                                 ]
                                 for key in keys
                             },
+                            "units": {key: values[key][2] for key in keys},
                         }
                         handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
                         count += 1
