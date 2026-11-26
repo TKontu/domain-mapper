@@ -97,6 +97,7 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
+from app.mosaic import render_mosaic
 from core.aggregate import TopicScore, score_topics
 from core.assess import AssessError, extract_criterion
 from core.assessment_store import (
@@ -1266,6 +1267,48 @@ def run_scores_export(scope: Path, out: Path) -> None:
     typer.echo(f"exported {count} entities to {out} (skipped {skipped} without screen result)")
 
 
+def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield one JSON object per non-blank line of ``path`` (streaming)."""
+    with path.open(encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            if line.strip():
+                obj = json.loads(line)
+                if not isinstance(obj, dict):
+                    raise ValueError(f"{path}:{number}: not a JSON object")
+                yield obj
+
+
+def run_mosaic(scope: Path, scores: Path, export: Path, out: Path) -> None:
+    """Write the FE-01 mosaic page for ``scores`` and ``export`` JSON Lines to ``out``.
+
+    Offline: no settings or database. The page goes to ``<out>.tmp`` and is renamed to ``out``
+    on success. A missing scope/input file, bad scope pack or unwritable output exits 2; a
+    malformed JSON line exits 1.
+    """
+    if not scope.is_dir():
+        typer.echo(f"error: scope directory not found: {scope}", err=True)
+        raise typer.Exit(2)
+    pack = _load_pack_or_exit(scope)
+    for path in (scores, export):
+        if not path.is_file():
+            typer.echo(f"error: input file not found: {path}", err=True)
+            raise typer.Exit(2)
+    try:
+        page = render_mosaic(pack, _iter_jsonl(scores), _iter_jsonl(export))
+    except ValueError as exc:  # includes json.JSONDecodeError
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    tmp = Path(f"{out}.tmp")
+    try:
+        tmp.write_text(page, encoding="utf-8")
+        os.replace(tmp, out)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"wrote mosaic to {out}")
+
+
 def _export_object(row: CurrentAssessment) -> dict[str, object]:
     """One JSON Lines object for a current assessment, with its evidence nested per row."""
     return {
@@ -2039,6 +2082,17 @@ def scores_export(
 ) -> None:
     """Write one AG-03 scores object per screened entity of the scope to ``--out``."""
     run_scores_export(scope, out)
+
+
+@app.command(name="mosaic", help="Write a static HTML mosaic page from scores and export.")
+def mosaic(
+    scope: ScopeOpt,
+    scores: Annotated[Path, typer.Option("--scores", help="scores-export JSON Lines file.")],
+    export: Annotated[Path, typer.Option("--export", help="export JSON Lines file.")],
+    out: Annotated[Path, typer.Option("--out", help="Output HTML file path.")],
+) -> None:
+    """Write one self-contained mosaic HTML page (FE-01) to ``--out``."""
+    run_mosaic(scope, scores, export, out)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")

@@ -170,6 +170,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 
 ### Minimal frontend
 - [ ] Mosaic view (generic renderer driven by rubric config)
+  - [ ] **FE-01** → [docs/items/FE-01.md](docs/items/FE-01.md) `landscape mosaic` writes one self-contained static HTML page from scores-export and export JSON Lines; cells coloured from `status_scale`, click reveals status, confidence, rationale, evidence quote/url/fetched_at
 - [ ] Hover/click cell → status, quote, URL, snapshot date
 - [ ] Entity page
 
