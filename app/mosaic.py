@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from html import escape
 from typing import Any
 
@@ -81,11 +81,13 @@ def render_mosaic(
     scores_lines: Iterable[Mapping[str, Any]],
     export_lines: Iterable[Mapping[str, Any]],
     entity_href: Callable[[str], str] | None = None,
+    heading: str | None = None,
 ) -> str:
     """Return the mosaic page as one HTML string; production caller is ``landscape mosaic``.
 
     ``entity_href`` (FE-02) maps an entity id to a relative link for its row header; without it
-    the output is unchanged from FE-01.
+    the output is unchanged from FE-01. ``heading`` (FE-03) adds an escaped ``<h2>`` line, e.g.
+    the active segment filter; ``None`` leaves the output unchanged.
     """
     scale = {s.id: (s.label, s.color) for s in pack.rubric.status_scale}
     cells: dict[tuple[str, str], Mapping[str, Any]] = {}
@@ -98,6 +100,7 @@ def render_mosaic(
         f"<title>Mosaic {_e(pack.scope.id)}</title>",
         f"<style>{_STYLE}</style></head><body>",
         f"<h1>{_e(pack.scope.id)} {_e(pack.scope.version)}</h1>",
+        *([f'<h2 class="filter">{_e(heading)}</h2>'] if heading is not None else []),
         '<table><thead><tr><th rowspan="2">entity</th>',
     ]
     for topic in topics:
@@ -128,6 +131,20 @@ def render_mosaic(
         out.append("</tr>")
     out.append("</tbody></table></body></html>\n")
     return "\n".join(out)
+
+
+def filter_by_segments(
+    scores_lines: Iterable[Mapping[str, Any]], segment_ids: Collection[str]
+) -> Iterator[Mapping[str, Any]]:
+    """Yield, in input order, scores lines whose ``segments`` list contains any of ``segment_ids``.
+
+    Streaming (FE-03); a line without a ``segments`` list never matches.
+    """
+    wanted = set(segment_ids)
+    for line in scores_lines:
+        segments = line.get("segments")
+        if isinstance(segments, list) and wanted.intersection(str(s) for s in segments):
+            yield line
 
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
