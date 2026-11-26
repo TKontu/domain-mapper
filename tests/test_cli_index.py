@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from unittest import mock
 
 import pytest
 import sqlalchemy as sa
@@ -261,3 +262,78 @@ def test_unbuildable_embedder_exits_2_without_run(engine, monkeypatch) -> None:
     assert result.stderr.strip() == "error: embedding service URL is not configured"
     assert run_rows(engine) == []
     assert fake.calls == []
+
+
+# --- AB-01: abort-close guard for the index stage ------------------------------
+
+
+def _db_error(statement: str) -> sa.exc.OperationalError:
+    return sa.exc.OperationalError(statement, {}, Exception("gone"))
+
+
+def _assert_one_db_line(result) -> None:
+    """One stderr line names the close failure; the database URL never appears in the output."""
+    assert result.stderr.count("error: database unavailable") == 1
+    assert "error: database unavailable (OperationalError)" in result.stderr
+
+
+def test_runtime_error_with_close_db_error_propagates_original(
+    engine, monkeypatch
+) -> None:  # AB-01
+    seed_chunks(engine, ["alpha"])
+    use_embedder(monkeypatch, FakeEmbedder())
+    with mock.patch.object(cli, "embed_pending_chunks", side_effect=RuntimeError("boom")):
+        with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+            result = invoke("--model", "m1")
+
+    assert type(result.exception) is RuntimeError
+    _assert_one_db_line(result)
+
+
+def test_keyboard_interrupt_with_close_db_error_propagates_original(
+    engine, monkeypatch
+) -> None:  # AB-01
+    seed_chunks(engine, ["alpha"])
+    use_embedder(monkeypatch, FakeEmbedder())
+    with mock.patch.object(cli, "embed_pending_chunks", side_effect=KeyboardInterrupt()):
+        with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+            result = invoke("--model", "m1")
+
+    assert result.exit_code == 130, result.output
+    _assert_one_db_line(result)
+
+
+def test_db_error_with_close_db_error_exits_2_one_line(
+    engine, monkeypatch, db_url
+) -> None:  # AB-01
+    seed_chunks(engine, ["alpha"])
+    use_embedder(monkeypatch, FakeEmbedder())
+    with mock.patch.object(cli, "embed_pending_chunks", side_effect=_db_error("SELECT")):
+        with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+            result = invoke("--model", "m1")
+
+    assert result.exit_code == 2, result.output
+    _assert_one_db_line(result)
+    assert db_url not in result.output
+    assert db_url not in result.stderr
+
+
+def test_db_error_with_close_ok_exits_2_one_line_run_failed(engine, monkeypatch) -> None:  # AB-01
+    seed_chunks(engine, ["alpha"])
+    use_embedder(monkeypatch, FakeEmbedder())
+    with mock.patch.object(cli, "embed_pending_chunks", side_effect=_db_error("SELECT")):
+        result = invoke("--model", "m1")
+
+    assert result.exit_code == 2, result.output
+    _assert_one_db_line(result)
+    assert run_rows(engine) == [("index", "failed")]
+
+
+def test_embedding_error_with_close_db_error_exits_2_one_line(engine, monkeypatch) -> None:  # AB-01
+    seed_chunks(engine, ["alpha"])
+    use_embedder(monkeypatch, FakeEmbedder(fail_on_call=1))
+    with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+        result = invoke("--model", "m1")
+
+    assert result.exit_code == 2, result.output
+    _assert_one_db_line(result)

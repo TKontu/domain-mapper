@@ -608,6 +608,7 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
         raise typer.Exit(2) from None
 
     engine = _open_engine(settings)
+    run_id: int | None = None
     try:
         try:
             llm = _make_screen_llm(settings, engine)
@@ -651,13 +652,14 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
                 segments = ",".join(result.segments) if result.segments else "-"
                 typer.echo(f"ok {entity.id} {status} {result.confidence:.2f} {segments}")
                 screened += 1
-        except BaseException:
-            _close_run(engine, run_id, FAILED)
+        except SQLAlchemyError:
+            raise  # the outer handler closes the run best-effort and prints one line (AB-01)
+        except BaseException as exc:
+            _close_run_aborting(engine, run_id, exc)
             raise
         _close_run(engine, run_id, FAILED if errors else FINISHED)
     except SQLAlchemyError as exc:  # a paged read or write failed: bad setup, URL never echoed
-        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
-        raise typer.Exit(2) from None
+        _exit_database_unavailable(engine, run_id, exc)
     finally:
         engine.dispose()
 
@@ -678,7 +680,9 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
     ``error <ErrorName>: <message>`` on stderr with the run ``failed`` and exit 1. The embedder is
     built before the run row opens, so an unbuildable backend (``ValueError``) exits 2 with
     ``error: <message>`` and no run row; any other error or interrupt after that closes the run
-    ``failed`` before propagating (IX-05).
+    ``failed`` before propagating (IX-05). A failed abort close prints one ``database unavailable``
+    line without replacing the original exception; a ``SQLAlchemyError`` exits 2 with one such
+    line and no database URL (AB-01).
     """
     if not model.strip():
         typer.echo("error: --model must be non-empty", err=True)
@@ -691,6 +695,7 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
         raise typer.Exit(2)
     settings = load_settings()
     engine = _open_engine(settings)
+    run_id: int | None = None
     try:
         try:
             embedder = _make_embedder(settings, model)
@@ -710,12 +715,16 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
             raise typer.Exit(1) from None
-        except BaseException:
+        except SQLAlchemyError:
+            raise  # the outer handler closes the run best-effort and prints one line (AB-01)
+        except BaseException as exc:
             # An unexpected error or interrupt must not leave the run row open.
-            _close_run(engine, run_id, FAILED)
+            _close_run_aborting(engine, run_id, exc)
             raise
         _close_run(engine, run_id, FINISHED)
         typer.echo(f"embedded {stats.embedded} batches {stats.batches}")
+    except SQLAlchemyError as exc:  # URL never echoed; a failed close stays silent (AB-01)
+        _exit_database_unavailable(engine, run_id, exc)
     finally:
         engine.dispose()
 
