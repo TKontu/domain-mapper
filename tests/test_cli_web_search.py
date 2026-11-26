@@ -198,7 +198,7 @@ class WebSearchSaveTest(_CliFixture):
         os.environ["DM_DATABASE_URL"] = "postgresql+psycopg://user:hunter2@db.invalid:1/x"
         with (
             self.fake_urlopen(2),
-            mock.patch("app.cli.create_engine", side_effect=RuntimeError("db.invalid hunter2")),
+            mock.patch("app.cli.create_db_engine", side_effect=RuntimeError("db.invalid hunter2")),
         ):
             result = self.invoke("--query", "crawler", "--save")
         self.assertEqual(result.exit_code, 2, result.output)
@@ -215,7 +215,7 @@ class WebSearchSaveTest(_CliFixture):
     def test_without_save_no_engine_created(self) -> None:
         with (
             self.fake_urlopen(2),
-            mock.patch("app.cli.create_engine", side_effect=AssertionError("no engine")),
+            mock.patch("app.cli.create_db_engine", side_effect=AssertionError("no engine")),
         ):
             result = self.invoke("--query", "crawler")
         self.assertEqual(result.exit_code, 0, result.output)
