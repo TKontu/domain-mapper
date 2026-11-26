@@ -68,7 +68,7 @@ class WorkUnit(Base):
         sa.UniqueConstraint("stage", "unit_key", "input_hash", name="uq_work_unit_stage_key_hash"),
         sa.Index("ix_work_unit_stage_status", "stage", "status"),
         sa.CheckConstraint(
-            "status IN ('pending', 'done', 'failed', 'needs_review')",
+            "status IN ({})".format(", ".join(f"'{s}'" for s in WORK_UNIT_STATUSES)),
             name="ck_work_unit_status",
         ),
     )
