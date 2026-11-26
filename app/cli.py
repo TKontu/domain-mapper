@@ -68,6 +68,7 @@ directory exits 2 and leaves no ``PATH``.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import time
@@ -127,7 +128,15 @@ from core.links import crawl_key, extract_links
 from core.log import configure_logging
 from core.resolve import apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
-from core.runs import FAILED, FINISHED, RUNNING, Run, create_all, create_db_engine
+from core.runs import (
+    FAILED,
+    FINISHED,
+    RUNNING,
+    Run,
+    StageRunner,
+    create_all,
+    create_db_engine,
+)
 from core.scope_pack import (
     Attribute,
     CrawlPolicy,
@@ -661,6 +670,10 @@ def _close_run_aborting(engine: Engine, run_id: int | None, exc: BaseException) 
         typer.echo(f"error: database unavailable ({type(close_exc).__name__})", err=True)
 
 
+class _ScreenBudgetStop(Exception):
+    """Raised by the screen handler so StageRunner records the unit failed and stops."""
+
+
 def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool) -> None:
     """Screen each ``unscreened`` entity of ``scope``'s id with the small local model.
 
@@ -688,40 +701,60 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
 
         run_id = _open_run(engine, "screen")
         screened = skipped = errors = 0
-        try:
-            entities = iter_entities(engine, pack.scope.id, limit=limit, status=STATUS_UNSCREENED)
-            for entity in entities:
+        current: dict[str, tuple[EntityRef, str]] = {}  # the one entity in flight
+
+        def units() -> Iterator[tuple[str, str]]:
+            nonlocal skipped
+            for entity in iter_entities(
+                engine, pack.scope.id, limit=limit, status=STATUS_UNSCREENED
+            ):
                 text = load_entity_text(engine, entity.id)
                 if not text.strip():
+                    # Not recorded as a unit: it is retried once text arrives.
                     typer.echo(f"skipped {entity.id} no-text")
                     skipped += 1
                     continue
-                try:
-                    result = screen_entity(
-                        llm,
-                        pack,
-                        name=entity.name,
-                        domain=entity.primary_domain,
-                        text=text,
-                        run_id=run_id,
-                        max_chars=DEFAULT_MAX_CHARS,
-                    )
-                except LlmBudgetExceeded as exc:
-                    # The run's budget is spent: stop cleanly, the rest stay unscreened.
-                    typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
-                    errors += 1
-                    break
-                except (ScreenError, LlmError) as exc:
-                    # Invalid output or a failed call leaves the entity unscreened for a retry.
-                    typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
-                    errors += 1
-                    continue
-                status = record_screen_result(
-                    engine, entity_id=entity.id, run_id=run_id, result=result
+                key = str(entity.id)
+                current.clear()
+                current[key] = (entity, text)
+                digest = hashlib.sha256(f"{pack.scope.id}\0{text}".encode()).hexdigest()
+                yield key, digest
+
+        def handle(key: str) -> None:
+            nonlocal screened, errors
+            entity, text = current.pop(key)
+            try:
+                result = screen_entity(
+                    llm,
+                    pack,
+                    name=entity.name,
+                    domain=entity.primary_domain,
+                    text=text,
+                    run_id=run_id,
+                    max_chars=DEFAULT_MAX_CHARS,
                 )
-                segments = ",".join(result.segments) if result.segments else "-"
-                typer.echo(f"ok {entity.id} {status} {result.confidence:.2f} {segments}")
-                screened += 1
+            except LlmBudgetExceeded as exc:
+                # The run's budget is spent: stop cleanly, the rest stay unscreened.
+                typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
+                errors += 1
+                raise _ScreenBudgetStop from exc
+            except (ScreenError, LlmError) as exc:
+                # Invalid output or a failed call leaves the entity unscreened for a retry.
+                typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
+                errors += 1
+                raise
+            status = record_screen_result(engine, entity_id=entity.id, run_id=run_id, result=result)
+            segments = ",".join(result.segments) if result.segments else "-"
+            typer.echo(f"ok {entity.id} {status} {result.confidence:.2f} {segments}")
+            screened += 1
+
+        try:
+            try:
+                StageRunner(engine).run(
+                    "screen", units(), handle, run_id=run_id, catch=(ScreenError, LlmError)
+                )
+            except _ScreenBudgetStop:
+                pass
         except SQLAlchemyError:
             raise  # the outer handler closes the run best-effort and prints one line (AB-01)
         except BaseException as exc:
