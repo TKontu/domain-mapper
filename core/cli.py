@@ -827,14 +827,24 @@ def _fmt_ratio(value: float | None) -> str:
     return "-" if value is None else f"{value:.4f}"
 
 
-def run_scores(scope: Path, entity_id: int, segments: list[str] | None) -> None:
+def run_scores(
+    scope: Path, entity_id: int, segments: list[str] | None, format: str = "text"
+) -> None:
     """Print per-topic score and coverage for one entity (AG-02) via ``score_topics``.
+
+    ``format`` ``text`` (default) prints the AG-02 header plus one line per topic; ``json``
+    (AG-03) prints one JSON object ``{"entity_id", "segments", "rubric_version", "topics"}``
+    with the topics in rubric order and ``score``/``coverage`` as unrounded floats or ``null``.
+    Any other value exits 2 before setup.
 
     Entity segments are ``segments`` when given (each must be a scope segment id), else the
     entity's latest screen result. Assessments are the current ones at the pack's version (the
     version ``landscape assess`` stores), consumed once. Setup errors exit 2; a ``ValueError``
     from ``score_topics`` exits 1.
     """
+    if format not in {"text", "json"}:
+        typer.echo(f"error: unknown format {format!r}", err=True)
+        raise typer.Exit(2)
     settings = _load(scope)
     try:
         pack = load_scope_pack(scope)
@@ -864,6 +874,29 @@ def run_scores(scope: Path, entity_id: int, segments: list[str] | None) -> None:
         _exit_database_unavailable(engine, None, exc)
     finally:
         engine.dispose()
+    if format == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "entity_id": entity_id,
+                    "segments": list(entity_segments),
+                    "rubric_version": version,
+                    "topics": [
+                        {
+                            "topic_id": score.topic_id,
+                            "score": score.score,
+                            "coverage": score.coverage,
+                            "applicable": score.applicable,
+                            "scored": score.scored,
+                            "evidenced": score.evidenced,
+                        }
+                        for score in scores
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
     typer.echo(f"entity {entity_id} segments {','.join(entity_segments)} rubric {version}")
     for score in scores:
         typer.echo(
@@ -1234,9 +1267,12 @@ def scores(
         list[str] | None,
         typer.Option("--segment", help="Entity segment id (repeatable); default: latest screen."),
     ] = None,
+    format: Annotated[
+        str, typer.Option("--format", help="Output format: text (default) or json.")
+    ] = "text",
 ) -> None:
     """Score each rubric topic for one entity over its current assessments."""
-    run_scores(scope, entity_id, segment)
+    run_scores(scope, entity_id, segment, format)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")
