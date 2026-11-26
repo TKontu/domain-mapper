@@ -3,8 +3,11 @@
 Read project AGENTS.md and `.agent/config.toml`; follow [the protocol](../../SPEC.md).
 
 Inspect actual merged/cancelled outcomes and final main. Run the configured verification and any
-additional combined-state gates owed by the assignment. Record failures and their owner; failed
-required gates keep the round open. Confirm no workers still hold mutable resources.
+additional combined-state gates owed by the assignment. Record failures and their owner. Every round is reconciled and closed,
+including failed, blocked and stalled ones: a failed required gate does not keep the round open.
+Record it as the outcome. Resolve the assignment as merged with the evidence, or cancel it with its
+next owner. Add a follow-up item for the failure. Never leave a round open for a later session to
+discover; an open round blocks every later round. Confirm no workers still hold mutable resources.
 
 Update only the canonical backlog/details: acceptance met → completed outcome (for behavior, only with an observed run or artifact reference;
 merged but not yet exercised stays partial and names the run that will show it); newly discovered work
@@ -16,6 +19,30 @@ Leave durable reconciliation evidence in tracked project state: update existing 
 decision records with outcomes, evidence, remaining work and next action. The reconciliation PR may
 already capture this; do not create a separate report just to close the round. Get any required
 review/merge for the record updates and retain a durable evidence reference.
+## Progress review (every round)
+
+Before the handoff, judge whether the loop is moving toward the frontier, not only whether this
+round closed. Measure it against tracked state: items reaching completed or seen, milestone rows
+advanced, and main changed by product work, not just records. Count consecutive rounds without
+product progress from the previous handoff's `Progress:` line.
+
+- **Advanced:** write `Progress: advanced` in the handoff.
+- **Stalled (no product progress this round):** name the cause from evidence. Possible causes: a
+  long lane still running, a blocked or failing item, an owed operator decision, tooling or ledger
+  refusal, a permission or classifier denial, an unavailable service or model, or churn on
+  low-value polish. Then redirect. Do not repeat the same plan:
+  - waiting on a lane → plan other independent executable work beside it;
+  - same item blocked twice → split it, change approach, or park it with its owner and pick the
+    next frontier item;
+  - owed to the operator → park it, open a dashboard `open` note, continue with unblocked work;
+  - tooling, permission or service failure → record the cause, plan a fix item if it is in scope,
+    otherwise park it and route around;
+  - polish churn (3+ rounds on one area while milestone rows wait) → return to the milestone path.
+  Write `Progress: stalled N (cause; redirect)` in the handoff, where N counts consecutive stalled rounds.
+- **Stalled 3+ rounds with no executable work left:** write one dashboard `issue` that names the
+  cause and what would unblock it. End the round with `complete --outcome continue`. Halting is
+  reserved for an operator instruction or a reached goal; a stall is never a reason to halt.
+
 After the final default-branch revision is known, run the owed final gate and write
 [the handoff](handoff.md). Before it, run `python3 scripts/lanes.py cleanup --go` and carry
 every held lane into the handoff with its reason. Close locally:
