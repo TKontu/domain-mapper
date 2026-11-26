@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from core.grounding import (
+    VERBATIM_TIER_METHODS,
     GroundingResult,
     ground_and_locate,
     ground_and_locate_precomputed,
@@ -178,3 +179,7 @@ def test_word_window_quote_longer_than_content() -> None:
 )
 def test_is_negation_quote(quote: str | None, expected: bool) -> None:
     assert is_negation_quote(quote) is expected
+
+
+def test_verbatim_tier_methods_cover_exactly_tiers_1_and_2() -> None:
+    assert VERBATIM_TIER_METHODS == {1: "exact", 2: "normalised"}

@@ -34,11 +34,10 @@ from sqlalchemy.orm import Session
 from adapters.llm import LLM
 from core.assess import EVIDENCE_BEGIN, EVIDENCE_END, Quote, _neutralise, _truncate
 from core.attribute_store import _checked_value, record_attribute_value
-from core.grounding import ground_and_locate
+from core.grounding import VERBATIM_TIER_METHODS, ground_and_locate
 from core.scope_pack import Attribute
 
 PURPOSE = "attribute_extract"
-_TIER_METHOD = {1: "exact", 2: "normalised"}
 
 
 class AttributeExtractError(ValueError):
@@ -192,7 +191,7 @@ def _validate(parsed: object, attribute: Attribute, texts: dict[int, str]) -> At
                 f"attribute extract output: quotes[{i}].quote must be a string"
             )
         g = ground_and_locate(text, texts[cid])
-        method = _TIER_METHOD.get(g.match_tier)
+        method = VERBATIM_TIER_METHODS.get(g.match_tier)
         span: tuple[int, int] | None = None
         if method is not None and g.source_offset is not None and g.source_end is not None:
             span = (g.source_offset, g.source_end)

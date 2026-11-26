@@ -24,7 +24,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from adapters.llm import LLM
-from core.grounding import ContentMaps, ground_and_locate_precomputed, precompute_content_maps
+from core.grounding import (
+    VERBATIM_TIER_METHODS,
+    ContentMaps,
+    ground_and_locate_precomputed,
+    precompute_content_maps,
+)
 from core.scope_pack import Criterion, Rubric
 
 PURPOSE = "assess_extract"
@@ -33,7 +38,6 @@ SILENT = "silent"
 MAX_RATIONALE_CHARS = 1000
 EVIDENCE_BEGIN = "<<<BEGIN EVIDENCE"
 EVIDENCE_END = "<<<END EVIDENCE>>>"
-_TIER_METHOD = {1: "exact", 2: "normalised"}
 
 
 class AssessError(ValueError):
@@ -187,7 +191,7 @@ def _validate(
         if cid not in maps:
             maps[cid] = precompute_content_maps(texts[cid])
         g = ground_and_locate_precomputed(text, texts[cid], maps[cid])
-        method = _TIER_METHOD.get(g.match_tier)
+        method = VERBATIM_TIER_METHODS.get(g.match_tier)
         span: tuple[int, int] | None = None
         if method is not None and g.source_offset is not None and g.source_end is not None:
             span = (g.source_offset, g.source_end)

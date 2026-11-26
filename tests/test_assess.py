@@ -245,11 +245,10 @@ def test_content_maps_computed_once_per_cited_chunk(monkeypatch: pytest.MonkeyPa
     ],
 )
 def test_outcome_matches_plain_ground_and_locate(chunk: str, quote: str) -> None:
-    from core.assess import _TIER_METHOD
-    from core.grounding import ground_and_locate
+    from core.grounding import VERBATIM_TIER_METHODS, ground_and_locate
 
     g = ground_and_locate(quote, chunk)
-    method = _TIER_METHOD.get(g.match_tier)
+    method = VERBATIM_TIER_METHODS.get(g.match_tier)
     expected_span = (
         (g.source_offset, g.source_end)
         if method is not None and g.source_offset is not None and g.source_end is not None
