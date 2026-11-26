@@ -1,4 +1,4 @@
-"""Tests for ``landscape assess`` (AT-07); SQLite under a temp dir, fake local LLM."""
+"""Tests for ``landscape attributes-extract`` (AT-07); SQLite under a temp dir, fake local LLM."""
 
 from __future__ import annotations
 
