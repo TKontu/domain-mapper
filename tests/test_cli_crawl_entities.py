@@ -27,7 +27,7 @@ from typer.testing import CliRunner
 from core import cli
 from core.cli import app
 from core.entity_store import STATUS_UNSCREENED, Entity
-from core.runs import create_all
+from core.runs import Run, create_all
 from core.snapshot_store import SnapshotRow
 
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
@@ -172,6 +172,38 @@ class EntityCrawlCliTest(unittest.TestCase):
                 ]
         finally:
             engine.dispose()
+
+    def snapshot_rows(self) -> list[SnapshotRow]:
+        engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
+        try:
+            with Session(engine) as session:
+                return list(session.scalars(sa.select(SnapshotRow).order_by(SnapshotRow.id)))
+        finally:
+            engine.dispose()
+
+    def crawl_run_ids(self) -> list[int]:
+        engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
+        try:
+            with Session(engine) as session:
+                return [
+                    r.id
+                    for r in session.scalars(
+                        sa.select(Run).where(Run.stage == "crawl").order_by(Run.id)
+                    )
+                ]
+        finally:
+            engine.dispose()
+
+    def test_snapshots_carry_the_crawl_run_id(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com")])
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 0, result.output)
+        snaps = self.snapshot_rows()
+        run_ids = self.crawl_run_ids()
+        self.assertEqual(len(run_ids), 1)
+        self.assertTrue(snaps)
+        for snap in snaps:
+            self.assertEqual(snap.run_id, run_ids[0])
 
     def test_crawls_scope_entities_in_id_order_with_entity_ids(self) -> None:
         a_id, t_id, b_id = self.seed(

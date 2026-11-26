@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 from core import cli
 from core.chunk_store import ChunkRow
 from core.cli import app
+from core.runs import Run
 from core.snapshot_store import SnapshotRow
 
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
@@ -113,6 +114,37 @@ class CrawlStageTest(unittest.TestCase):
         for url in urls:
             args += ["--url", url]
         return self.runner.invoke(app, args)
+
+    def test_snapshots_carry_the_crawl_run_id(self) -> None:
+        result = self.crawl(self.base + "/page")
+        self.assertEqual(result.exit_code, 0, result.output)
+        snaps, _ = self.rows()
+        run_ids = self.runs()
+        self.assertEqual(len(run_ids), 1)
+        self.assertTrue(snaps)
+        for snap in snaps:
+            self.assertEqual(snap.run_id, run_ids[0])
+
+    def test_a_second_invocation_has_disjoint_run_ids(self) -> None:
+        first = self.crawl(self.base + "/page")
+        second = self.crawl(self.base + "/other")
+        self.assertEqual(first.exit_code, 0, first.output)
+        self.assertEqual(second.exit_code, 0, second.output)
+        snaps, _ = self.rows()
+        run_ids = self.runs()
+        self.assertEqual(len(run_ids), 2)
+        self.assertEqual(len(set(run_ids)), 2)
+        self.assertTrue(snaps)
+        for snap in snaps:
+            self.assertIn(snap.run_id, run_ids)
+
+    def runs(self) -> list[int]:
+        engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
+        try:
+            with Session(engine) as s:
+                return [r.id for r in s.scalars(sa.select(Run).order_by(Run.id))]
+        finally:
+            engine.dispose()
 
     def rows(self) -> tuple[list[SnapshotRow], list[ChunkRow]]:
         engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")

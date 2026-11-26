@@ -15,6 +15,8 @@ Semantics:
   lands in a later item.
 * ``url`` or ``source_kind`` empty raises :class:`ValueError` before a session
   opens, so an invalid call cannot write anything.
+* ``run_id`` (CR-15) is the id of the invocation's ``crawl`` run row when the fetch
+  was made by ``landscape crawl``; other callers pass ``None``.
 * ``fetched_at`` is stored as aware UTC and read back aware UTC on SQLite too
   (see :class:`UtcDateTime`).
 
@@ -83,6 +85,9 @@ class SnapshotRow(Base):
     sha256: Mapped[str] = mapped_column(sa.String(64), index=True)
     fetched_at: Mapped[datetime] = mapped_column(UtcDateTime())
     source_kind: Mapped[str] = mapped_column(sa.String(64))
+    # The invocation's crawl run row (CR-15); indexed and FK-constrained like
+    # ``screen_result.run_id``. NULL for snapshots written outside ``landscape crawl``.
+    run_id: Mapped[int | None] = mapped_column(sa.ForeignKey("run.id"), index=True)
 
 
 def record_snapshot(
@@ -92,6 +97,7 @@ def record_snapshot(
     url: str,
     result: FetchResult,
     source_kind: str,
+    run_id: int | None = None,
 ) -> int:
     """Insert one ``snapshot`` row for ``result``; return its id."""
     if not url:
@@ -107,6 +113,7 @@ def record_snapshot(
         sha256=hashlib.sha256(result.body_bytes).hexdigest(),
         fetched_at=result.fetched_at,
         source_kind=source_kind,
+        run_id=run_id,
     )
     with Session(engine) as session, session.begin():
         session.add(snapshot)
