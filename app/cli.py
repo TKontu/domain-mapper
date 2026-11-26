@@ -147,6 +147,7 @@ from core.screen_store import (
     load_entity_text,
     record_screen_result,
 )
+from core.source_catalogue import seed_sources
 from core.verify import route, verify_extraction
 
 STAGES: tuple[str, ...] = (
@@ -871,6 +872,27 @@ def _load_pack_or_exit(scope: Path) -> ScopePack:
     except ScopePackError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from None
+
+
+def run_sources(scope: Path) -> None:
+    """Seed the ``source`` catalogue from the pack's sources (AD-02, AD-15) and print counts.
+
+    One transaction via ``seed_sources``; a pack error or a database error exits 2 with one
+    ``error:`` line (the database URL is never echoed).
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    engine = _open_engine(settings)
+    try:
+        summary = seed_sources(engine, pack)
+    except Exception as exc:  # noqa: BLE001 - never echo the database URL
+        typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
+        raise typer.Exit(2) from None
+    finally:
+        engine.dispose()
+    typer.echo(
+        f"inserted {summary.inserted} updated {summary.updated} unchanged {summary.unchanged}"
+    )
 
 
 def run_attribute_set(scope: Path, entity_id: int, attribute_id: str, text: str) -> None:
@@ -1796,6 +1818,12 @@ def attribute_set(
 ) -> None:
     """Parse, validate and store one attribute value; print its row id."""
     run_attribute_set(scope, entity_id, attribute, value)
+
+
+@app.command(name="sources", help="Seed the source catalogue from the scope pack.")
+def sources(scope: ScopeOpt) -> None:
+    """Upsert the pack's sources into the ``source`` table and print the counts."""
+    run_sources(scope)
 
 
 @app.command(name="attributes", help="List the current attribute values of one entity.")
