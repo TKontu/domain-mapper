@@ -299,3 +299,105 @@ def test_dry_run_still_works(engine) -> None:
     result = CliRunner().invoke(cli.app, ["assess", "--scope", EXAMPLE_SCOPE, "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "stage: assess" in result.output
+
+
+# AS-07: --embedding-model wires a hybrid Embedder into retrieval.
+
+VECTOR_ONLY = "Zebra quokka nimbus lattice."
+
+
+class FakeEmbedder:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.model = "fake-embed"
+        self.error = error
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: Any) -> list[list[float]]:
+        self.calls.append(list(texts))
+        if self.error is not None:
+            raise self.error
+        return [[1.0, 0.0] for _ in texts]
+
+
+def _set_embedding(engine, chunk_id: int, vector: list[float], model: str) -> None:
+    from core.chunk_store import ChunkRow
+
+    with Session(engine) as session, session.begin():
+        session.execute(
+            sa.update(ChunkRow)
+            .where(ChunkRow.id == chunk_id)
+            .values(embedding=vector, embedding_model=model)
+        )
+
+
+def invoke_embed(embedder: Any, *args: str, llm: FakeLLM | None = None) -> tuple[Any, Any]:
+    built = mock.MagicMock(side_effect=embedder) if isinstance(embedder, Exception) else None
+    seam = built or mock.MagicMock(return_value=embedder)
+    with mock.patch.object(cli, "_make_embedder", seam):
+        result = invoke(llm, *args)
+    return result, seam
+
+
+def test_embedding_model_hybrid_reaches_extractor(engine) -> None:
+    eid, ids = seed(engine, "acme", [VECTOR_ONLY])
+    _set_embedding(engine, ids[0], [1.0, 0.0], "stored-embed")
+    llm = FakeLLM({"status": "silent", "quotes": [], "rationale": "none"})
+    fake = FakeEmbedder()
+    result, seam = invoke_embed(
+        fake,
+        "--entity",
+        str(eid),
+        "--criterion",
+        CRIT,
+        "--embedding-model",
+        "stored-embed",
+        llm=llm,
+    )
+    assert result.exit_code in (0, 1), result.output
+    assert seam.call_args.args[1] == "stored-embed"
+    assert len(fake.calls) == 1
+    assert "chunks 1" in result.output
+    assert any(VECTOR_ONLY in p for p in llm.prompts)
+
+
+def test_without_embedding_model_no_embedder(engine) -> None:
+    eid, ids = seed(engine, "acme", [VECTOR_ONLY])
+    _set_embedding(engine, ids[0], [1.0, 0.0], "stored-embed")
+    result, seam = invoke_embed(FakeEmbedder(), "--entity", str(eid), "--criterion", CRIT)
+    assert seam.call_count == 0
+    assert "chunks 0" in result.output
+
+
+def test_embedding_model_bad_backend_exit_2_no_run(engine) -> None:
+    eid, _ = seed(engine, "acme", ["text"])
+    result, _ = invoke_embed(
+        ValueError("unknown embedding backend"),
+        "--entity", str(eid), "--criterion", CRIT, "--embedding-model", "m",
+    )  # fmt: skip
+    assert result.exit_code == 2, result.output
+    assert "error: unknown embedding backend" in result.output
+    assert runs(engine) == []
+
+
+def test_embedding_error_exit_1_run_failed(engine) -> None:
+    from adapters.embedding import EmbeddingError
+
+    eid, _ = seed(engine, "acme", ["text"])
+    result, _ = invoke_embed(
+        FakeEmbedder(EmbeddingError("embed down")),
+        "--entity", str(eid), "--criterion", CRIT, "--embedding-model", "m",
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output
+    assert "error EmbeddingError: embed down" in result.output
+    assert runs(engine) == [("assess", FAILED)]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_embedding_model_blank_exit_2(engine, value: str) -> None:
+    result, seam = invoke_embed(
+        FakeEmbedder(), "--entity", "1", "--criterion", CRIT, "--embedding-model", value
+    )
+    assert result.exit_code == 2, result.output
+    assert "error: --embedding-model must be non-empty" in result.output
+    assert seam.call_count == 0
+    assert runs(engine) == []
