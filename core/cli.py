@@ -77,7 +77,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import chain, islice
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
@@ -1436,6 +1436,9 @@ def _extract_pair(
     return _PairExtraction(entity_id, attribute.id, extraction, len(chunks), value_id)
 
 
+ATTRIBUTE_EXTRACT_PAGE = 500  # keyset page size; one current-values query per page (AT-09)
+
+
 def _run_attributes_extract_batch(
     engine: Engine,
     llm: LLM,
@@ -1444,40 +1447,78 @@ def _run_attributes_extract_batch(
     attributes: Sequence[Attribute],
     n: int,
     limit: int | None,
-) -> tuple[int, int, int, int, int]:
+    *,
+    skip_existing: bool = False,
+) -> tuple[int, int, int, int, int, int]:
     """AT-08 batch: every ``in_scope`` entity × each attribute, sequentially.
 
     Entities stream in ascending id via :func:`iter_entities` keyset paging (one page in memory,
     at most ``limit`` entities); per-pair ``AttributeExtractError``/``LlmError`` is recorded and
     the batch continues. Prints one line per pair. Returns ``(pairs, stored, null, failed,
-    errors)``. One committed transaction per pair; earlier pairs are never rolled back.
+    errors, skipped)``. One committed transaction per pair; earlier pairs are never rolled back.
+
+    AT-09 ``skip_existing``: per keyset page (<= ``ATTRIBUTE_EXTRACT_PAGE`` ids) current values
+    are loaded once with :func:`core.attribute_store.current_attribute_values_many` (one extra
+    query per page); an entity × attribute pair whose attribute id already has a current value
+    (a stored row; null extractions are never stored, so a current value is never a stored
+    null) is skipped: no retrieval or LLM call, prints ``entity E attribute A skipped existing``,
+    counted in ``skipped`` and ``pairs`` (``pairs == stored + null + failed + errors +
+    skipped``), and never affects the exit code.
     """
-    pairs = stored = null = failed = errors = 0
-    for entity in iter_entities(engine, pack.scope.id, status=STATUS_IN_SCOPE, limit=limit):
-        for attribute in attributes:
-            pairs += 1
-            try:
-                result = _extract_pair(engine, llm, run_id, entity.id, attribute, n)
-            except (AttributeExtractError, LlmError) as exc:
-                errors += 1
+    pairs = stored = null = failed = errors = skipped = 0
+    stream = iter_entities(
+        engine,
+        pack.scope.id,
+        status=STATUS_IN_SCOPE,
+        limit=limit,
+        batch=ATTRIBUTE_EXTRACT_PAGE,
+    )
+
+    def process_page(entities: list[EntityRef]) -> None:
+        nonlocal pairs, stored, null, failed, errors, skipped
+        current: dict[int, dict[str, Any]] = {}
+        if skip_existing:
+            with Session(engine) as session:
+                current = current_attribute_values_many(session, [entity.id for entity in entities])
+        for entity in entities:
+            for attribute in attributes:
+                pairs += 1
+                if skip_existing and attribute.id in current.get(entity.id, {}):
+                    skipped += 1
+                    typer.echo(f"entity {entity.id} attribute {attribute.id} skipped existing")
+                    continue
+                try:
+                    result = _extract_pair(engine, llm, run_id, entity.id, attribute, n)
+                except (AttributeExtractError, LlmError) as exc:
+                    errors += 1
+                    typer.echo(
+                        f"entity {entity.id} attribute {attribute.id} "
+                        f"error {type(exc).__name__}: {exc}"
+                    )
+                    continue
+                checks = "pass" if result.extraction.checks_passed else "fail"
+                attribute_value = result.value_id if result.value_id is not None else "-"
                 typer.echo(
-                    f"entity {entity.id} attribute {attribute.id} error {type(exc).__name__}: {exc}"
+                    f"entity {result.entity_id} attribute {result.attribute_id} "
+                    f"value {json.dumps(result.extraction.value)} checks {checks} "
+                    f"chunks {result.num_chunks} attribute_value {attribute_value}"
                 )
-                continue
-            checks = "pass" if result.extraction.checks_passed else "fail"
-            attribute_value = result.value_id if result.value_id is not None else "-"
-            typer.echo(
-                f"entity {result.entity_id} attribute {result.attribute_id} "
-                f"value {json.dumps(result.extraction.value)} checks {checks} "
-                f"chunks {result.num_chunks} attribute_value {attribute_value}"
-            )
-            if result.value_id is not None:
-                stored += 1
-            elif not result.extraction.checks_passed:
-                failed += 1
-            else:
-                null += 1
-    return pairs, stored, null, failed, errors
+                if result.value_id is not None:
+                    stored += 1
+                elif not result.extraction.checks_passed:
+                    failed += 1
+                else:
+                    null += 1
+
+    page: list[EntityRef] = []
+    for entity in stream:
+        page.append(entity)
+        if len(page) >= ATTRIBUTE_EXTRACT_PAGE:
+            process_page(page)
+            page = []
+    if page:
+        process_page(page)
+    return pairs, stored, null, failed, errors, skipped
 
 
 def run_attributes_extract(
@@ -1489,8 +1530,9 @@ def run_attributes_extract(
     *,
     all_entities: bool = False,
     limit: int | None = None,
+    skip_existing: bool = False,
 ) -> None:
-    """Extract attribute values inside one ``attributes_extract`` run (AT-07, AT-08).
+    """Extract attribute values inside one ``attributes_extract`` run (AT-07, AT-08, AT-09).
 
     Single mode (AT-07, ``--entity E --attribute A``): unchanged output and behaviour.
     ``--all`` (AT-08, no ``--entity``): every ``in_scope`` entity of the scope, every pack
@@ -1501,16 +1543,27 @@ def run_attributes_extract(
     ``AttributeExtractError``/``LlmError`` is recorded and the batch continues. Batch prints one
     ``entity E attribute A value V checks pass|fail chunks N attribute_value ID|-`` (or ``entity E
     attribute A error <Class>: msg``) line per pair then ``pairs P stored S null U failed F errors
-    X``.
+    X skipped K``.
 
     Single mode prints ``value V checks pass|fail chunks N``, ``quote ...``, ``failure ...`` and
     ``attribute_value ID|-``. Exit 0 when checks pass (single) / no pair failed checks or errored
     (batch), 1 otherwise (run ``finished``); single mode also exits 1 on
     ``AttributeExtractError``/``LlmError`` (run ``failed``); 2 on bad input or setup (unknown
     attribute, ``--n < 1``, ``--limit < 1``, ``--all`` with ``--entity``, neither ``--all`` nor
-    ``--entity``; no run row is opened).
+    ``--entity``, ``--skip-existing`` without ``--all``; no run row is opened).
+
+    AT-09 ``--skip-existing`` (``--all`` only; with ``--entity`` exits 2, no run row): per keyset
+    page, current values are loaded once with
+    :func:`core.attribute_store.current_attribute_values_many`; an entity × attribute pair whose
+    attribute id already has a current value is skipped (no retrieval or LLM call), prints
+    ``entity E attribute A skipped existing``, adds to ``skipped K``; ``pairs P`` counts every
+    entity × attribute pair considered (``pairs == stored + null + failed + errors + skipped``),
+    skipped pairs do not affect the exit code; without the flag ``K`` is 0.
     """
     settings = _load(scope)
+    if skip_existing and not all_entities:
+        typer.echo("error: --skip-existing requires --all", err=True)
+        raise typer.Exit(2)
     if dry_run:
         _print_plan("attributes-extract", scope, None, None, settings)
         return
@@ -1550,8 +1603,8 @@ def run_attributes_extract(
         if all_entities:
             attributes = [attribute] if attribute is not None else list(pack.attributes.attributes)
             try:
-                pairs, stored, null, failed, errors = _run_attributes_extract_batch(
-                    engine, llm, run_id, pack, attributes, n, limit
+                pairs, stored, null, failed, errors, skipped = _run_attributes_extract_batch(
+                    engine, llm, run_id, pack, attributes, n, limit, skip_existing=skip_existing
                 )
             except SQLAlchemyError:
                 raise  # the outer handler closes the run best-effort and prints one line
@@ -1559,7 +1612,10 @@ def run_attributes_extract(
                 _close_run_aborting(engine, run_id, exc)
                 raise
             _close_run(engine, run_id, FINISHED)
-            typer.echo(f"pairs {pairs} stored {stored} null {null} failed {failed} errors {errors}")
+            typer.echo(
+                f"pairs {pairs} stored {stored} null {null} failed {failed} "
+                f"errors {errors} skipped {skipped}"
+            )
             if failed or errors:
                 raise typer.Exit(1)
             return
@@ -1760,10 +1816,27 @@ def attributes_extract(
     limit: Annotated[
         int | None, typer.Option("--limit", help="Max in-scope entities to process (--all).")
     ] = None,
+    skip_existing: Annotated[
+        bool,
+        typer.Option(
+            "--skip-existing",
+            help=(
+                "Skip entity x attribute pairs that already have a current value "
+                "(batch --all only; one query per page)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Retrieve BM25 evidence and extract typed values; ``--all`` batches over in-scope entities."""
     run_attributes_extract(
-        scope, entity_id, attribute, n, dry_run, all_entities=all_entities, limit=limit
+        scope,
+        entity_id,
+        attribute,
+        n,
+        dry_run,
+        all_entities=all_entities,
+        limit=limit,
+        skip_existing=skip_existing,
     )
 
 
