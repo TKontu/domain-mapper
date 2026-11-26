@@ -916,6 +916,56 @@ def run_attributes(scope: Path, entity_id: int) -> None:
         )
 
 
+def run_attributes_export(scope: Path, out: Path) -> None:
+    """Write one attributes object per entity of ``scope`` with current values to ``out`` (AT-03).
+
+    Entities stream in ascending id via :func:`iter_entities`; each one's current values come from
+    :func:`core.attribute_store.current_attribute_values` (entities without values are skipped and
+    counted) and are written one line at a time, attribute ids sorted, to ``<out>.tmp``, renamed
+    to ``out`` on success so a failure leaves no ``PATH``. One query per entity (N+1). Setup errors
+    or an unwritable output directory exit 2. Production caller: the ``attributes-export``
+    command; consumer is the later static-site row.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    tmp = Path(f"{out}.tmp")
+    count = skipped = 0
+    try:
+        try:
+            handle = tmp.open("w", encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+            raise typer.Exit(2) from None
+        with handle:
+            engine = _open_engine(settings)
+            try:
+                for entity in iter_entities(engine, pack.scope.id):
+                    with Session(engine) as session:
+                        values = current_attribute_values(session, entity.id)
+                    if not values:
+                        skipped += 1
+                        continue
+                    attributes = {
+                        attribute_id: values[attribute_id] for attribute_id in sorted(values)
+                    }
+                    obj = {"entity_id": entity.id, "attributes": attributes}
+                    handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                    count += 1
+            except SQLAlchemyError as exc:
+                _exit_database_unavailable(engine, None, exc)
+            finally:
+                engine.dispose()
+        os.replace(tmp, out)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(2) from None
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    typer.echo(f"exported {count} entities to {out} (skipped {skipped} without attributes)")
+
+
 def _fmt_ratio(value: float | None) -> str:
     return "-" if value is None else f"{value:.4f}"
 
@@ -1435,6 +1485,17 @@ def attributes(
 ) -> None:
     """Print the latest value per attribute for one entity."""
     run_attributes(scope, entity_id)
+
+
+@app.command(
+    name="attributes-export", help="Export current attribute values per entity as JSON Lines."
+)
+def attributes_export(
+    scope: ScopeOpt,
+    out: Annotated[Path, typer.Option("--out", help="Output file path.")],
+) -> None:
+    """Write one attributes object per entity of the scope to ``--out``."""
+    run_attributes_export(scope, out)
 
 
 @app.command(name="scores", help="Print per-topic score and coverage for one entity.")
