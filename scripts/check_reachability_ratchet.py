@@ -13,6 +13,15 @@ count as referenced. Every currently unreferenced symbol is allowlisted in
 ``"<file>::<name>" = "<reason or row id>"``; a new unreferenced symbol or a
 stale entry fails. Matching is name-based and deliberately coarse.
 ``--print`` emits the current unreferenced set as TOML.
+
+Framework registration counts as a production reference (GV-04): a
+module-level ``def``/``async def``/``class`` carrying at least one decorator
+whose expression is a call or attribute (e.g. ``@app.command(...)``) and whose
+root name is a module-level name assigned in production code (e.g. a framework
+app object such as ``app = typer.Typer()``) counts as referenced, because the
+decorator registers it with a production framework. Bare-name decorators
+(pure wrappers such as ``@dataclass``, ``@staticmethod``, or names imported
+from the stdlib, e.g. ``@functools.cache``) do not count.
 """
 
 from __future__ import annotations
@@ -56,6 +65,51 @@ def public_symbols(path: Path) -> set[str]:
     return names
 
 
+def _module_level_names(path: Path) -> set[str]:
+    """Module-level names bound in ``path`` (assignments, defs, classes; imports excluded)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _decorator_root(expr: ast.expr) -> str | None:
+    """Root name of a decorator expression (unwraps calls and attribute chains)."""
+    node: ast.expr = expr
+    while isinstance(node, ast.Call | ast.Attribute):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def _registered_symbols(path: Path, production_names: set[str]) -> set[str]:
+    """Module-level defs/classes with a call/attribute decorator rooted at a production name.
+
+    Bare-name decorators (pure wrappers like ``@dataclass``/``@staticmethod`` or
+    names imported from the stdlib) do not count (GV-04).
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call | ast.Attribute):
+                continue
+            root = _decorator_root(decorator)
+            if root is not None and root in production_names:
+                names.add(node.name)
+                break
+    return names
+
+
 def references(path: Path) -> set[str]:
     """Names referenced anywhere in ``path`` (name-based, deliberately coarse)."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -90,11 +144,16 @@ def entry_point_names(root: Path) -> set[str]:
 
 def scan(root: Path) -> set[str]:
     """The current unreferenced public symbols as ``"<file>::<name>"`` keys."""
+    production = [p for package in PRODUCTION for p in _python_files(root, package)]
+
     referenced: set[str] = set()
-    for package in PRODUCTION:
-        for path in _python_files(root, package):
-            referenced |= references(path)
+    production_names: set[str] = set()
+    for path in production:
+        referenced |= references(path)
+        production_names |= _module_level_names(path)
     referenced |= entry_point_names(root)
+    for path in production:
+        referenced |= _registered_symbols(path, production_names)
 
     unreferenced: set[str] = set()
     for package in PACKAGES:
