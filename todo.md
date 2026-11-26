@@ -184,6 +184,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Prompt + rubric versioning; re-assess only affected criteria on version bump
 - [ ] Model bake-off harness on a gold set: extractor/verifier pairs, chunk size, top-n, reranker on/off
 - [ ] Prompt-injection test cases (malicious text in scraped pages)
+  - [ ] **PI-01** → [docs/items/PI-01.md](docs/items/PI-01.md) shared injection corpus + tests against assess and attribute extract
 - [ ] Cost report per stage; cloud budget per run
 
 **Milestone M2:** one layer meets thresholds; review effort per entity measured.
