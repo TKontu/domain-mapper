@@ -125,6 +125,7 @@ from core.entity_store import STATUS_UNSCREENED, EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
+from core.log import configure_logging
 from core.resolve import apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import FAILED, FINISHED, RUNNING, Run, create_all
@@ -168,6 +169,28 @@ STAGES: tuple[str, ...] = (
 _SECRET_FIELDS = frozenset({"cloud_api_key"})
 
 app = typer.Typer(help="Domain Mapper pipeline stages.", no_args_is_help=True)
+
+_LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
+
+@app.callback()
+def _configure(
+    log_level: Annotated[
+        str,
+        typer.Option(
+            "--log-level",
+            envvar="DM_LOG_LEVEL",
+            help="Root log level (CRITICAL, ERROR, WARNING, INFO, DEBUG).",
+        ),
+    ] = "INFO",
+) -> None:
+    """Configure structured one-line logging to stderr once per invocation (RT-02)."""
+    level = log_level.strip().upper()
+    if level not in _LOG_LEVELS:
+        typer.echo(f"error: invalid log level {log_level}", err=True)
+        raise typer.Exit(2)
+    configure_logging(level)
+
 
 ScopeOpt = Annotated[Path, typer.Option("--scope", help="Scope pack directory.")]
 LayerOpt = Annotated[str | None, typer.Option("--layer", help="Market layer to run.")]
