@@ -14,6 +14,7 @@ The declarative base is ``core.runs.Base`` (reused, not duplicated), so
 ``core.runs.create_all`` creates the ``screen_result`` table alongside the run, entity, snapshot
 and chunk tables. Schema migrations remain a separate item. Consumption by the review queue and
 the Assess stage is a later row (unwired here); the production writer is ``landscape screen``.
+:func:`latest_screen_segments` is read by ``core.cli.run_scores`` (``landscape scores``, AG-02).
 """
 
 from __future__ import annotations
@@ -127,6 +128,23 @@ def record_screen_result(
             )
         )
     return status
+
+
+def latest_screen_segments(engine: Engine, entity_id: int) -> tuple[str, ...] | None:
+    """Return the segments of ``entity_id``'s latest screen result; read-only.
+
+    Latest is the highest ``created_at``, ties broken by the highest ``id``. ``None`` when the
+    entity has no screen result. Production caller: ``core.cli.run_scores``.
+    """
+    stmt = (
+        sa.select(ScreenResultRow.segments)
+        .where(ScreenResultRow.entity_id == entity_id)
+        .order_by(ScreenResultRow.created_at.desc(), ScreenResultRow.id.desc())
+        .limit(1)
+    )
+    with Session(engine) as session:
+        segments = session.execute(stmt).scalar_one_or_none()
+    return None if segments is None else tuple(segments)
 
 
 def load_entity_text(

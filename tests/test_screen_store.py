@@ -18,6 +18,7 @@ from core.screen_store import (
     STATUS_IN_SCOPE,
     STATUS_OUT_OF_SCOPE,
     ScreenResultRow,
+    latest_screen_segments,
     load_entity_text,
     record_screen_result,
     status_for_result,
@@ -232,3 +233,41 @@ def test_load_entity_text_rejects_non_positive_max_chars(engine, bad: int) -> No
     entity_id = add_entity(engine)
     with pytest.raises(ValueError):
         load_entity_text(engine, entity_id, max_chars=bad)
+
+
+def add_screen_row(engine, entity_id: int, run_id: int, segments: list[str], created_at) -> int:
+    with Session(engine) as session, session.begin():
+        row = ScreenResultRow(
+            entity_id=entity_id,
+            run_id=run_id,
+            in_scope=True,
+            segments=segments,
+            confidence=0.9,
+            reason="r",
+            borderline=False,
+            created_at=created_at,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+
+def test_latest_screen_segments_returns_latest_row(engine) -> None:
+    run_id = add_run(engine)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    add_screen_row(engine, 1, run_id, ["new"], t0 + timedelta(days=1))
+    add_screen_row(engine, 1, run_id, ["old"], t0)
+    add_screen_row(engine, 2, run_id, ["other"], t0 + timedelta(days=5))
+    assert latest_screen_segments(engine, 1) == ("new",)
+
+
+def test_latest_screen_segments_ties_by_highest_id(engine) -> None:
+    run_id = add_run(engine)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    add_screen_row(engine, 1, run_id, ["first"], t0)
+    add_screen_row(engine, 1, run_id, ["a", "b"], t0)
+    assert latest_screen_segments(engine, 1) == ("a", "b")
+
+
+def test_latest_screen_segments_none_without_row(engine) -> None:
+    assert latest_screen_segments(engine, 1) is None
