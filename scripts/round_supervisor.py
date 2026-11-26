@@ -155,6 +155,10 @@ class Config:
     max_nudges: int = 3
     max_recycles: int = 2
     max_no_advance: int = 3
+    # Stall backoff: the k-th consecutive stalled round at or past max_no_advance (k = 0, 1, ...)
+    # waits min(backoff_base_s * 2**k, backoff_max_s) before the next round. Never a halt.
+    backoff_base_s: int = 10 * 60
+    backoff_max_s: int = 4 * 3600
     gap_s: int = 60
 
 
@@ -188,8 +192,9 @@ class Observation:
 
 @dataclass(frozen=True)
 class Action:
-    kind: str  # wait|nudge_silent|nudge_progress|deny|next|recycle|halt
+    kind: str  # wait|nudge_silent|nudge_progress|deny|next|recycle|halt|backoff
     reason: str = ""
+    delay_s: int = 0  # backoff only
 
 
 def decide(cfg: Config, t: Tracker, o: Observation) -> Action:
@@ -239,14 +244,17 @@ def decide(cfg: Config, t: Tracker, o: Observation) -> Action:
 
 
 def after_round(cfg: Config, t: Tracker, *, recycled: bool, main_sha: str) -> Action | None:
-    """Circuit breaker between rounds: halt rather than burn sessions on no effect."""
+    """Circuit breaker between rounds: halt on repeated recycles; back off on a frozen main."""
     advanced = bool(main_sha) and main_sha != t.main_at_start
     t.no_advance = 0 if advanced else t.no_advance + 1
     t.recycles = t.recycles + 1 if recycled else 0
     if t.recycles >= cfg.max_recycles:
         return Action("halt", f"{t.recycles} consecutive recycled rounds")
     if t.no_advance >= cfg.max_no_advance:
-        return Action("halt", f"main unchanged across {t.no_advance} rounds")
+        k = t.no_advance - cfg.max_no_advance
+        delay = min(cfg.backoff_base_s * 2 ** min(k, 32), cfg.backoff_max_s)
+        reason = f"main unchanged across {t.no_advance} rounds; backing off {delay // 60} min"
+        return Action("backoff", reason, delay)
     return None
 
 
@@ -536,17 +544,39 @@ class Supervisor:
         elif action.kind in ("next", "recycle"):
             if action.kind == "recycle":
                 news("watchdog", f"Replaced the planner session: {action.reason}")
-            self.end_session()
-            sha = main_sha(self.herdr.run)
-            stop = after_round(self.cfg, self.t, recycled=action.kind == "recycle", main_sha=sha)
-            if stop:
-                self.halt(stop.reason)
+            return self.finish_round(recycled=action.kind == "recycle")
+        return True
+
+    def finish_round(self, *, recycled: bool) -> bool:
+        """Close the round, apply the breaker, and start the next; False ends the supervisor."""
+        self.end_session()
+        sha = main_sha(self.herdr.run)
+        after = after_round(self.cfg, self.t, recycled=recycled, main_sha=sha)
+        if after and after.kind == "halt":
+            self.halt(after.reason)
+            return False
+        if after and after.kind == "backoff":
+            log(f"BACKOFF: {after.reason}")
+            news("watchdog", after.reason)
+            if not self.wait_interruptibly(after.delay_s):
+                self.halt("operator stop")
+                return False
+        if stop_requested():
+            self.halt("operator stop after round")
+            return False
+        time.sleep(self.cfg.gap_s)
+        self.begin_round(self.t.round + 1)
+        return True
+
+    def wait_interruptibly(self, delay_s: float) -> bool:
+        """Sleep in poll-sized slices; False as soon as the operator asks to stop."""
+        end = time.time() + delay_s
+        while (left := end - time.time()) > 0:
+            if (STATE / "STOP").exists():
                 return False
             if stop_requested():
-                self.halt("operator stop after round")
-                return False
-            time.sleep(self.cfg.gap_s)
-            self.begin_round(self.t.round + 1)
+                return True  # the caller halts after the round
+            time.sleep(min(self.cfg.poll_s, left))
         return True
 
     def run(self, *, allow_other: bool) -> None:
