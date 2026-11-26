@@ -67,11 +67,12 @@ python3 $L cleanup           # dry run; --go acts
 | 3 nudges with no outward progress | | Recycle: new session; takeoff rebuilds from Git |
 | Round older than | 12 h | Recycle |
 | 2 consecutive recycles | | HALT and notify |
-| Default branch unchanged over 3 rounds | 10 min, doubling, cap 4 h | Back off before the next round; one `watchdog` dashboard note "main unchanged across N rounds; backing off M min". Never halts |
+| Default branch unchanged over 3 rounds | 5 min → 30 min → 2 h | Back off before the next round; one `watchdog` dashboard note "main unchanged across N rounds; backing off M min". Never halts |
 
 A stall is never a reason to halt. The backoff wait is interruptible by `stop` (halts) and
 `stop-after-round` or a deadline (halts at the end of the wait); a round that advances the
-default branch resets it. Tunable with `backoff_base_s` and `backoff_max_s`.
+default branch resets it. The wait is `backoff_schedule_s` in `Config`, indexed by the number of
+consecutive stalled rounds past `max_no_advance`; its last entry holds for every further stall.
 
 Only outward progress refunds nudges, so a session that merely keeps its transcript busy cannot
 extend a round forever. `run --set KEY=SECONDS` shortens any timer for a trial.

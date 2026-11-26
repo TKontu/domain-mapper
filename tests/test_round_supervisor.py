@@ -118,15 +118,16 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="b"))
         self.assertEqual((t.recycles, t.no_advance), (0, 0))
 
-    def test_a_frozen_main_backs_off_escalating_and_capped_never_halts(self):
-        t = tracker(main_at_start="a", no_advance=2)
-        first = rs.after_round(CFG, t, recycled=False, main_sha="a")
-        self.assertEqual((first.kind, first.delay_s), ("backoff", CFG.backoff_base_s))
-        self.assertIn("main unchanged across 3 rounds; backing off 10 min", first.reason)
-        delays = [rs.after_round(CFG, t, recycled=False, main_sha="a").delay_s for _ in range(8)]
-        self.assertEqual(delays[:3], [1200, 2400, 4800])
-        self.assertEqual(delays[-1], CFG.backoff_max_s)
-        self.assertTrue(all(d <= CFG.backoff_max_s for d in delays))
+    def test_a_frozen_main_backs_off_on_the_operator_schedule_and_never_halts(self):
+        self.assertEqual(CFG.backoff_schedule_s, (300, 1800, 7200))
+        for k, want in enumerate((300, 1800, 7200, 7200)):
+            t = tracker(main_at_start="a", no_advance=CFG.max_no_advance - 1 + k)
+            action = rs.after_round(CFG, t, recycled=False, main_sha="a")
+            self.assertEqual((action.kind, action.delay_s), ("backoff", want))
+        first = rs.after_round(
+            CFG, tracker(main_at_start="a", no_advance=2), recycled=False, main_sha="a"
+        )
+        self.assertIn("main unchanged across 3 rounds; backing off 5 min", first.reason)
 
     def test_an_advancing_round_resets_the_backoff(self):
         t = tracker(main_at_start="a", no_advance=5)
@@ -135,7 +136,7 @@ class PolicyTests(unittest.TestCase):
         for _ in range(2):
             self.assertIsNone(rs.after_round(CFG, t, recycled=False, main_sha="b"))
         again = rs.after_round(CFG, t, recycled=False, main_sha="b")
-        self.assertEqual(again.delay_s, CFG.backoff_base_s)
+        self.assertEqual(again.delay_s, CFG.backoff_schedule_s[0])
 
     def test_recycle_halt_wins_over_backoff(self):
         t = tracker(main_at_start="a", recycles=1, no_advance=4)
@@ -459,16 +460,16 @@ class BackoffLoopTests(unittest.TestCase):
     def test_the_loop_waits_the_backoff_then_starts_the_next_round(self):
         self.assertTrue(self.sup.finish_round(recycled=False))
         self.assertEqual(self.begun, [5])
-        self.assertGreaterEqual(sum(self.slept), CFG.backoff_base_s + CFG.gap_s)
+        self.assertGreaterEqual(sum(self.slept), CFG.backoff_schedule_s[0] + CFG.gap_s)
         notes = [n for n in rs.read_news() if "backing off" in n["text"]]
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0]["kind"], "watchdog")
-        self.assertIn("3 rounds; backing off 10 min", notes[0]["text"])
+        self.assertIn("3 rounds; backing off 5 min", notes[0]["text"])
         self.assertFalse((self.tmp / "HALT").exists())
 
     def test_a_stop_interrupts_the_backoff(self):
         (self.tmp / "STOP").touch()
         self.assertFalse(self.sup.finish_round(recycled=False))
         self.assertEqual(self.begun, [])
-        self.assertLess(sum(self.slept), CFG.backoff_base_s)
+        self.assertLess(sum(self.slept), CFG.backoff_schedule_s[0])
         self.assertTrue((self.tmp / "HALT").exists())
