@@ -439,3 +439,73 @@ def test_budget_exceeded_stops_screening_and_keeps_rest_unscreened(engine, monke
     assert "screened 1 skipped 0 errors 1" in result.output
     assert entity_status(engine, second) == STATUS_UNSCREENED
     assert entity_status(engine, third) == STATUS_UNSCREENED
+
+
+# --- AB-01: abort-close guard for the screen stage -----------------------------
+
+
+def _screen_runs(engine) -> list[tuple[str, str]]:
+    with Session(engine) as session:
+        return [(r.stage, r.status) for r in session.scalars(sa.select(Run).order_by(Run.id))]
+
+
+def _db_error(statement: str) -> sa.exc.OperationalError:
+    return sa.exc.OperationalError(statement, {}, Exception("gone"))
+
+
+def _assert_one_db_line(result) -> None:
+    """One stderr line names the close failure; the database URL never appears in the output."""
+    assert result.stderr.count("error: database unavailable") == 1
+    assert "error: database unavailable (OperationalError)" in result.stderr
+
+
+def test_runtime_error_with_close_db_error_propagates_original(
+    engine, monkeypatch
+) -> None:  # AB-01
+    seed_entity(engine, "Acme", [[(0, "page text")]])
+    use_llm(monkeypatch, FakeLLM({}))
+    with mock.patch.object(cli, "screen_entity", side_effect=RuntimeError("boom")):
+        with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+            result = invoke()
+
+    assert type(result.exception) is RuntimeError
+    _assert_one_db_line(result)
+
+
+def test_keyboard_interrupt_with_close_db_error_propagates_original(
+    engine, monkeypatch
+) -> None:  # AB-01
+    seed_entity(engine, "Acme", [[(0, "page text")]])
+    use_llm(monkeypatch, FakeLLM({}))
+    with mock.patch.object(cli, "screen_entity", side_effect=KeyboardInterrupt()):
+        with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+            result = invoke()
+
+    assert result.exit_code == 130, result.output
+    _assert_one_db_line(result)
+
+
+def test_db_error_with_close_db_error_exits_2_one_line(
+    engine, monkeypatch, db_url
+) -> None:  # AB-01
+    seed_entity(engine, "Acme", [[(0, "page text")]])
+    use_llm(monkeypatch, FakeLLM({}))
+    with mock.patch.object(cli, "screen_entity", side_effect=_db_error("SELECT")):
+        with mock.patch.object(cli, "_close_run", side_effect=_db_error("UPDATE")):
+            result = invoke()
+
+    assert result.exit_code == 2, result.output
+    _assert_one_db_line(result)
+    assert db_url not in result.output
+    assert db_url not in result.stderr
+
+
+def test_db_error_with_close_ok_exits_2_one_line_run_failed(engine, monkeypatch) -> None:  # AB-01
+    seed_entity(engine, "Acme", [[(0, "page text")]])
+    use_llm(monkeypatch, FakeLLM({}))
+    with mock.patch.object(cli, "screen_entity", side_effect=_db_error("SELECT")):
+        result = invoke()
+
+    assert result.exit_code == 2, result.output
+    _assert_one_db_line(result)
+    assert _screen_runs(engine) == [("screen", "failed")]
