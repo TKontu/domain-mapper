@@ -190,7 +190,7 @@ The private scope repo is already published (initial commit `d5714f3`).
   - [x] **GV-01** → [docs/items/GV-01.md](docs/items/GV-01.md) shrink-only import-direction ratchet (core must not import concrete adapters, adapters must not import core; seed today's 11+2 files as allowlist; modelled on an external project's ratchet script)
   - [x] **GV-02** → [docs/items/GV-02.md](docs/items/GV-02.md) module reachability ratchet: every public symbol has a production caller or an 'unwired by design' row
   - [x] **GV-03** → [docs/items/GV-03.md](docs/items/GV-03.md) move the CLI composition root (~2k lines) out of `core` to `app/cli.py`
-  - [x] **GV-04** → [docs/items/GV-04.md](docs/items/GV-04.md) reachability ratchet counts framework decorator registration (`@app.command`) as a caller; allowlist shrinks (27 -> 19; assignment 91/A1)
+  - [x] **GV-04** → [docs/items/GV-04.md](docs/items/GV-04.md) reachability ratchet counts framework decorator registration (`@app.command`) as a caller; allowlist shrinks — done 2026-11-26: merged PR #209 (main 97cfdb6, round 91/A1); seen: ratchet exits 0 on main, allowlist 27 -> 19; gate 1533 passed, 5 skipped
 
 **Milestone M2:** one layer meets thresholds; review effort per entity measured.
 
