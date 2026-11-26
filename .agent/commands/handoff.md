@@ -4,7 +4,7 @@ Read project AGENTS.md and `.agent/config.toml`; follow [the protocol](../../SPE
 
 Read current main, canonical backlog, PR outcomes and decisions. Use
 [the handoff template](../../templates/handoff.md); include full Main-SHA, UTC timestamp, this round's
-delta, active conflicts/blockers, unverified behavior/scale, and one exact next action with links.
+delta, a `Progress:` line from the reconcile progress review, active conflicts/blockers, unverified behavior/scale, and one exact next action with links.
 
 Keep it at most 50 lines / 500 words. Validate SHA and links. Do not copy architecture, frontier prose,
 full logs, secrets or the conversation transcript. Durable decisions/evidence belong in tracked files
