@@ -5,6 +5,8 @@ ARCHITECTURE.md §4 stage 7 and §5: every completed ``landscape assess`` append
 ``evidence`` row per extractor quote. Assessments are append-only; the "current" view is a later
 item (latest per entity, criterion and rubric version). :func:`record_assessment` writes the
 assessment and all its evidence in one transaction, so a row is never left without its quotes.
+:func:`current_assessments` (AS-11) is the read-only current view: the latest row per entity,
+criterion and rubric version with its evidence, read by ``landscape assessments``.
 
 Only the §5 columns that this stage can fill are present now. ``prompt_version``,
 ``inherited_from_entity_id`` and the evidence ``source_id``/``source_tier`` need later stages
@@ -19,6 +21,8 @@ and reporting) are later rows, unwired by design; the production writer is ``lan
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 
@@ -33,6 +37,9 @@ from core.verify import Route
 
 DECIDED_BY_AUTO: Final = "auto"
 """Every row this stage writes is decided automatically (not by cloud LLM or a human)."""
+
+_IN_CHUNK: Final = 500
+"""Evidence ids per ``IN`` list, well under SQLite and PostgreSQL bind limits."""
 
 
 def _utcnow() -> datetime:
@@ -153,3 +160,109 @@ def record_assessment(
                 )
             )
         return assessment_id
+
+
+@dataclass(frozen=True)
+class CurrentEvidence:
+    """One evidence row of a current assessment."""
+
+    chunk_id: int
+    quote: str
+    grounded: bool
+
+
+@dataclass(frozen=True)
+class CurrentAssessment:
+    """The latest assessment for one (entity, criterion, rubric version) with its evidence."""
+
+    id: int
+    entity_id: int
+    criterion_id: str
+    status: str
+    confidence: float | None
+    rationale: str
+    rubric_version: str
+    extractor_model: str
+    verifier_model: str
+    decided_by: str
+    route_kind: str
+    run_id: int
+    created_at: datetime
+    evidence: tuple[CurrentEvidence, ...]
+
+
+def current_assessments(
+    engine: Engine,
+    *,
+    entity_id: int | None = None,
+    criterion_id: str | None = None,
+    rubric_version: str | None = None,
+) -> list[CurrentAssessment]:
+    """Return the latest assessment per (entity, criterion, rubric version); read-only.
+
+    Latest is the highest ``created_at``, ties broken by the highest ``id``. One windowed SQL
+    statement (SQLite >= 3.25 and PostgreSQL) selects the rows, filters applied before ranking;
+    one evidence query per 500 selected ids fetches their quotes. Ordered by entity id,
+    criterion id and rubric version.
+    """
+    a = AssessmentRow
+    rank = (
+        sa.func.row_number()
+        .over(
+            partition_by=(a.entity_id, a.criterion_id, a.rubric_version),
+            order_by=(a.created_at.desc(), a.id.desc()),
+        )
+        .label("rank")
+    )
+    inner = sa.select(a.id, rank)
+    if entity_id is not None:
+        inner = inner.where(a.entity_id == entity_id)
+    if criterion_id is not None:
+        inner = inner.where(a.criterion_id == criterion_id)
+    if rubric_version is not None:
+        inner = inner.where(a.rubric_version == rubric_version)
+    ranked = inner.subquery()
+    stmt = (
+        sa.select(a)
+        .join(ranked, ranked.c.id == a.id)
+        .where(ranked.c.rank == 1)
+        .order_by(a.entity_id, a.criterion_id, a.rubric_version)
+    )
+    with Session(engine) as session:
+        rows = list(session.scalars(stmt))
+        evidence = _evidence_for(session, [row.id for row in rows])
+        return [
+            CurrentAssessment(
+                id=row.id,
+                entity_id=row.entity_id,
+                criterion_id=row.criterion_id,
+                status=row.status,
+                confidence=row.confidence,
+                rationale=row.rationale,
+                rubric_version=row.rubric_version,
+                extractor_model=row.extractor_model,
+                verifier_model=row.verifier_model,
+                decided_by=row.decided_by,
+                route_kind=row.route_kind,
+                run_id=row.run_id,
+                created_at=row.created_at,
+                evidence=tuple(evidence.get(row.id, ())),
+            )
+            for row in rows
+        ]
+
+
+def _evidence_for(session: Session, ids: Sequence[int]) -> dict[int, list[CurrentEvidence]]:
+    found: dict[int, list[CurrentEvidence]] = {}
+    for start in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[start : start + _IN_CHUNK]
+        stmt = (
+            sa.select(EvidenceRow)
+            .where(EvidenceRow.assessment_id.in_(chunk))
+            .order_by(EvidenceRow.assessment_id, EvidenceRow.id)
+        )
+        for ev in session.scalars(stmt):
+            found.setdefault(ev.assessment_id, []).append(
+                CurrentEvidence(ev.chunk_id, ev.quote, ev.grounded)
+            )
+    return found
