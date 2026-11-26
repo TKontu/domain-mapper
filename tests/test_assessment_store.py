@@ -15,6 +15,7 @@ from core.assessment_store import (
     CurrentEvidence,
     EvidenceRow,
     current_assessments,
+    iter_current_assessments,
     record_assessment,
 )
 from core.entity_store import Entity
@@ -277,3 +278,78 @@ def test_current_silent_row_has_no_evidence(engine) -> None:
     (row,) = current_assessments(engine)
     assert (row.id, row.route_kind, row.evidence) == (aid, "silent", ())
     assert row.run_id == rid and row.decided_by == "auto" and row.created_at.tzinfo == UTC
+
+
+# --- AS-13: streaming current view -------------------------------------------------------------
+
+
+def streaming_fixture(engine) -> None:
+    a, b, rid = add_entity(engine, "Acme"), add_entity(engine, "Bolt"), add_run(engine)
+    for ent in (a, b):
+        for crit in ("c1", "c2", "c3"):
+            record_v(
+                engine, ent, rid, Quote(1, f"old-{ent}-{crit}", True, None, None), criterion_id=crit
+            )
+            record_v(
+                engine,
+                ent,
+                rid,
+                Quote(ent, f"{ent}-{crit}-x", True, None, None),
+                Quote(9, f"{ent}-{crit}-y", False, None, None),
+                criterion_id=crit,
+            )
+            record_v(
+                engine,
+                ent,
+                rid,
+                criterion_id=crit,
+                rubric_version="2",
+                status="unknown",
+                kind="silent",
+            )
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 3, 500])
+def test_iter_current_matches_list_across_batches(engine, batch_size: int) -> None:
+    streaming_fixture(engine)
+    expected = current_assessments(engine)
+    assert len(expected) == 12
+    got = list(iter_current_assessments(engine, batch_size=batch_size))
+    assert got == expected
+    for row in got:
+        if row.route_kind == "silent":
+            assert row.evidence == ()
+        else:
+            ent, crit = row.entity_id, row.criterion_id
+            assert row.evidence == (
+                CurrentEvidence(ent, f"{ent}-{crit}-x", True),
+                CurrentEvidence(9, f"{ent}-{crit}-y", False),
+            )
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"criterion_id": "c2"},
+        {"rubric_version": "2"},
+        {"criterion_id": "c1", "rubric_version": RUBRIC_VERSION},
+    ],
+)
+def test_iter_current_filters_match_list(engine, filters) -> None:
+    streaming_fixture(engine)
+    got = list(iter_current_assessments(engine, batch_size=2, **filters))
+    assert got and got == current_assessments(engine, **filters)
+
+
+def test_iter_current_is_lazy_generator(engine) -> None:
+    streaming_fixture(engine)
+    gen = iter_current_assessments(engine, batch_size=2)
+    first = next(gen)
+    assert first == current_assessments(engine)[0]
+    gen.close()
+
+
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_iter_current_rejects_bad_batch_size(engine, batch_size: int) -> None:
+    with pytest.raises(ValueError, match="batch_size"):
+        iter_current_assessments(engine, batch_size=batch_size)

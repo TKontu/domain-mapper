@@ -213,3 +213,23 @@ def test_unwritable_output_directory_exits_2_without_file(engine, tmp_path) -> N
     assert not out.exists()
     assert not Path(f"{out}.tmp").exists()
     assert not out.parent.exists()
+
+
+def test_export_consumes_streaming_generator(engine, tmp_path, monkeypatch) -> None:
+    rid = add_run(engine)
+    ids = [add(engine, rid, e) for e in (1, 2, 3)]
+    real = cli.iter_current_assessments
+    seen: list[int] = []
+
+    def spy(engine, **kwargs):
+        for row in real(engine, **kwargs):
+            seen.append(row.id)
+            yield row
+
+    monkeypatch.setattr(cli, "iter_current_assessments", spy)
+    monkeypatch.setattr(cli, "current_assessments", None)
+    out = tmp_path / "current.jsonl"
+    result = invoke(out)
+    assert result.exit_code == 0, result.output
+    assert seen == ids
+    assert [row["id"] for row in read_rows(out)] == ids
