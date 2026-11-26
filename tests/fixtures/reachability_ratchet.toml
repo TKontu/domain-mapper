@@ -18,4 +18,3 @@
 "core/runs.py::StageRunner" = "unwired by design until RT-01: stage commands do not run through the resumable StageRunner yet"
 "core/runs.py::WORK_UNIT_STATUSES" = "unwired by design until RT-01: stage commands do not run through the resumable StageRunner yet"
 "core/runs.py::create_db_engine" = "unwired by design until RT-01: stage commands do not run through the resumable StageRunner yet"
-"core/source_catalogue.py::seed_sources" = "unwired by design until AD-02: no CLI command seeds the source catalogue from a pack yet"
