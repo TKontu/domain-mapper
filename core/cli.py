@@ -96,6 +96,7 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
+from core.aggregate import score_topics
 from core.assess import AssessError, extract_criterion
 from core.assessment_store import (
     CurrentAssessment,
@@ -122,7 +123,12 @@ from core.scope_pack import (
     scope_pack_json_schemas,
 )
 from core.screen import ScreenError, screen_entity
-from core.screen_store import DEFAULT_MAX_CHARS, load_entity_text, record_screen_result
+from core.screen_store import (
+    DEFAULT_MAX_CHARS,
+    latest_screen_segments,
+    load_entity_text,
+    record_screen_result,
+)
 from core.verify import route, verify_extraction
 
 STAGES: tuple[str, ...] = (
@@ -817,6 +823,56 @@ def run_assessments(
             typer.echo(f"  evidence chunk {ev.chunk_id} grounded {'yes' if ev.grounded else 'no'}")
 
 
+def _fmt_ratio(value: float | None) -> str:
+    return "-" if value is None else f"{value:.4f}"
+
+
+def run_scores(scope: Path, entity_id: int, segments: list[str] | None) -> None:
+    """Print per-topic score and coverage for one entity (AG-02) via ``score_topics``.
+
+    Entity segments are ``segments`` when given (each must be a scope segment id), else the
+    entity's latest screen result. Assessments are the current ones at the pack's version (the
+    version ``landscape assess`` stores), consumed once. Setup errors exit 2; a ``ValueError``
+    from ``score_topics`` exits 1.
+    """
+    settings = _load(scope)
+    try:
+        pack = load_scope_pack(scope)
+    except ScopePackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    if segments:
+        known = {s.id for s in pack.scope.segments}
+        for segment in segments:
+            if segment not in known:
+                typer.echo(f"error: unknown segment {segment!r}", err=True)
+                raise typer.Exit(2)
+    version = pack.scope.version
+    engine = _open_engine(settings)
+    try:
+        entity_segments = tuple(segments) if segments else latest_screen_segments(engine, entity_id)
+        if entity_segments is None:
+            typer.echo(f"error: entity {entity_id} has no screen result; pass --segment", err=True)
+            raise typer.Exit(2)
+        assessments = iter_current_assessments(engine, entity_id=entity_id, rubric_version=version)
+        try:
+            scores = score_topics(pack.rubric, assessments, entity_segments)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from None
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    typer.echo(f"entity {entity_id} segments {','.join(entity_segments)} rubric {version}")
+    for score in scores:
+        typer.echo(
+            f"topic {score.topic_id} score {_fmt_ratio(score.score)}"
+            f" coverage {_fmt_ratio(score.coverage)} applicable {score.applicable}"
+            f" scored {score.scored} evidenced {score.evidenced}"
+        )
+
+
 def _export_object(row: CurrentAssessment) -> dict[str, object]:
     """One JSON Lines object for a current assessment, with its evidence nested per row."""
     return {
@@ -1168,6 +1224,19 @@ def assessments(
 ) -> None:
     """Print the latest assessment per (entity, criterion, rubric version) and its evidence."""
     run_assessments(scope, entity_id, criterion, rubric_version)
+
+
+@app.command(name="scores", help="Print per-topic score and coverage for one entity.")
+def scores(
+    scope: ScopeOpt,
+    entity_id: Annotated[int, typer.Option("--entity", help="Entity id.")],
+    segment: Annotated[
+        list[str] | None,
+        typer.Option("--segment", help="Entity segment id (repeatable); default: latest screen."),
+    ] = None,
+) -> None:
+    """Score each rubric topic for one entity over its current assessments."""
+    run_scores(scope, entity_id, segment)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")

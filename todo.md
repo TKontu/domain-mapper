@@ -148,7 +148,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Attributes: founded, employees band, sites, scope-defined counts
 - [ ] Claim verification framework + first register verifier
 - [ ] Aggregate: topic scores + coverage
-  - [ ] **AG-01** → [docs/items/AG-01.md](docs/items/AG-01.md) `core.aggregate.score_topics` returns per-topic score and coverage over current assessments (`na` removes, `silent` neutral, segment-filtered) — partial 2026-11-26: merged PR #165 at fbfca5d (main 06730f8, round 71/A1; planner gate at head 1298 passed, 5 skipped; CI pass); seen offline only; unwired until the scores CLI row; residuals: silent penalty and profile weights not implemented
+  - [ ] **AG-01** → [docs/items/AG-01.md](docs/items/AG-01.md) `core.aggregate.score_topics` returns per-topic score and coverage over current assessments (`na` removes, `silent` neutral, segment-filtered) — partial 2026-11-26: merged PR #165 at fbfca5d (main 06730f8, round 71/A1; planner gate at head 1298 passed, 5 skipped; CI pass); seen offline only; wired by AG-02; residuals: silent penalty and profile weights not implemented
+  - [ ] **AG-02** → [docs/items/AG-02.md](docs/items/AG-02.md) `landscape scores` prints per-topic score and coverage for one entity (segments from `--segment` or latest screen result) — partial 2026-11-26: PR_PLACEHOLDER; seen offline only
 - [ ] Export JSON for the frontend
 
 ### Minimal frontend
