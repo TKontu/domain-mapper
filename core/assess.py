@@ -5,10 +5,11 @@ for a status, verbatim quotes (each citing one evidence chunk id) and a rational
 deterministic checks: status in the rubric scale, every quote grounded in its cited chunk,
 and at least ``criterion.evidence_min`` grounded quotes for a non-``silent`` status.
 
-Grounding acceptance rule: a quote is grounded only when ``core.grounding.ground_and_locate``
-matches it in the cited chunk at tier 1 (lowercase + collapsed whitespace, method "exact")
-or tier 2 (additionally punctuation-stripped, method "normalised"). Tiers 3-4 (markdown
-stripping, fuzzy word overlap) are recorded as not grounded.
+Grounding acceptance rule: a quote is grounded only when
+``core.grounding.ground_and_locate_precomputed`` (content maps built once per cited chunk via
+``precompute_content_maps``) matches it in the cited chunk at tier 1 (lowercase + collapsed
+whitespace, method "exact") or tier 2 (additionally punctuation-stripped, method "normalised").
+Tiers 3-4 (markdown stripping, fuzzy word overlap) are recorded as not grounded.
 
 Scraped text is untrusted: it sits in a delimited evidence block that the prompt labels as
 data; delimiter look-alikes inside chunk text are neutralised.
@@ -23,7 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from adapters.llm import LLM
-from core.grounding import ground_and_locate
+from core.grounding import ContentMaps, ground_and_locate_precomputed, precompute_content_maps
 from core.scope_pack import Criterion, Rubric
 
 PURPOSE = "assess_extract"
@@ -171,6 +172,7 @@ def _validate(
         raise AssessError("assess output: quotes must be an array")
 
     quotes: list[Quote] = []
+    maps: dict[int, ContentMaps] = {}
     failures: list[str] = []
     for i, item in enumerate(raw_quotes):
         if not isinstance(item, dict) or "chunk_id" not in item or "quote" not in item:
@@ -182,7 +184,9 @@ def _validate(
             raise AssessError(f"assess output: quotes[{i}].chunk_id not a given id")
         if not isinstance(text, str):
             raise AssessError(f"assess output: quotes[{i}].quote must be a string")
-        g = ground_and_locate(text, texts[cid])
+        if cid not in maps:
+            maps[cid] = precompute_content_maps(texts[cid])
+        g = ground_and_locate_precomputed(text, texts[cid], maps[cid])
         method = _TIER_METHOD.get(g.match_tier)
         span: tuple[int, int] | None = None
         if method is not None and g.source_offset is not None and g.source_end is not None:

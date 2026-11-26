@@ -211,3 +211,52 @@ def test_truncation_in_chunk_order() -> None:
 def test_max_chars_must_be_positive() -> None:
     with pytest.raises(ValueError):
         _run(_out(), max_chars=0)
+
+
+# (GR-01) precomputed grounding path
+def test_content_maps_computed_once_per_cited_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    import core.assess as assess
+
+    seen: list[str] = []
+    real = assess.precompute_content_maps
+
+    def counting(content: str) -> Any:
+        seen.append(content)
+        return real(content)
+
+    monkeypatch.setattr(assess, "precompute_content_maps", counting)
+    quotes = [
+        {"chunk_id": 11, "quote": "general terms are published"},
+        {"chunk_id": 11, "quote": "published on this page"},
+        {"chunk_id": 12, "quote": "two business days"},
+    ]
+    ex = _run(_out(quotes=quotes))
+    assert all(q.grounded for q in ex.quotes)
+    assert seen == [CHUNKS[0][1], CHUNKS[1][1]]
+
+
+@pytest.mark.parametrize(
+    ("chunk", "quote"),
+    [
+        ("Alpha beta gamma delta.", "beta gamma"),  # tier 1 exact
+        ("Alpha, beta; gamma delta.", "alpha beta gamma"),  # tier 2 normalised
+        ("Alpha **beta** gamma [delta](http://x.test) end.", "beta gamma delta end"),  # tier 3
+        ("Alpha beta gamma delta.", "omega sigma"),  # no match
+    ],
+)
+def test_outcome_matches_plain_ground_and_locate(chunk: str, quote: str) -> None:
+    from core.assess import _TIER_METHOD
+    from core.grounding import ground_and_locate
+
+    g = ground_and_locate(quote, chunk)
+    method = _TIER_METHOD.get(g.match_tier)
+    expected_span = (
+        (g.source_offset, g.source_end)
+        if method is not None and g.source_offset is not None and g.source_end is not None
+        else None
+    )
+    ex = _run(_out(quotes=[{"chunk_id": 5, "quote": quote}]), chunks=[(5, chunk)])
+    q = ex.quotes[0]
+    assert q.grounded == (expected_span is not None)
+    assert q.method == (method if expected_span is not None else None)
+    assert q.span == expected_span
