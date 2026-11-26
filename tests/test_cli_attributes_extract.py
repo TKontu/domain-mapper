@@ -20,7 +20,7 @@ from adapters.llm import LlmError, LlmResult
 from core import cli
 from core.assessment_store import EvidenceRow
 from core.attribute_extract import attribute_query
-from core.attribute_store import AttributeValueRow
+from core.attribute_store import AttributeValueRow, record_attribute_value
 from core.scope_pack import Attribute
 from core.chunk_store import store_chunks
 from core.chunking import Chunk
@@ -360,7 +360,7 @@ def test_all_two_in_scope_two_attributes_makes_four_calls(engine, tmp_path) -> N
         assert re.match(
             r"entity \d+ attribute attr_[ab] value 42 checks pass chunks 1 attribute_value \d+", ln
         ), ln
-    assert lines[-1] == "pairs 4 stored 4 null 0 failed 0 errors 0"
+    assert lines[-1] == "pairs 4 stored 4 null 0 failed 0 errors 0 skipped 0"
 
 
 def test_all_attribute_filter_makes_two_calls(engine, tmp_path) -> None:
@@ -373,7 +373,7 @@ def test_all_attribute_filter_makes_two_calls(engine, tmp_path) -> None:
     assert len(fake.prompts) == 2
     rows = values(engine)
     assert len(rows) == 2 and {r.attribute_id for r in rows} == {"attr_a"}
-    assert result.output.splitlines()[-1] == "pairs 2 stored 2 null 0 failed 0 errors 0"
+    assert result.output.splitlines()[-1] == "pairs 2 stored 2 null 0 failed 0 errors 0 skipped 0"
 
 
 def test_all_limit_caps_entities_not_pairs(engine, tmp_path) -> None:
@@ -386,7 +386,7 @@ def test_all_limit_caps_entities_not_pairs(engine, tmp_path) -> None:
     assert len(fake.prompts) == 2  # one entity × two attributes
     entities_seen = {r.entity_id for r in values(engine)}
     assert len(entities_seen) == 1
-    assert result.output.splitlines()[-1] == "pairs 2 stored 2 null 0 failed 0 errors 0"
+    assert result.output.splitlines()[-1] == "pairs 2 stored 2 null 0 failed 0 errors 0 skipped 0"
 
 
 def test_all_limit_below_one_exits_2_no_run(engine, tmp_path) -> None:
@@ -458,7 +458,7 @@ def test_all_llm_error_one_pair_is_recorded_and_batch_continues(engine, tmp_path
     assert any(r.entity_id == second for r in stored)
     assert any(r.entity_id == first and r.attribute_id == "attr_b" for r in stored)
     assert runs(engine) == [("attributes_extract", FINISHED)]
-    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 1"
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 1 skipped 0"
 
 
 def test_all_invalid_output_one_pair_is_recorded_and_batch_continues(engine, tmp_path) -> None:
@@ -487,7 +487,7 @@ def test_all_invalid_output_one_pair_is_recorded_and_batch_continues(engine, tmp
     assert any(" error AttributeExtractError:" in ln for ln in lines)
     assert len(values(engine)) == 3
     assert runs(engine) == [("attributes_extract", FINISHED)]
-    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 1"
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 1 skipped 0"
 
 
 def test_all_ungrounded_pair_exits_1_not_written_others_written(engine, tmp_path) -> None:
@@ -520,7 +520,7 @@ def test_all_ungrounded_pair_exits_1_not_written_others_written(engine, tmp_path
     assert len(stored) == 3
     assert not any(r.entity_id == first and r.attribute_id == "attr_a" for r in stored)
     assert runs(engine) == [("attributes_extract", FINISHED)]
-    assert lines[-1] == "pairs 4 stored 3 null 0 failed 1 errors 0"
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 1 errors 0 skipped 0"
 
 
 def test_all_null_value_counts_null_exit_0(engine, tmp_path) -> None:
@@ -538,7 +538,7 @@ def test_all_null_value_counts_null_exit_0(engine, tmp_path) -> None:
     result, _ = invoke_batch(NullFake(), scope, "--all")
     assert result.exit_code == 0, result.output
     assert values(engine) == []
-    assert result.output.splitlines()[-1] == "pairs 2 stored 0 null 2 failed 0 errors 0"
+    assert result.output.splitlines()[-1] == "pairs 2 stored 0 null 2 failed 0 errors 0 skipped 0"
 
 
 def test_all_dry_run_writes_nothing(engine, tmp_path) -> None:
@@ -571,3 +571,70 @@ def _first_chunk(engine, entity_id: int) -> int:
         ).first()
     assert row is not None
     return int(row[0])
+
+
+# --- AT-09: --skip-existing (batch mode only) ---------------------------------
+
+
+def _prestore(engine, entity_id: int, attribute: Attribute, value: int) -> None:
+    with Session(engine) as session, session.begin():
+        record_attribute_value(session, entity_id, attribute, value)
+
+
+def test_all_skip_existing_skips_prestored_pair_three_calls(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    prestored = Attribute(id="attr_a", label="Headcount", type="int")
+    _prestore(engine, first, prestored, 7)
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all", "--skip-existing")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 3
+    lines = result.output.splitlines()
+    assert f"entity {first} attribute attr_a skipped existing" in lines
+    # no retrieval/LLM for the skipped pair: no pair line for it, no prompt citing its chunks
+    assert not any(ln.startswith(f"entity {first} attribute attr_a value ") for ln in lines)
+    assert sum(f"entity {first} attribute attr_a" in p for p in fake.prompts) == 0
+    assert lines[-1] == "pairs 4 stored 3 null 0 failed 0 errors 0 skipped 1"
+    # pre-stored value unchanged: no new row for the skipped pair
+    rows = [r for r in values(engine) if r.entity_id == first and r.attribute_id == "attr_a"]
+    assert len(rows) == 1 and rows[0].value_json == 7
+    assert len(values(engine)) == 4  # 1 pre-stored + 3 stored this run
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+
+
+def test_all_without_skip_existing_makes_four_calls_skipped_zero(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    seed_status(engine, "beta", [BATCH_TEXT], "in_scope")
+    prestored = Attribute(id="attr_a", label="Headcount", type="int")
+    _prestore(engine, first, prestored, 7)
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--all")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 4
+    lines = result.output.splitlines()
+    assert not any(ln.endswith("skipped existing") for ln in lines)
+    assert lines[-1] == "pairs 4 stored 4 null 0 failed 0 errors 0 skipped 0"
+    # without the flag the pre-stored pair is re-extracted: a new row is appended
+    rows = [r for r in values(engine) if r.entity_id == first and r.attribute_id == "attr_a"]
+    assert len(rows) == 2 and rows[-1].value_json == 42
+
+
+def test_skip_existing_with_entity_exits_2_no_run(engine, tmp_path) -> None:
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    first = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    result, make = invoke_batch(
+        GroundingFake(),
+        scope,
+        "--entity",
+        str(first),
+        "--attribute",
+        "attr_a",
+        "--skip-existing",
+    )
+    assert result.exit_code == 2, result.output
+    assert runs(engine) == []
+    make.assert_not_called()
+    assert values(engine) == []
