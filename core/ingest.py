@@ -85,8 +85,13 @@ def ingest_page(
     source_kind: str,
     render_js: bool = False,
     blob_store: BlobStore | None = None,
+    run_id: int | None = None,
 ) -> IngestResult:
-    """Fetch ``url`` once, snapshot it, then parse and store its chunks."""
+    """Fetch ``url`` once, snapshot it, then parse and store its chunks.
+
+    ``run_id`` (CR-15) is the id of the invocation's ``crawl`` run row when called by
+    ``landscape crawl``; other callers pass ``None``.
+    """
     result = fetcher.fetch(url, render_js=render_js)
     if not 200 <= result.status <= 299:
         raise NonSuccessStatusError(result.status)
@@ -99,7 +104,7 @@ def ingest_page(
                 f"blob store returned digest {raw_digest!r}, expected sha256 {expected}"
             )
     snapshot_id = record_snapshot(
-        engine, entity_id=entity_id, url=url, result=result, source_kind=source_kind
+        engine, entity_id=entity_id, url=url, result=result, source_kind=source_kind, run_id=run_id
     )
     chunks = parse_and_chunk(
         result.body_bytes,
