@@ -110,6 +110,7 @@ from core.scope_pack import (
 )
 from core.screen import ScreenError, screen_entity
 from core.screen_store import DEFAULT_MAX_CHARS, load_entity_text, record_screen_result
+from core.verify import route, verify_extraction
 
 STAGES: tuple[str, ...] = (
     "discover",
@@ -771,6 +772,12 @@ def _make_assess_llm(settings: Settings, db: DbTarget) -> LLM:
     return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
 
 
+def _make_verify_llm(settings: Settings, db: DbTarget) -> LLM:
+    """Build the local verifier from ``settings.verifier_model`` (§6 routing); the test seam."""
+    verifier_settings = dataclasses.replace(settings, local_model=settings.verifier_model)
+    return build_llm(verifier_settings, "local", db=db, budget_usd=settings.llm_budget_usd)
+
+
 def _find_criterion(rubric: Rubric, criterion_id: str) -> Criterion | None:
     for topic in rubric.topics:
         for criterion in topic.criteria:
@@ -792,7 +799,9 @@ def run_assess(
     Prints ``status S checks pass|fail chunks N``, one ``quote ...`` line per quote, one
     ``failure ...`` line per failed check and ``rationale ...``. Exits 0 when checks pass, 1 when
     they fail or on ``AssessError``/``LlmError`` (run ``failed``), 2 on bad input or setup.
-    Nothing is persisted beyond the run row.
+    Then runs the verifier (``_make_verify_llm``, ``verifier_model``; no call when silent) and
+    :func:`core.verify.route`, printing ``route KIND confidence C|- reason R``; ``adjudicate``
+    exits 1. Nothing is persisted beyond the run row.
     """
     settings = _load(scope)
     if dry_run:
@@ -822,6 +831,7 @@ def run_assess(
     try:
         try:
             llm = _make_assess_llm(settings, engine)
+            verify_llm = _make_verify_llm(settings, engine)
         except (ValueError, LlmError) as exc:  # unbuildable backend: bad setup, exit 2
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from None
@@ -829,6 +839,10 @@ def run_assess(
         try:
             chunks = retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
             extraction = extract_criterion(llm, pack.rubric, criterion, chunks, run_id=run_id)
+            verification = verify_extraction(
+                verify_llm, pack.rubric, criterion, chunks, extraction, run_id=run_id
+            )
+            routed = route(extraction, verification)
         except (AssessError, LlmError) as exc:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
@@ -852,7 +866,8 @@ def run_assess(
     for failure in extraction.failures:
         typer.echo(f"failure {failure}")
     typer.echo(f"rationale {extraction.rationale}")
-    if not extraction.checks_passed:
+    typer.echo(f"route {routed.kind} confidence {routed.confidence or '-'} reason {routed.reason}")
+    if not extraction.checks_passed or routed.kind == "adjudicate":
         raise typer.Exit(1)
 
 

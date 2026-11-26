@@ -18,6 +18,8 @@ DEFAULT_ENV_FILE = ".env"
 
 DEFAULT_LLM_GATEWAY_URL = "http://localhost:8000/v1"
 DEFAULT_LOCAL_MODEL = "local-model"
+# Assess verifier (§6 routing: a different model family from the local extractor).
+DEFAULT_VERIFIER_MODEL = "verifier-model"
 DEFAULT_EMBEDDING_URL = "http://localhost:8001/v1"
 DEFAULT_RERANKER_URL = "http://localhost:8002/v1"
 DEFAULT_CLOUD_LLM_MODEL = "cloud-model"
@@ -36,6 +38,7 @@ class Settings:
 
     llm_gateway_url: str = DEFAULT_LLM_GATEWAY_URL
     local_model: str = DEFAULT_LOCAL_MODEL
+    verifier_model: str = DEFAULT_VERIFIER_MODEL
     embedding_url: str = DEFAULT_EMBEDDING_URL
     reranker_url: str = DEFAULT_RERANKER_URL
     cloud_api_key: str | None = field(default=None, repr=False)
@@ -68,6 +71,7 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
     return Settings(
         llm_gateway_url=_text(raw("LLM_GATEWAY_URL"), DEFAULT_LLM_GATEWAY_URL),
         local_model=_text(raw("LOCAL_MODEL"), DEFAULT_LOCAL_MODEL),
+        verifier_model=_text(raw("VERIFIER_MODEL"), DEFAULT_VERIFIER_MODEL),
         embedding_url=_text(raw("EMBEDDING_URL"), DEFAULT_EMBEDDING_URL),
         reranker_url=_text(raw("RERANKER_URL"), DEFAULT_RERANKER_URL),
         cloud_api_key=None if cloud_key is None or not cloud_key.strip() else cloud_key,
