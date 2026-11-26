@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from adapters.llm import LlmError, LlmResult
-from core import cli
+from app import cli
 from core.assessment_store import AssessmentRow, EvidenceRow
 from core.chunk_store import store_chunks
 from core.chunking import Chunk

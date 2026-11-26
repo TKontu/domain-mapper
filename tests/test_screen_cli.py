@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from adapters.llm import LlmError, LlmResult
-from core import cli
+from app import cli
 from core.chunk_store import ChunkRow
 from core.entity_store import STATUS_UNSCREENED, Entity, iter_entities
 from core.runs import Run, create_all

@@ -11,7 +11,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from core import cli
+from app import cli
 from core.assess import Extraction, Quote
 from core.assessment_store import AssessmentRow, record_assessment
 from core.runs import Run, create_all

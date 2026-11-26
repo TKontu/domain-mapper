@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from adapters.embedding import EmbeddingError
-from core import cli
+from app import cli
 from core.chunk_store import ChunkRow
 from core.embed_store import EmbedStoreError
 from core.runs import Run, create_all

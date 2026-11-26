@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from adapters.llm import LlmError, LlmResult
-from core import cli
+from app import cli
 from core.assessment_store import EvidenceRow
 from core.attribute_extract import attribute_query
 from core.attribute_store import AttributeValueRow, record_attribute_value

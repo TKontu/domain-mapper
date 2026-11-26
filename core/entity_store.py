@@ -66,7 +66,7 @@ def iter_entities(
     holds one page, not the whole scope. ``batch`` and ``limit`` must be positive. ``status``
     restricts the page to rows with that status (``None`` yields every status).
 
-    Production caller: ``landscape crawl`` (:func:`core.cli.run_crawl`); with no ``--url`` it
+    Production caller: ``landscape crawl`` (:func:`app.cli.run_crawl`); with no ``--url`` it
     crawls one homepage per yielded entity. ``landscape screen`` passes ``status="unscreened"``.
     """
     if batch < 1:

@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy import Engine, create_engine
 from typer.testing import CliRunner
 
-from core import cli
+from app import cli
 from core.attribute_store import AttributeValueRow
 from core.runs import create_all
 

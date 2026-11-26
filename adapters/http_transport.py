@@ -13,7 +13,7 @@ limiter): a 3xx is returned as its status like any other non-2xx. Non-2xx respon
 ``(status, b"")`` instead of raising, so callers apply their own status
 rules. Only http(s) URLs are accepted. Error messages carry the exception type, never the URL.
 
-Production caller: the CLI ``crawl`` stage (:mod:`core.cli`).
+Production caller: the CLI ``crawl`` stage (:mod:`app.cli`).
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ The declarative base is ``core.runs.Base`` (reused, not duplicated), so
 ``core.runs.create_all`` creates the ``screen_result`` table alongside the run, entity, snapshot
 and chunk tables. Schema migrations remain a separate item. Consumption by the review queue and
 the Assess stage is a later row (unwired here); the production writer is ``landscape screen``.
-:func:`latest_screen_segments` is read by ``core.cli.run_scores`` (``landscape scores``, AG-02).
+:func:`latest_screen_segments` is read by ``app.cli.run_scores`` (``landscape scores``, AG-02).
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ def latest_screen_segments(engine: Engine, entity_id: int) -> tuple[str, ...] | 
     """Return the segments of ``entity_id``'s latest screen result; read-only.
 
     Latest is the highest ``created_at``, ties broken by the highest ``id``. ``None`` when the
-    entity has no screen result. Production caller: ``core.cli.run_scores``.
+    entity has no screen result. Production caller: ``app.cli.run_scores``.
     """
     stmt = (
         sa.select(ScreenResultRow.segments)
@@ -156,7 +156,7 @@ def latest_screen_segments_many(
     One query for all ids (callers bound the ``IN`` list; ``run_scores_export`` uses <=500).
     Latest is the highest ``created_at``, ties broken by the highest ``id`` — the same rule as
     :func:`latest_screen_segments`. Entities without a screen result are absent; empty input
-    returns ``{}`` without querying. Production caller: ``core.cli.run_scores_export``.
+    returns ``{}`` without querying. Production caller: ``app.cli.run_scores_export``.
     """
     if not entity_ids:
         return {}

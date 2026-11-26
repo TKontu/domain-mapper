@@ -11,7 +11,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from core import cli
+from app import cli
 from core.attribute_store import record_attribute_value
 from core.entity_store import Entity
 from core.runs import create_all
