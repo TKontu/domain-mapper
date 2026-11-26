@@ -152,6 +152,7 @@ The private scope repo is already published (initial commit `d5714f3`).
   - [ ] **AG-02** → [docs/items/AG-02.md](docs/items/AG-02.md) `landscape scores` prints per-topic score and coverage for one entity (segments from `--segment` or latest screen result) — partial 2026-11-26: merged PR #167 at cf44097 (main de199e9, round 72/A1; planner gate at head 1309 passed, 5 skipped; CI pass); seen offline only (SQLite); needs a run over real assessments; residuals: silent penalty and profile weights not implemented
 - [ ] Export JSON for the frontend
   - [ ] **AG-03** → [docs/items/AG-03.md](docs/items/AG-03.md) `landscape scores --format json` prints the entity's topic scores and coverage as one JSON object — partial 2026-11-26: merged PR #170 at 5b784d7 (main 453fbde, round 73/A1; planner gate at head 1315 passed, 5 skipped; CI pass); seen offline only (SQLite); needs a run over real assessments; residuals: silent penalty and profile weights not implemented
+  - [ ] **AG-04** → [docs/items/AG-04.md](docs/items/AG-04.md) `landscape scores-export` writes one AG-03 scores object per screened entity as JSON Lines — partial 2026-11-26: PR #172 (round 74/A1), not merged; seen offline only (SQLite); needs a run over real assessments; residuals: N+1 queries per entity, PostgreSQL unexercised, silent penalty and profile weights not implemented
 
 ### Minimal frontend
 - [ ] Mosaic view (generic renderer driven by rubric config)
