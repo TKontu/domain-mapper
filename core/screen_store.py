@@ -19,6 +19,7 @@ the Assess stage is a later row (unwired here); the production writer is ``lands
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Final
 
@@ -145,6 +146,41 @@ def latest_screen_segments(engine: Engine, entity_id: int) -> tuple[str, ...] | 
     with Session(engine) as session:
         segments = session.execute(stmt).scalar_one_or_none()
     return None if segments is None else tuple(segments)
+
+
+def latest_screen_segments_many(
+    engine: Engine, entity_ids: Sequence[int]
+) -> dict[int, tuple[str, ...]]:
+    """Return each of ``entity_ids``' latest screen segments; read-only (AG-05).
+
+    One query for all ids (callers bound the ``IN`` list; ``run_scores_export`` uses <=500).
+    Latest is the highest ``created_at``, ties broken by the highest ``id`` — the same rule as
+    :func:`latest_screen_segments`. Entities without a screen result are absent; empty input
+    returns ``{}`` without querying. Production caller: ``core.cli.run_scores_export``.
+    """
+    if not entity_ids:
+        return {}
+    rank = (
+        sa.func.row_number()
+        .over(
+            partition_by=ScreenResultRow.entity_id,
+            order_by=(ScreenResultRow.created_at.desc(), ScreenResultRow.id.desc()),
+        )
+        .label("rank")
+    )
+    inner = sa.select(ScreenResultRow.id, rank).where(
+        ScreenResultRow.entity_id.in_(list(entity_ids))
+    )
+    ranked = inner.subquery()
+    table = ScreenResultRow.__table__
+    stmt = (
+        sa.select(table.c.entity_id, table.c.segments)
+        .join(ranked, ranked.c.id == table.c.id)
+        .where(ranked.c.rank == 1)
+        .order_by(table.c.entity_id)
+    )
+    with Session(engine) as session:
+        return {entity_id: tuple(segments) for entity_id, segments in session.execute(stmt)}
 
 
 def load_entity_text(

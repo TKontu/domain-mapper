@@ -216,6 +216,7 @@ def iter_current_assessments(
     engine: Engine,
     *,
     entity_id: int | None = None,
+    entity_ids: Sequence[int] | None = None,
     criterion_id: str | None = None,
     rubric_version: str | None = None,
     batch_size: int = 500,
@@ -226,17 +227,22 @@ def iter_current_assessments(
     statement (SQLite >= 3.25 and PostgreSQL) selects the rows, filters applied before ranking,
     fetched ``batch_size`` rows at a time; each batch's evidence is fetched with it, so at most
     one batch plus its evidence is held. Ordered by entity id, criterion id and rubric version.
-    The session stays open until the generator is exhausted or closed. Production callers:
-    ``core.cli.run_export`` and :func:`current_assessments`.
+    ``entity_ids`` restricts the view to those entities (an empty sequence yields nothing
+    without querying). The session stays open until the generator is exhausted or closed.
+    Production callers: ``core.cli.run_export``, ``core.cli.run_scores_export`` and
+    :func:`current_assessments`.
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
-    return _iter_current(engine, entity_id, criterion_id, rubric_version, batch_size)
+    if entity_ids is not None and not entity_ids:
+        return iter(())
+    return _iter_current(engine, entity_id, entity_ids, criterion_id, rubric_version, batch_size)
 
 
 def _iter_current(
     engine: Engine,
     entity_id: int | None,
+    entity_ids: Sequence[int] | None,
     criterion_id: str | None,
     rubric_version: str | None,
     batch_size: int,
@@ -253,6 +259,8 @@ def _iter_current(
     inner = sa.select(a.id, rank)
     if entity_id is not None:
         inner = inner.where(a.entity_id == entity_id)
+    if entity_ids is not None:
+        inner = inner.where(a.entity_id.in_(list(entity_ids)))
     if criterion_id is not None:
         inner = inner.where(a.criterion_id == criterion_id)
     if rubric_version is not None:

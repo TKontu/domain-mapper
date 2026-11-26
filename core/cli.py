@@ -133,6 +133,7 @@ from core.screen import ScreenError, screen_entity
 from core.screen_store import (
     DEFAULT_MAX_CHARS,
     latest_screen_segments,
+    latest_screen_segments_many,
     load_entity_text,
     record_screen_result,
 )
@@ -1077,13 +1078,18 @@ def run_scores(
         )
 
 
+SCORES_EXPORT_BATCH = 500
+
+
 def run_scores_export(scope: Path, out: Path) -> None:
     """Write one AG-03 scores object per screened entity of ``scope`` to ``out`` (AG-04).
 
-    Entities stream in ascending id via :func:`iter_entities`; each one's segments are its latest
-    screen result (entities without one are skipped and counted) and its assessments the current
-    ones at the pack's version, scored and written one line at a time to ``<out>.tmp``, renamed
-    to ``out`` on success so a failure leaves no ``PATH``. One query set per entity (N+1). Setup
+    Entities stream in ascending id via :func:`iter_entities` and are batched
+    (``SCORES_EXPORT_BATCH`` ids) into one
+    :func:`core.screen_store.latest_screen_segments_many` query and one
+    :func:`core.assessment_store.iter_current_assessments` query per batch (AG-05). Entities
+    without a screen result are skipped and counted; the rest are scored and written one line at
+    a time to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup
     errors or an unwritable output directory exit 2; a ``ValueError`` from ``score_topics`` exits
     1. Production caller: the ``scores-export`` command; consumer is the later frontend row.
     """
@@ -1105,22 +1111,37 @@ def run_scores_export(scope: Path, out: Path) -> None:
         with handle:
             engine = _open_engine(settings)
             try:
+                batch: list[int] = []
+
+                def flush() -> None:
+                    nonlocal count, skipped
+                    segments_by_entity = latest_screen_segments_many(engine, batch)
+                    grouped: dict[int, list[CurrentAssessment]] = {}
+                    for assessment in iter_current_assessments(
+                        engine, entity_ids=batch, rubric_version=version
+                    ):
+                        grouped.setdefault(assessment.entity_id, []).append(assessment)
+                    for entity_id in batch:
+                        segments = segments_by_entity.get(entity_id)
+                        if segments is None:
+                            skipped += 1
+                            continue
+                        try:
+                            scores = score_topics(pack.rubric, grouped.get(entity_id, ()), segments)
+                        except ValueError as exc:
+                            typer.echo(f"error: entity {entity_id}: {exc}", err=True)
+                            raise typer.Exit(1) from None
+                        obj = _scores_object(entity_id, segments, version, scores)
+                        handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        count += 1
+                    batch.clear()
+
                 for entity in iter_entities(engine, pack.scope.id):
-                    segments = latest_screen_segments(engine, entity.id)
-                    if segments is None:
-                        skipped += 1
-                        continue
-                    assessments = iter_current_assessments(
-                        engine, entity_id=entity.id, rubric_version=version
-                    )
-                    try:
-                        scores = score_topics(pack.rubric, assessments, segments)
-                    except ValueError as exc:
-                        typer.echo(f"error: entity {entity.id}: {exc}", err=True)
-                        raise typer.Exit(1) from None
-                    obj = _scores_object(entity.id, segments, version, scores)
-                    handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
-                    count += 1
+                    batch.append(entity.id)
+                    if len(batch) >= SCORES_EXPORT_BATCH:
+                        flush()
+                if batch:
+                    flush()
             except SQLAlchemyError as exc:
                 _exit_database_unavailable(engine, None, exc)
             finally:
