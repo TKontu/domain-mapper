@@ -506,6 +506,57 @@ class FactoryTests(LlmAdapterTestCase):
         llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
         self.assertEqual(transport.calls[0].url, "http://gateway:8000/v1/chat/completions")
 
+    def test_local_backend_sends_gateway_key_as_bearer(self) -> None:
+        transport = FakeTransport(json_response(openai_payload("hi")))
+        llm = build_llm(
+            self.settings(llm_gateway_api_key="fake-test-key"),
+            "local",
+            db=self.engine,
+            transport=transport,
+        )
+        llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
+        self.assertEqual(transport.calls[0].headers["Authorization"], "Bearer fake-test-key")
+
+    def test_local_backend_without_gateway_key_sends_no_authorization(self) -> None:
+        for key in (None, "", "  "):
+            with self.subTest(key=key):
+                transport = FakeTransport(json_response(openai_payload("hi")))
+                llm = build_llm(
+                    self.settings(llm_gateway_api_key=key),
+                    "local",
+                    db=self.engine,
+                    transport=transport,
+                )
+                llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
+                self.assertNotIn("Authorization", transport.calls[0].headers)
+
+    def test_gateway_key_never_reaches_logs_or_llm_call_rows(self) -> None:
+        stream = io.StringIO()
+        handler = configure_logging("DEBUG", stream=stream)
+        self.addCleanup(handler.close)
+        self.addCleanup(logging.getLogger().removeHandler, handler)
+        transport = FakeTransport(
+            json_response(openai_payload("hi")),
+            HttpResponse(status=500, body=RESPONSE_BODY.encode("utf-8")),
+        )
+        llm = build_llm(
+            self.settings(llm_gateway_api_key="fake-test-key"),
+            "local",
+            db=self.engine,
+            transport=transport,
+        )
+        llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
+        with self.assertRaises(LlmError) as caught:
+            llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
+        self.assertNotIn("fake-test-key", str(caught.exception))
+        self.assertNotIn("fake-test-key", repr(llm))
+        self.assertNotIn("fake-test-key", stream.getvalue())
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            values = [getattr(row, c.key) for c in sa.inspect(LlmCall).columns]
+            self.assertNotIn("fake-test-key", repr(values))
+
     def test_vllm_and_openai_aliases_select_the_compatible_client(self) -> None:
         for backend in ("vllm", "openai", "openai-compatible"):
             with self.subTest(backend=backend):

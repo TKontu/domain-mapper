@@ -193,7 +193,7 @@ STAGES: tuple[str, ...] = (
     "publish",
 )
 
-_SECRET_FIELDS = frozenset({"cloud_api_key"})
+_SECRET_FIELDS = frozenset({"cloud_api_key", "llm_gateway_api_key"})
 
 app = typer.Typer(help="Domain Mapper pipeline stages.", no_args_is_help=True)
 

@@ -37,6 +37,7 @@ class Settings:
     """Validated, immutable engine settings."""
 
     llm_gateway_url: str = DEFAULT_LLM_GATEWAY_URL
+    llm_gateway_api_key: str | None = field(default=None, repr=False)
     local_model: str = DEFAULT_LOCAL_MODEL
     verifier_model: str = DEFAULT_VERIFIER_MODEL
     embedding_url: str = DEFAULT_EMBEDDING_URL
@@ -68,8 +69,12 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
         return file_values.get(key)
 
     cloud_key = raw("CLOUD_LLM_API_KEY")
+    gateway_key = raw("LLM_GATEWAY_API_KEY")
     return Settings(
         llm_gateway_url=_text(raw("LLM_GATEWAY_URL"), DEFAULT_LLM_GATEWAY_URL),
+        llm_gateway_api_key=(
+            None if gateway_key is None or not gateway_key.strip() else gateway_key
+        ),
         local_model=_text(raw("LOCAL_MODEL"), DEFAULT_LOCAL_MODEL),
         verifier_model=_text(raw("VERIFIER_MODEL"), DEFAULT_VERIFIER_MODEL),
         embedding_url=_text(raw("EMBEDDING_URL"), DEFAULT_EMBEDDING_URL),
