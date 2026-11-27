@@ -65,3 +65,14 @@ projects; the number is kept so `scripts/merge_guard.py` and the round prompt ci
   `scripts/check_import_direction_ratchet.py` (GV-01) and `scripts/check_reachability_ratchet.py`
   (GV-02); allowlists only shrink. The configured gate type-checks `core` and `app`.
 - **Carried in:** GV-01..GV-04 rows in `todo.md`, `.agent/config.toml` `[verification]`.
+
+## D-007 — Real scope: LLM-built stub engine pack for M1 (2026-11-27, operator)
+
+- **Ruling:** the planner drafts a stub engine pack (rubric v0) for the private real scope with an
+  LLM, built from that scope's own README and research, and labelled LLM-built. It is used for the
+  serial real-provider M1 run of about 20 candidates. The domain expert's rubric v0.1 replaces it
+  before anything is published.
+- **Consequences:** the pack is committed only in the scope's private repo under `scopes/<name>/`
+  (gitignored here, D-003). This repo carries no domain words, names or findings from it. M1
+  outputs go to a gitignored directory; the run record here stays neutral.
+- **Carried in:** `HANDOFF.md` operator rulings, `todo.md` (M1 run row).
