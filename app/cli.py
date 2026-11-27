@@ -2294,10 +2294,7 @@ def _run_attributes_extract_batch(
         batch=ATTRIBUTE_EXTRACT_PAGE,
     )
 
-    definitions = {
-        attribute.id: json.dumps(attribute.model_dump(mode="json"), sort_keys=True)
-        for attribute in attributes
-    }
+    definitions = {attribute.id: _attribute_definition(attribute) for attribute in attributes}
     in_flight: dict[str, tuple[int, Attribute]] = {}  # the one pair the runner is handling
 
     def units(entities: list[EntityRef]) -> Iterator[tuple[str, str]]:
@@ -2314,11 +2311,10 @@ def _run_attributes_extract_batch(
                     skipped += 1
                     typer.echo(f"entity {entity.id} attribute {attribute.id} skipped existing")
                     continue
-                chunks = fingerprints.get(entity.id, "")
                 key = f"{entity.id}:{attribute.id}"
-                digest = hashlib.sha256(
-                    f"{pack.scope.id}\0{definitions[attribute.id]}\0{n}\0{chunks}".encode()
-                ).hexdigest()
+                digest = _attribute_unit_hash(
+                    pack.scope.id, definitions[attribute.id], n, fingerprints.get(entity.id, "")
+                )
                 in_flight.clear()
                 in_flight[key] = (entity.id, attribute)
                 yield key, digest
@@ -2397,6 +2393,58 @@ def _chunk_fingerprints(engine: Engine, entity_ids: list[int]) -> dict[int, str]
     return {eid: h.hexdigest() for eid, h in digests.items()}
 
 
+def _attribute_definition(attribute: Attribute) -> str:
+    """The attribute's canonical JSON used in ``attributes_extract`` unit hashes (RT-01)."""
+    return json.dumps(attribute.model_dump(mode="json"), sort_keys=True)
+
+
+def _attribute_unit_hash(scope_id: str, definition: str, n: int, chunks: str) -> str:
+    """Input hash of one ``attributes_extract`` unit, shared by single and batch modes (RT-01)."""
+    return hashlib.sha256(f"{scope_id}\0{definition}\0{n}\0{chunks}".encode()).hexdigest()
+
+
+class _AttributeUnitFailed(Exception):
+    """Raised by the single attribute unit handler (error printed) so the unit and run fail."""
+
+
+def _run_attribute_unit(
+    engine: Engine,
+    llm: LLM,
+    run_id: int,
+    pack: ScopePack,
+    entity_id: int,
+    attribute: Attribute,
+    n: int,
+) -> _PairExtraction | None:
+    """RT-01: run one single-mode pair as one StageRunner unit under ``run_id``.
+
+    Stage ``attributes_extract``, unit key ``"<entity_id>:<attribute_id>"`` and the same input
+    hash as the batch (:func:`_attribute_unit_hash`), so single and ``--all`` runs share skip
+    state. A unit already ``done`` for the same hash returns ``None`` (no retrieval or LLM call).
+    ``AttributeExtractError``/``LlmError`` print one line and raise :class:`_AttributeUnitFailed`
+    with the unit ``failed``.
+    """
+    key = f"{entity_id}:{attribute.id}"
+    outcome: _PairExtraction | None = None
+
+    def units() -> Iterator[tuple[str, str]]:
+        chunks = _chunk_fingerprints(engine, [entity_id]).get(entity_id, "")
+        yield key, _attribute_unit_hash(pack.scope.id, _attribute_definition(attribute), n, chunks)
+
+    def handle(_key: str) -> None:
+        nonlocal outcome
+        try:
+            outcome = _extract_pair(engine, llm, run_id, entity_id, attribute, n)
+        except (AttributeExtractError, LlmError) as exc:
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            raise _AttributeUnitFailed(str(exc)) from exc
+
+    summary = StageRunner(engine).run(
+        "attributes_extract", units(), handle, run_id=run_id, catch=()
+    )
+    return None if summary.skipped else outcome
+
+
 def run_attributes_extract(
     scope: Path,
     entity_id: int | None,
@@ -2435,6 +2483,10 @@ def run_attributes_extract(
     ``entity E attribute A skipped existing``, adds to ``skipped K``; ``pairs P`` counts every
     entity × attribute pair considered (``pairs == stored + null + failed + errors + skipped``),
     skipped pairs do not affect the exit code; without the flag ``K`` is 0.
+
+    RT-01: single mode runs its pair as one StageRunner unit (:func:`_run_attribute_unit`,
+    same stage, key and hash as the batch); an unchanged pair already ``done`` prints
+    ``skipped 1``, exits 0 and closes the run ``finished``.
     """
     settings = _load(scope)
     if skip_existing and not all_entities:
@@ -2499,9 +2551,8 @@ def run_attributes_extract(
         # single-entity mode (AT-07): unchanged output
         assert entity_id is not None and attribute is not None
         try:
-            pair = _extract_pair(engine, llm, run_id, entity_id, attribute, n)
-        except (AttributeExtractError, LlmError) as exc:
-            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            pair = _run_attribute_unit(engine, llm, run_id, pack, entity_id, attribute, n)
+        except _AttributeUnitFailed:
             _close_run(engine, run_id, FAILED)
             raise typer.Exit(1) from None
         except SQLAlchemyError:
@@ -2515,6 +2566,9 @@ def run_attributes_extract(
     finally:
         engine.dispose()
 
+    if pair is None:
+        typer.echo("skipped 1")
+        return
     extraction = pair.extraction
     checks = "pass" if extraction.checks_passed else "fail"
     typer.echo(f"value {json.dumps(extraction.value)} checks {checks} chunks {pair.num_chunks}")
