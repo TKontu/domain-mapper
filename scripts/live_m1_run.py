@@ -22,17 +22,19 @@ llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.jso
 were present but no screen ``llm_call`` returned ok (dead gateway, or none ran) the summary has
 ``"degraded": true`` and the exit is 3.
 
-Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH``
+Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH [--jobs N]``
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from datetime import UTC, datetime
@@ -191,6 +193,47 @@ class Runner:
 
     def run(self, args: list[str], *, label: str | None = None) -> str:
         """Run one ``landscape`` command; record it; raise StepFailed on a fatal exit."""
+        step, stdout, tail = self._execute(args, label)
+        return self._record(step, stdout, tail)
+
+    def run_many(self, calls: list[tuple[list[str], str]], jobs: int) -> None:
+        """Run independent commands on at most ``jobs`` threads; record steps in call order.
+
+        On a fatal exit no further calls start; running ones finish and are recorded, then
+        StepFailed names the first failing call in call order.
+        """
+        if jobs <= 1:
+            for args, label in calls:
+                self.run(args, label=label)
+            return
+        stop = threading.Event()
+
+        def task(args: list[str], label: str) -> tuple[dict[str, object], str, str | None] | None:
+            if stop.is_set():
+                return None
+            result = self._execute(args, label)
+            if result[2] is not None:
+                stop.set()
+            return result
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+            futures = [pool.submit(task, args, label) for args, label in calls]
+            results = [f.result() for f in futures]
+        failure: StepFailed | None = None
+        for result in results:
+            if result is None:
+                continue
+            try:
+                self._record(*result)
+            except StepFailed as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    def _execute(
+        self, args: list[str], label: str | None
+    ) -> tuple[dict[str, object], str, str | None]:
+        """Run one command; return its step, stdout and failure tail (None if allowed exit)."""
         name = args[0]
         started = time.monotonic()
         proc = subprocess.run(
@@ -206,13 +249,18 @@ class Runner:
             "exit_code": proc.returncode,
             "elapsed_s": round(time.monotonic() - started, 3),
         }
-        self.steps.append(step)
         allowed = {0, 1} if name in UNIT_OUTCOME_COMMANDS else {0}
+        tail = None
         if proc.returncode not in allowed:
             tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-5:])
+        return step, proc.stdout, tail
+
+    def _record(self, step: dict[str, object], stdout: str, tail: str | None) -> str:
+        self.steps.append(step)
+        if tail is not None:
             sys.stderr.write(redact(tail, self.secrets) + "\n")
             raise StepFailed(str(step["command"]))
-        return proc.stdout
+        return stdout
 
 
 def scrub_artifacts(out: Path, secrets: list[str]) -> int:
@@ -333,11 +381,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--entities", type=int, default=20, help="Entities to seed (1-50).")
     parser.add_argument("--timeout", type=float, default=900.0, help="Per-call LLM timeout s.")
     parser.add_argument("--criteria", default=None, help="Comma-separated criterion ids.")
+    parser.add_argument("--jobs", type=int, default=1, help="Concurrent assess pairs (1-8).")
     ns = parser.parse_args(argv)
     if not 1 <= ns.entities <= 50:
         parser.error("--entities must be in 1..50")
     if ns.timeout <= 0:
         parser.error("--timeout must be > 0")
+    if not 1 <= ns.jobs <= 8:
+        parser.error("--jobs must be in 1..8")
     if not ns.env_file.is_file():
         parser.error("--env-file not found")
     out: Path = ns.out.resolve()
@@ -378,11 +429,11 @@ def main(argv: list[str] | None = None) -> int:
     mosaic: dict[str, dict[str, int]] = {}
     try:
         runner.run(["screen", *scope])
-        for eid, cid in assess_pairs(db_url, ids, criteria):
-            runner.run(
-                ["assess", *scope, "--entity", str(eid), "--criterion", cid],
-                label=f"assess {eid} {cid}",
-            )
+        calls = [
+            (["assess", *scope, "--entity", str(eid), "--criterion", cid], f"assess {eid} {cid}")
+            for eid, cid in assess_pairs(db_url, ids, criteria)
+        ]
+        runner.run_many(calls, ns.jobs)
         runner.run(["presence-extract", *scope, "--type", "hq"])
         scores, export = out / "scores.jsonl", out / "export.jsonl"
         runner.run(["scores-export", *scope, "--out", str(scores)])
@@ -402,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
         "entities": len(ids),
         "criteria": [c for c, _ in criteria],
         "timeout_s": ns.timeout,
+        "jobs": ns.jobs,
         "steps": runner.steps,
         "failed_step": failed,
         "mosaic": mosaic,
