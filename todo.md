@@ -238,6 +238,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Weight profiles UI
 - [ ] Method page generated from scope pack + eval results + versions
 - [ ] Exports: Parquet / CSV / JSON
+  - [ ] **XP-01** → [docs/items/XP-01.md](docs/items/XP-01.md) `landscape scores-export --format csv` writes one RFC 4180 row per screened entity (flattened topics, header always); `jsonl` default unchanged — candidate (round 121/A1); residuals: Parquet not done, offline only
 - [ ] Hosting with access control; publishing gated by the scope's declared purpose
 
 **Milestone M4:** full site: Map · Mosaic · Compare · Matrix · Market · Entity · Method.

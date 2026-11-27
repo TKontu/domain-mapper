@@ -67,6 +67,7 @@ directory exits 2 and leaves no ``PATH``.
 
 from __future__ import annotations
 
+import csv
 import dataclasses
 import hashlib
 import json
@@ -1336,8 +1337,36 @@ def run_scores(
 SCORES_EXPORT_BATCH = 500
 
 
-def run_scores_export(scope: Path, out: Path) -> None:
+SCORES_EXPORT_FORMATS = ("jsonl", "csv")
+_CSV_TOPIC_FIELDS = ("score", "coverage", "applicable", "scored", "evidenced")
+
+
+def _csv_cell(value: object) -> str:
+    """One XP-01 CSV cell: ``None`` is empty, lists join with ``;``, else ``str`` (unrounded)."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ";".join(str(item) for item in value)
+    return str(value)
+
+
+def _scores_csv_row(obj: Mapping[str, Any], topic_ids: Sequence[str]) -> list[str]:
+    """Flatten one scores-export object into the XP-01 CSV row for ``topic_ids`` (rubric order)."""
+    row = [_csv_cell(obj[key]) for key in ("entity_id", "segments", "layers", "rubric_version")]
+    by_topic = {topic["topic_id"]: topic for topic in obj["topics"]}
+    for topic_id in topic_ids:
+        topic = by_topic.get(topic_id, {})
+        row.extend(_csv_cell(topic.get(field)) for field in _CSV_TOPIC_FIELDS)
+    return row
+
+
+def run_scores_export(scope: Path, out: Path, format: str = "jsonl") -> None:
     """Write one AG-03 scores object per screened entity of ``scope`` to ``out`` (AG-04).
+
+    ``format`` ``jsonl`` (default) writes one JSON object per line; ``csv`` (XP-01) writes one
+    RFC 4180 row per entity under a header (always written) of ``entity_id, segments, layers,
+    rubric_version`` then ``<topic_id>.<field>`` per rubric topic in rubric order, lists joined
+    with ``;`` and ``None`` as an empty cell. Any other value exits 2 before setup.
 
     Entities stream in ascending id via :func:`iter_entities` and are batched
     (``SCORES_EXPORT_BATCH`` ids) into one
@@ -1348,8 +1377,12 @@ def run_scores_export(scope: Path, out: Path) -> None:
     without a screen result are skipped and counted; the rest are scored and written one line at
     a time to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup
     errors or an unwritable output directory exit 2; a ``ValueError`` from ``score_topics`` exits
-    1. Production caller: the ``scores-export`` command; consumer is the later frontend row.
+    1. Production caller: the ``scores-export`` command; consumer is the later frontend row
+    (JSON Lines) or an operator spreadsheet (CSV, XP-01).
     """
+    if format not in SCORES_EXPORT_FORMATS:
+        typer.echo(f"error: unknown format {format!r}", err=True)
+        raise typer.Exit(2)
     settings = _load(scope)
     try:
         pack = load_scope_pack(scope)
@@ -1361,11 +1394,18 @@ def run_scores_export(scope: Path, out: Path) -> None:
     count = skipped = 0
     try:
         try:
-            handle = tmp.open("w", encoding="utf-8")
+            handle = tmp.open("w", encoding="utf-8", newline="")
         except OSError as exc:
             typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
             raise typer.Exit(2) from None
         with handle:
+            topic_ids = [topic.id for topic in pack.rubric.topics]
+            writer = csv.writer(handle, lineterminator="\n") if format == "csv" else None
+            if writer is not None:
+                writer.writerow(
+                    ["entity_id", "segments", "layers", "rubric_version"]
+                    + [f"{tid}.{field}" for tid in topic_ids for field in _CSV_TOPIC_FIELDS]
+                )
             engine = _open_engine(settings)
             try:
                 batch: list[int] = []
@@ -1392,7 +1432,10 @@ def run_scores_export(scope: Path, out: Path) -> None:
                         obj = _scores_object(entity_id, segments, version, scores)
                         countries = (c for c, _ in presences.get(entity_id, ()))
                         obj["layers"] = layer_ids_for(pack.scope.layers, countries)
-                        handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        if writer is None:
+                            handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        else:
+                            writer.writerow(_scores_csv_row(obj, topic_ids))
                         count += 1
                     batch.clear()
 
@@ -2348,13 +2391,18 @@ def scores(
     run_scores(scope, entity_id, segment, format)
 
 
-@app.command(name="scores-export", help="Export topic scores per screened entity as JSON Lines.")
+@app.command(
+    name="scores-export", help="Export topic scores per screened entity as JSON Lines or CSV."
+)
 def scores_export(
     scope: ScopeOpt,
     out: Annotated[Path, typer.Option("--out", help="Output file path.")],
+    format: Annotated[
+        str, typer.Option("--format", help="Output format: jsonl (default) or csv.")
+    ] = "jsonl",
 ) -> None:
     """Write one AG-03 scores object per screened entity of the scope to ``--out``."""
-    run_scores_export(scope, out)
+    run_scores_export(scope, out, format)
 
 
 @app.command(name="mosaic", help="Write a static HTML mosaic page from scores and export.")
