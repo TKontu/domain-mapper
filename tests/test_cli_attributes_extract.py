@@ -922,3 +922,47 @@ def test_single_skips_pair_done_by_batch(engine, tmp_path) -> None:  # RT-01
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == ["skipped 1"]
     assert fake.prompts == []
+
+
+# --- AT-12: optional attribute query_terms -------------------------------------
+
+TERMS_TEXT = "We employ 42 staff across our offices."
+TERMS_QUOTE = "42 staff"
+TERMS_ATTR = "attributes:\n  - id: attr_q\n    label: Headcount\n    type: int\n"
+TERMS_ATTR_Q = TERMS_ATTR + "    query_terms: [staff, employ]\n"
+
+
+def test_attribute_query_appends_query_terms() -> None:  # AT-12
+    attribute = Attribute(
+        id="p", label="Pricing", type="enum", values=["per_word"], query_terms=["rate", "fee"]
+    )
+    assert attribute_query(attribute) == "Pricing per_word rate fee"
+    assert Attribute(id="h", label="Headcount", type="int").query_terms == []
+
+
+def test_query_term_only_chunk_is_retrieved_and_extracted(engine, tmp_path) -> None:  # AT-12
+    entity = seed_status(engine, "acme", [TERMS_TEXT], "in_scope")
+    args = ("--entity", str(entity), "--attribute", "attr_q")
+    bare = GroundingFake(value=42, quote=TERMS_QUOTE)
+    invoke_batch(bare, batch_scope(tmp_path / "a", TERMS_ATTR), *args)
+    assert bare.prompts == []  # label alone does not match the chunk
+    fake = GroundingFake(value=42, quote=TERMS_QUOTE)
+    result, _ = invoke_batch(fake, batch_scope(tmp_path / "b", TERMS_ATTR_Q), *args)
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 1 and TERMS_TEXT in fake.prompts[0]
+    assert [v.value_json for v in values(engine)] == [42]
+
+
+def test_changed_query_terms_reexecutes_unit(engine, tmp_path) -> None:  # AT-12
+    entity = seed_status(engine, "acme", [TERMS_TEXT], "in_scope")
+    scope = batch_scope(tmp_path, TERMS_ATTR_Q)
+    args = ("--entity", str(entity), "--attribute", "attr_q")
+    assert invoke_batch(GroundingFake(42, TERMS_QUOTE), scope, *args)[0].exit_code == 0
+    same = GroundingFake(42, TERMS_QUOTE)
+    result, _ = invoke_batch(same, scope, *args)
+    assert result.output.splitlines() == ["skipped 1"] and same.prompts == []
+    (scope / "attributes.yaml").write_text(TERMS_ATTR + "    query_terms: [staff]\n")
+    edited = GroundingFake(42, TERMS_QUOTE)
+    result, _ = invoke_batch(edited, scope, *args)
+    assert result.exit_code == 0, result.output
+    assert len(edited.prompts) == 1
