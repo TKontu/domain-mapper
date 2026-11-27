@@ -85,7 +85,7 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -139,7 +139,7 @@ from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.llm_calls import CostSummaryRow, summarise_llm_calls
 from core.log import configure_logging
-from core.presence_extract import compile_terms, extract_presence
+from core.presence_extract import CompiledTerms, compile_terms, extract_presence
 from core.presence_store import (
     PRESENCE_TYPES,
     check_presence,
@@ -1141,7 +1141,10 @@ def run_presence_extract(
 
     Prints ``entity E country CC chunk N`` per match then ``extracted K``; ``--dry-run`` prints
     the same and writes nothing. An unknown type, or a pack without ``presence_terms``, exits 2
-    with one line. Without ``--entity`` every entity of the scope is scanned.
+    with one line. Without ``--entity`` every entity of the scope is scanned. Without
+    ``--dry-run`` each entity is one StageRunner unit (RT-01, see
+    :func:`_run_presence_extract_units`); unchanged done units are skipped and a final
+    ``skipped S`` line prints when S > 0.
     """
     settings = _load(scope)
     pack = _load_pack_or_exit(scope)
@@ -1157,6 +1160,27 @@ def run_presence_extract(
         raise typer.Exit(2)
     compiled = compile_terms(pack.scope.presence_terms)
     engine = _open_engine(settings)
+    if not dry_run:
+        try:
+            ids: Iterable[int] | None = None
+            if entity_ids:
+                ids = sorted(set(entity_ids))
+                with Session(engine) as session:
+                    for entity_id in ids:
+                        if not _entity_in_scope(session, entity_id, pack.scope.id):
+                            typer.echo(f"error: unknown entity {entity_id}", err=True)
+                            raise typer.Exit(2)
+            extracted, skipped = _run_presence_extract_units(
+                engine, pack, compiled, presence_type, ids
+            )
+        except SQLAlchemyError as exc:
+            _exit_database_unavailable(engine, None, exc)
+        finally:
+            engine.dispose()
+        typer.echo(f"extracted {extracted}")
+        if skipped:
+            typer.echo(f"skipped {skipped}")
+        return
     try:
         with Session(engine) as session, session.begin():
             if entity_ids:
@@ -1174,9 +1198,6 @@ def run_presence_extract(
                     )
                 )
             matches = extract_presence(session, compiled, ids)
-            if not dry_run:
-                for m in matches:
-                    record_presence(session, m.entity_id, m.country, presence_type, m.chunk_id)
     except SQLAlchemyError as exc:
         _exit_database_unavailable(engine, None, exc)
     finally:
@@ -1184,6 +1205,58 @@ def run_presence_extract(
     for m in matches:
         typer.echo(f"entity {m.entity_id} country {m.country} chunk {m.chunk_id}")
     typer.echo(f"extracted {len(matches)}")
+
+
+def _run_presence_extract_units(
+    engine: Engine,
+    pack: ScopePack,
+    compiled: CompiledTerms,
+    presence_type: str,
+    entity_ids: Iterable[int] | None,
+) -> tuple[int, int]:
+    """RT-01: one :class:`core.runs.StageRunner` unit per entity under one run row.
+
+    Stage ``presence-extract``, unit key ``"<entity_id>:<presence_type>"``, input hash = sha256
+    over the scope id, the type, the canonical JSON of ``presence_terms`` and the entity's chunk
+    count + max chunk id (one aggregate query per unit). Entity ids stream via
+    :func:`iter_entities` when ``entity_ids`` is ``None``. A unit already ``done`` for the same
+    hash is skipped; each executed unit extracts and records (idempotent) in its own transaction
+    and prints its match lines. Returns ``(extracted, skipped)``.
+    """
+    terms = json.dumps(pack.scope.presence_terms, sort_keys=True)
+    stream: Iterable[int] = (
+        entity_ids
+        if entity_ids is not None
+        else (entity.id for entity in iter_entities(engine, pack.scope.id))
+    )
+    extracted = 0
+
+    def units() -> Iterator[tuple[str, str]]:
+        for entity_id in stream:
+            with engine.connect() as conn:
+                n, top = conn.execute(
+                    select(func.count(ChunkRow.id), func.max(ChunkRow.id))
+                    .join(SnapshotRow, SnapshotRow.id == ChunkRow.snapshot_id)
+                    .where(SnapshotRow.entity_id == entity_id)
+                ).one()
+            digest = hashlib.sha256(
+                f"{pack.scope.id}\0{presence_type}\0{terms}\0{n}\0{top}".encode()
+            ).hexdigest()
+            yield f"{entity_id}:{presence_type}", digest
+
+    def handle(key: str) -> None:
+        nonlocal extracted
+        entity_id = int(key.split(":", 1)[0])
+        with Session(engine) as session, session.begin():
+            matches = extract_presence(session, compiled, [entity_id])
+            for m in matches:
+                record_presence(session, m.entity_id, m.country, presence_type, m.chunk_id)
+        for m in matches:
+            typer.echo(f"entity {m.entity_id} country {m.country} chunk {m.chunk_id}")
+        extracted += len(matches)
+
+    summary = StageRunner(engine).run("presence-extract", units(), handle, catch=())
+    return extracted, summary.skipped
 
 
 def run_attributes(scope: Path, entity_id: int) -> None:
