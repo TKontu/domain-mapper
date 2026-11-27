@@ -135,3 +135,48 @@ def test_unknown_format_exits_2_before_setup(tmp_path, monkeypatch) -> None:
     assert "unknown format" in result.stderr
     assert not out.exists()
     assert not Path(f"{out}.tmp").exists()
+
+
+# XP-02: spreadsheet formula-injection escaping of text cells.
+
+
+def test_formula_segment_id_is_prefixed_in_csv(engine, tmp_path) -> None:
+    rid = add_run(engine)
+    a = add_entity(engine, "alpha")
+    add_screen(engine, rid, a, ["=cmd"])
+    out = tmp_path / "scores.csv"
+    assert export_csv(out).exit_code == 0
+    assert read_rows(out)[1][1] == "'=cmd"
+
+
+def test_each_formula_lead_character_is_prefixed() -> None:
+    for lead in ("=", "+", "-", "@", "\t", "\r"):
+        assert cli._csv_cell(f"{lead}x") == f"'{lead}x"
+        assert cli._csv_cell([f"{lead}x"]) == f"'{lead}x"
+
+
+def test_joined_list_prefix_depends_on_first_char_only() -> None:
+    assert cli._csv_cell(["a", "=b"]) == "a;=b"
+    assert cli._csv_cell(["=a", "b"]) == "'=a;b"
+
+
+def test_numbers_bools_and_empty_are_unprefixed() -> None:
+    assert cli._csv_cell(-0.5) == "-0.5"
+    assert cli._csv_cell(-3) == "-3"
+    assert cli._csv_cell(True) == "True"
+    assert cli._csv_cell(None) == ""
+    assert cli._csv_cell([]) == ""
+    assert cli._csv_cell("plain") == "plain"
+
+
+def test_jsonl_formula_segment_is_unescaped(engine, tmp_path) -> None:
+    import json
+
+    rid = add_run(engine)
+    a = add_entity(engine, "alpha")
+    add_screen(engine, rid, a, ["=cmd"])
+    out = tmp_path / "scores.jsonl"
+    assert export_csv(out, "jsonl").exit_code == 0
+    (line,) = out.read_text(encoding="utf-8").splitlines()
+    assert json.loads(line)["segments"] == ["=cmd"]
+    assert "'=" not in line

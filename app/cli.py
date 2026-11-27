@@ -1395,13 +1395,21 @@ SCORES_EXPORT_FORMATS = ("jsonl", "csv")
 _CSV_TOPIC_FIELDS = ("score", "coverage", "applicable", "scored", "evidenced")
 
 
+_CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
+
+
 def _csv_cell(value: object) -> str:
-    """One XP-01 CSV cell: ``None`` is empty, lists join with ``;``, else ``str`` (unrounded)."""
+    """One XP-01 CSV cell: ``None`` is empty, lists join with ``;``, else ``str`` (unrounded).
+
+    XP-02: a text cell (not int/float/bool) starting with ``= + - @`` TAB or CR gets a leading
+    ``'`` so a spreadsheet does not evaluate it as a formula; numbers and booleans are unchanged.
+    """
     if value is None:
         return ""
-    if isinstance(value, list):
-        return ";".join(str(item) for item in value)
-    return str(value)
+    if isinstance(value, (bool, int, float)):
+        return str(value)
+    text = ";".join(str(item) for item in value) if isinstance(value, list) else str(value)
+    return f"'{text}" if text.startswith(_CSV_FORMULA_LEADS) else text
 
 
 def _scores_csv_row(obj: Mapping[str, Any], topic_ids: Sequence[str]) -> list[str]:
