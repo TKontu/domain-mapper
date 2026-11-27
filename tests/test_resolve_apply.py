@@ -18,7 +18,7 @@ from core.candidate_store import Candidate
 from app.cli import app
 from core.entity_store import Entity
 from core.resolve import ApplySummary, apply_resolution
-from core.runs import create_all
+from core.runs import Run, create_all
 
 FOUND_AT = datetime(2026, 11, 25, 12, 0, tzinfo=UTC)
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
@@ -191,6 +191,28 @@ class ApplyResolutionTest(unittest.TestCase):
         summary = apply_resolution(self.engine, "example", batch=1)
         self.assertEqual(summary, ApplySummary(created=1, linked=2, skipped=0))
 
+    def _created_runs(self) -> dict[str, int | None]:
+        with Session(self.engine) as session:
+            return {
+                e.primary_domain: e.created_run for e in session.scalars(sa.select(Entity))
+            }
+
+    def test_run_id_sets_created_run_default_none(self) -> None:
+        self.seed3()
+        apply_resolution(self.engine, "other")
+        self.assertEqual(set(self._created_runs().values()), {None})
+
+    def test_run_id_on_new_entities_reused_keep_original(self) -> None:
+        _seed(self.engine, [("A", "https://a.example.com/", None)])
+        apply_resolution(self.engine, "example", run_id=7)
+        self.assertEqual(self._created_runs(), {"a.example.com": 7})
+        _seed(
+            self.engine,
+            [("A2", "https://a.example.com/2", None), ("B", "https://b.example.com/", None)],
+        )
+        apply_resolution(self.engine, "example", run_id=8)
+        self.assertEqual(self._created_runs(), {"a.example.com": 7, "b.example.com": 8})
+
     def test_rejects_bad_batch(self) -> None:
         with self.assertRaises(ValueError):
             apply_resolution(self.engine, "example", batch=0)
@@ -241,6 +263,19 @@ class ResolveApplyCliTest(unittest.TestCase):
             self.assertEqual({s for _, s, _, _, _, _ in _entities(engine)}, {"example"})
         finally:
             engine.dispose()
+
+    def test_apply_sets_created_run_to_resolve_run_id(self) -> None:
+        result = self.invoke("--apply")
+        self.assertEqual(result.exit_code, 0, result.output)
+        engine = sa.create_engine(self.db_url)
+        try:
+            with Session(engine) as session:
+                run_ids = list(session.scalars(sa.select(Run.id).where(Run.stage == "resolve")))
+                created = set(session.scalars(sa.select(Entity.created_run)))
+        finally:
+            engine.dispose()
+        self.assertEqual(len(run_ids), 1)
+        self.assertEqual(created, {run_ids[0]})
 
     def test_without_apply_is_read_only(self) -> None:
         result = self.invoke()
