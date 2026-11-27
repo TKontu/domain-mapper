@@ -11,7 +11,7 @@ An item ID links to its detail in `docs/items/`.
 
 ## First priority — publish the repository
 
-- [ ] **LC-01** → [docs/items/LC-01.md](docs/items/LC-01.md) OPERATOR TOP PRIORITY (2026-11-27): `lanes.py cleanup` frees finished lanes' worktrees (port agent_lane_lifecycle.py rules); 13 worktrees held round 166 — partial: offline; live cleanup run pending
+- [x] **LC-01** → [docs/items/LC-01.md](docs/items/LC-01.md) OPERATOR TOP PRIORITY (2026-11-27): `lanes.py cleanup` frees finished lanes' worktrees (port agent_lane_lifecycle.py rules); 13 worktrees held round 166 — done: merged PR #344; seen: docs/runs/LC-01-cleanup.txt (round 167 `cleanup --go` removed 10 trees, closed 11 tabs)
 Git over the NFS-mounted NAS is too slow for interactive work (`git add -A` takes ~4 min and
 soft-mount timeouts leave stale `.git/index.lock` files). Finish this before any round:
 
