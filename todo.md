@@ -211,7 +211,7 @@ The private scope repo is already published (initial commit `d5714f3`).
   - [x] **GV-03** → [docs/items/GV-03.md](docs/items/GV-03.md) move the CLI composition root (~2k lines) out of `core` to `app/cli.py`
   - [x] **GV-04** → [docs/items/GV-04.md](docs/items/GV-04.md) reachability ratchet counts framework decorator registration (`@app.command`) as a caller; allowlist shrinks — done 2026-11-26: merged PR #209 (main 97cfdb6, round 91/A1); seen: ratchet exits 0 on main, allowlist 27 -> 19; gate 1533 passed, 5 skipped
   - [x] **GV-05** → [docs/items/GV-05.md](docs/items/GV-05.md) every reachability-allowlist entry names the todo row that wires it (`unwired by design until <ROW>`), replacing the 19 GV-02 seed reasons — done 2026-11-26: PR #212 (round 92/A1); 19 reasons now name existing rows AD-04, GR-01, RT-01, RT-02, AD-02; seen: ratchet exits 0, `grep -c "unwired at seed"` fixture = 0 at head 7028f47 (main 3dd9063)
-  - [ ] **GV-06** → [docs/items/GV-06.md](docs/items/GV-06.md) `ruff check .` lints `scripts/` (except operator-owned `merge_guard.py`); wrap the 10 E501 lines, no behaviour change
+  - [x] **GV-06** → [docs/items/GV-06.md](docs/items/GV-06.md) `ruff check .` lints `scripts/` (except operator-owned `merge_guard.py`); wrap the 10 E501 lines, no behaviour change — done 2026-11-27: merged PR #286 at f0ebcbf (main 4982bd3, round 129/A1; lane gv-06 claude; planner review APPROVE; CI pass); seen: `uv run ruff check .` on main 4982bd3 lints scripts/ with 0 findings; gate 1708 passed, 5 skipped; no behaviour change; residual: merge_guard.py stays excluded (operator-owned), scripts not ruff-formatted
 
 **Milestone M2:** one layer meets thresholds; review effort per entity measured.
 
