@@ -85,7 +85,7 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -151,11 +151,13 @@ from core.presence_store import (
 from core.resolve import ApplySummary, apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import (
+    DONE,
     FAILED,
     FINISHED,
     RUNNING,
     Run,
     StageRunner,
+    WorkUnit,
     create_all,
     create_db_engine,
 )
@@ -179,7 +181,7 @@ from core.screen_store import (
     record_screen_result,
 )
 from core.snapshot_store import SnapshotRow
-from core.source_catalogue import seed_sources
+from core.source_catalogue import SeedSummary, Source, seed_sources
 from core.verify import route, verify_extraction
 
 STAGES: tuple[str, ...] = (
@@ -1145,7 +1147,7 @@ def run_sources(scope: Path) -> None:
     pack = _load_pack_or_exit(scope)
     engine = _open_engine(settings)
     try:
-        summary = seed_sources(engine, pack)
+        summary, skipped = _run_sources_unit(engine, pack)
     except Exception as exc:  # noqa: BLE001 - never echo the database URL
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
@@ -1154,6 +1156,65 @@ def run_sources(scope: Path) -> None:
     typer.echo(
         f"inserted {summary.inserted} updated {summary.updated} unchanged {summary.unchanged}"
     )
+    if skipped:
+        typer.echo(f"skipped {skipped}")
+
+
+def _run_sources_unit(engine: Engine, pack: ScopePack) -> tuple[SeedSummary, int]:
+    """RT-01: run ``seed_sources`` as one :class:`core.runs.StageRunner` unit under one run.
+
+    Stage ``sources``, unit key ``"<scope_id>"``, input hash = sha256 over the scope id, the
+    canonical JSON of the pack's sources and the ``source`` row count + max id (one aggregate
+    query), so a drifted table re-seeds. Seeding changes the table it hashes, so an executed
+    unit's hash is re-pinned to the post-seed table state (unless another done unit already
+    holds it); an unchanged rerun then skips (``seed_sources`` not called, zero summary).
+    Any error fails the unit and the run, then propagates. Returns ``(summary, skipped)``.
+    """
+    scope_id = pack.scope.id
+    sources_json = json.dumps(
+        pack.sources.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+
+    def input_hash() -> str:
+        with engine.connect() as conn:
+            n, top = conn.execute(select(func.count(Source.id), func.max(Source.id))).one()
+        payload = f"{scope_id}\0{sources_json}\0{n}\0{top}"
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    run_id = _open_run(engine, "sources")
+    seeded = SeedSummary()
+
+    def units() -> Iterator[tuple[str, str]]:
+        yield scope_id, input_hash()
+
+    def handle(_key: str) -> None:
+        nonlocal seeded
+        seeded = seed_sources(engine, pack)
+
+    try:
+        summary = StageRunner(engine).run("sources", units(), handle, run_id=run_id, catch=())
+        if not summary.skipped:
+            _repin_sources_hash(engine, run_id, scope_id, input_hash())
+    except BaseException as exc:
+        _close_run_aborting(engine, run_id, exc)
+        raise
+    _close_run(engine, run_id, FINISHED)
+    return seeded, summary.skipped
+
+
+def _repin_sources_hash(engine: Engine, run_id: int, scope_id: str, post_hash: str) -> None:
+    """Point this run's done ``sources`` unit at the post-seed hash unless one already has it."""
+    key = (WorkUnit.stage == "sources") & (WorkUnit.unit_key == scope_id)
+    with engine.begin() as conn:
+        taken = conn.execute(
+            select(func.count(WorkUnit.id)).where(key, WorkUnit.input_hash == post_hash)
+        ).scalar_one()
+        if not taken:
+            conn.execute(
+                update(WorkUnit)
+                .where(key, WorkUnit.run_id == run_id, WorkUnit.status == DONE)
+                .values(input_hash=post_hash)
+            )
 
 
 def run_attribute_set(scope: Path, entity_id: int, attribute_id: str, text: str) -> None:
