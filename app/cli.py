@@ -135,6 +135,7 @@ from core.entity_store import STATUS_UNSCREENED, Entity, EntityRef, iter_entitie
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
+from core.llm_calls import CostSummaryRow, summarise_llm_calls
 from core.log import configure_logging
 from core.presence_extract import compile_terms, extract_presence
 from core.presence_store import (
@@ -2543,6 +2544,63 @@ def web_search(
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
     typer.echo(f"saved {saved} candidates")
+
+
+def _cost_line(row: CostSummaryRow) -> str:
+    return (
+        f"calls {row.calls} ok {row.ok} error {row.error} tokens_in {row.tokens_in}"
+        f" tokens_out {row.tokens_out} cost {row.cost:.6f}"
+        f" mean_latency_ms {row.mean_latency_ms:.1f} max_latency_ms {row.max_latency_ms}"
+    )
+
+
+def run_cost_report(run_id: int | None) -> None:
+    """Print one line per (stage, purpose, model) from ``llm_call`` plus a ``total`` line (CO-01).
+
+    Aggregation happens in SQL via :func:`core.llm_calls.summarise_llm_calls`; an unknown
+    ``run_id`` exits 2 with ``error: run <ID> not found``; database errors exit 2.
+    """
+    try:
+        settings = load_settings()
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    engine = _open_engine(settings)
+    try:
+        with Session(engine) as session:
+            if run_id is not None and session.get(Run, run_id) is None:
+                typer.echo(f"error: run {run_id} not found", err=True)
+                raise typer.Exit(2)
+            rows = summarise_llm_calls(session, run_id=run_id)
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    for row in rows:
+        typer.echo(f"stage {row.stage} purpose {row.purpose} model {row.model} {_cost_line(row)}")
+    calls = sum(r.calls for r in rows)
+    total = CostSummaryRow(
+        stage="",
+        purpose="",
+        model="",
+        calls=calls,
+        ok=sum(r.ok for r in rows),
+        error=sum(r.error for r in rows),
+        tokens_in=sum(r.tokens_in for r in rows),
+        tokens_out=sum(r.tokens_out for r in rows),
+        cost=sum(r.cost for r in rows),
+        mean_latency_ms=(sum(r.mean_latency_ms * r.calls for r in rows) / calls if calls else 0.0),
+        max_latency_ms=max((r.max_latency_ms for r in rows), default=0),
+    )
+    typer.echo(f"total {_cost_line(total)}")
+
+
+@app.command(name="cost-report", help="Print LLM call cost and latency per stage, purpose, model.")
+def cost_report(
+    run_id: Annotated[int | None, typer.Option("--run", help="Only this run id.")] = None,
+) -> None:
+    """Aggregate ``llm_call`` rows per (run.stage, purpose, model); read-only (CO-01)."""
+    run_cost_report(run_id)
 
 
 def main() -> None:

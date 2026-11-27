@@ -39,7 +39,7 @@ import sqlalchemy as sa
 from sqlalchemy import Engine
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from core.runs import Base
+from core.runs import Base, Run
 
 logger = logging.getLogger(__name__)
 
@@ -283,3 +283,67 @@ def log_llm_call(
             latency_ms=_elapsed_ms(started),
             cache_hit=usage.cache_hit,
         )
+
+
+@dataclass(frozen=True)
+class CostSummaryRow:
+    """One aggregate line of the CO-01 cost report: a (stage, purpose, model) group."""
+
+    stage: str
+    purpose: str
+    model: str
+    calls: int
+    ok: int
+    error: int
+    tokens_in: int
+    tokens_out: int
+    cost: float
+    mean_latency_ms: float
+    max_latency_ms: int
+
+
+def summarise_llm_calls(session: Session, run_id: int | None = None) -> list[CostSummaryRow]:
+    """Aggregate ``llm_call`` per (run.stage, purpose, model) in one GROUP BY query (CO-01).
+
+    Rows are sorted by stage, purpose, model; error calls count in ``calls``/``error`` and in
+    the latency stats. With ``run_id`` only that run's calls are included. Memory is bounded by
+    the number of groups; individual call rows are never loaded.
+    """
+    stmt = (
+        sa.select(
+            Run.stage,
+            LlmCall.purpose,
+            LlmCall.model,
+            sa.func.count(LlmCall.id),
+            sa.func.sum(sa.case((LlmCall.status == OK, 1), else_=0)),
+            sa.func.sum(sa.case((LlmCall.status == ERROR, 1), else_=0)),
+            sa.func.sum(LlmCall.tokens_in),
+            sa.func.sum(LlmCall.tokens_out),
+            sa.func.sum(LlmCall.cost),
+            sa.func.avg(LlmCall.latency_ms),
+            sa.func.max(LlmCall.latency_ms),
+        )
+        .join(Run, Run.id == LlmCall.run_id)
+        .group_by(Run.stage, LlmCall.purpose, LlmCall.model)
+        .order_by(Run.stage, LlmCall.purpose, LlmCall.model)
+    )
+    if run_id is not None:
+        stmt = stmt.where(LlmCall.run_id == run_id)
+    return [
+        CostSummaryRow(
+            stage=stage,
+            purpose=purpose,
+            model=model,
+            calls=int(calls),
+            ok=int(ok or 0),
+            error=int(err or 0),
+            tokens_in=int(tin or 0),
+            tokens_out=int(tout or 0),
+            cost=float(cost or 0.0),
+            mean_latency_ms=float(mean or 0.0),
+            max_latency_ms=int(mx or 0),
+        )
+        for stage, purpose, model, calls, ok, err, tin, tout, cost, mean, mx in session.execute(
+            stmt
+        )
+    ]
