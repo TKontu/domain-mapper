@@ -123,11 +123,34 @@ def test_writes_json_lines_with_key_set_and_view_order(engine, tmp_path) -> None
         "route_kind": "accept",
         "run_id": rid,
         "created_at": first["created_at"],
-        "evidence": [{"chunk_id": 9, "quote": "old", "grounded": True, "snapshot_id": None, "url": None, "fetched_at": None}],
+        "evidence": [
+            {
+                "chunk_id": 9,
+                "quote": "old",
+                "grounded": True,
+                "snapshot_id": None,
+                "url": None,
+                "fetched_at": None,
+            }
+        ],
     }
     assert second["evidence"] == [
-        {"chunk_id": 3, "quote": "a", "grounded": True, "snapshot_id": None, "url": None, "fetched_at": None},
-        {"chunk_id": 4, "quote": "b", "grounded": False, "snapshot_id": None, "url": None, "fetched_at": None},
+        {
+            "chunk_id": 3,
+            "quote": "a",
+            "grounded": True,
+            "snapshot_id": None,
+            "url": None,
+            "fetched_at": None,
+        },
+        {
+            "chunk_id": 4,
+            "quote": "b",
+            "grounded": False,
+            "snapshot_id": None,
+            "url": None,
+            "fetched_at": None,
+        },
     ]
     for row in rows:
         parsed = datetime.fromisoformat(str(row["created_at"]))
@@ -146,7 +169,16 @@ def test_newer_write_supersedes_older(engine, tmp_path) -> None:
     assert result.exit_code == 0, result.output
     rows = read_rows(out)
     assert [row["id"] for row in rows] == [new]
-    assert rows[0]["evidence"] == [{"chunk_id": 3, "quote": "new", "grounded": True, "snapshot_id": None, "url": None, "fetched_at": None}]
+    assert rows[0]["evidence"] == [
+        {
+            "chunk_id": 3,
+            "quote": "new",
+            "grounded": True,
+            "snapshot_id": None,
+            "url": None,
+            "fetched_at": None,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

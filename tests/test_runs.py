@@ -312,7 +312,11 @@ class WorkUnitStatusConstraintTest(unittest.TestCase):
             self.assertIn(f"'{status}'", ddl)
         Base.metadata.create_all(engine)
         with engine.begin() as conn:
-            conn.execute(sa.text("INSERT INTO run (stage, status, started_at) VALUES ('s', 'running', '2026-01-01')"))
+            conn.execute(
+                sa.text(
+                    "INSERT INTO run (stage, status, started_at) VALUES ('s', 'running', '2026-01-01')"
+                )
+            )
         with self.assertRaises(sa.exc.IntegrityError), engine.begin() as conn:
             conn.execute(
                 sa.text(

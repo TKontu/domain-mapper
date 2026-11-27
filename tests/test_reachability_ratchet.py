@@ -153,9 +153,7 @@ class SyntheticTest(unittest.TestCase):
         self.assertEqual(t.check().returncode, 0, t.check().stdout)
 
     def test_dunder_all_alone_does_not_count(self) -> None:
-        t = self._tree(
-            {"core/a.py": '__all__ = ["exported"]\n\ndef exported():\n    return 1\n'}
-        )
+        t = self._tree({"core/a.py": '__all__ = ["exported"]\n\ndef exported():\n    return 1\n'})
         r = t.check()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("exported", r.stdout)
@@ -174,10 +172,7 @@ class SyntheticTest(unittest.TestCase):
         t = self._tree(
             {
                 "app/cli.py": (
-                    "app = Typer()\n\n"
-                    '@app.command("run")\n'
-                    "def run() -> int:\n"
-                    "    return 1\n"
+                    'app = Typer()\n\n@app.command("run")\ndef run() -> int:\n    return 1\n'
                 ),
             }
         )
@@ -187,12 +182,7 @@ class SyntheticTest(unittest.TestCase):
     def test_attribute_decorator_rooted_at_production_name_counts_as_reference(self) -> None:
         t = self._tree(
             {
-                "app/cli.py": (
-                    "app = Typer()\n\n"
-                    "@app.command\n"
-                    "def run() -> int:\n"
-                    "    return 1\n"
-                ),
+                "app/cli.py": ("app = Typer()\n\n@app.command\ndef run() -> int:\n    return 1\n"),
             }
         )
         r = t.check()
@@ -201,12 +191,7 @@ class SyntheticTest(unittest.TestCase):
     def test_registered_class_counts_as_reference(self) -> None:
         t = self._tree(
             {
-                "app/cli.py": (
-                    "app = Typer()\n\n"
-                    '@app.command("run")\n'
-                    "class Runner:\n"
-                    "    pass\n"
-                ),
+                "app/cli.py": ('app = Typer()\n\n@app.command("run")\nclass Runner:\n    pass\n'),
             }
         )
         r = t.check()
@@ -248,10 +233,7 @@ class SyntheticTest(unittest.TestCase):
         t = self._tree(
             {
                 "core/a.py": (
-                    "import functools\n\n"
-                    "@functools.cache\n"
-                    "def compute() -> int:\n"
-                    "    return 1\n"
+                    "import functools\n\n@functools.cache\ndef compute() -> int:\n    return 1\n"
                 ),
             }
         )

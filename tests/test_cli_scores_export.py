@@ -234,6 +234,4 @@ def test_export_batches_queries_and_matches_single_batch(engine, tmp_path, monke
     assert batched.stdout == (
         f"exported 4 entities to {out_batched} (skipped 1 without screen result)\n"
     )
-    assert full.stdout == (
-        f"exported 4 entities to {out_all} (skipped 1 without screen result)\n"
-    )
+    assert full.stdout == (f"exported 4 entities to {out_all} (skipped 1 without screen result)\n")
