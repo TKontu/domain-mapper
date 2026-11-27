@@ -94,7 +94,6 @@ def _env_file(tmp_path: Path, url: str) -> Path:
 
 
 def _run(out: Path, env_file: Path) -> subprocess.CompletedProcess[str]:
-
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
     env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
     return subprocess.run(
@@ -233,3 +232,30 @@ def test_scrub_skips_sqlite_journal_files(tmp_path: Path) -> None:
     for name in names:
         assert (tmp_path / name).read_text(encoding="utf-8") == secret
     assert secret not in (tmp_path / "export.jsonl").read_text(encoding="utf-8")
+
+
+def test_no_screen_calls_with_entities_is_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # every child command "succeeds" without any llm_call: entities present, zero screen rows
+    mod = _load_script()
+    code = (
+        "import sys, pathlib; a = sys.argv[1:]\n"
+        "if '--out' in a: pathlib.Path(a[a.index('--out') + 1]).write_text('')"
+    )
+    monkeypatch.setattr(mod, "LANDSCAPE", [sys.executable, "-c", code])
+    env_file = tmp_path / "fake.env"
+    env_file.write_text(f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+    out = tmp_path / "run"
+    argv = ["--out", str(out), "--env-file", str(env_file), "--entities", "2"]
+    assert mod.main(argv) == 3  # type: ignore[attr-defined]
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["degraded"] is True and summary["failed_step"] is None
+    assert summary["entities"] == 2 and summary["llm_calls"] == {"ok": 0, "error": 0}
+
+
+def test_no_entities_is_not_degraded(tmp_path: Path) -> None:
+    mod = _load_script()
+    db_url = f"sqlite:///{tmp_path / 'empty.sqlite'}"
+    mod.seed(db_url, "scope-x", 0)  # type: ignore[attr-defined]
+    assert mod.db_counts(db_url, "scope-x")["degraded"] is False  # type: ignore[attr-defined]
