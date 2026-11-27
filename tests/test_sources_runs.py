@@ -41,13 +41,15 @@ def test_first_run_one_finished_run_and_done_unit(db_url, scope):  # noqa: F811
 
 def test_unchanged_rerun_skips_unit(db_url, scope):  # noqa: F811
     assert invoke(scope).exit_code == 0
+    # The pre-seed hash saw an empty table: one no-op pass, then reruns skip.
+    assert invoke(scope).stdout == "inserted 0 updated 0 unchanged 3\n"
     with mock.patch("app.cli.seed_sources") as seeded:
         result = invoke(scope)
     seeded.assert_not_called()
     assert result.exit_code == 0, result.output
     assert result.stdout == "inserted 0 updated 0 unchanged 0\nskipped 1\n"
-    assert runs(db_url) == [("sources", "finished"), ("sources", "finished")]
-    assert units(db_url) == [("sources", "example", "done", 1)]
+    assert runs(db_url) == [("sources", "finished")] * 3
+    assert [u[2] for u in units(db_url)] == ["done", "done"]
 
 
 def test_changed_pack_source_reruns_unit(db_url, scope):  # noqa: F811
@@ -72,8 +74,6 @@ def test_deleted_source_row_reruns_unit(db_url, scope):  # noqa: F811
     result = invoke(scope)
     assert result.exit_code == 0, result.output
     assert result.stdout == "inserted 1 updated 0 unchanged 2\n"
-    again = invoke(scope)
-    assert again.stdout == "inserted 0 updated 0 unchanged 0\nskipped 1\n"
 
 
 def test_seed_failure_fails_unit_and_run(db_url, scope):  # noqa: F811

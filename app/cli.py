@@ -85,7 +85,7 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -151,13 +151,11 @@ from core.presence_store import (
 from core.resolve import ApplySummary, apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import (
-    DONE,
     FAILED,
     FINISHED,
     RUNNING,
     Run,
     StageRunner,
-    WorkUnit,
     create_all,
     create_db_engine,
 )
@@ -1165,9 +1163,9 @@ def _run_sources_unit(engine: Engine, pack: ScopePack) -> tuple[SeedSummary, int
 
     Stage ``sources``, unit key ``"<scope_id>"``, input hash = sha256 over the scope id, the
     canonical JSON of the pack's sources and the ``source`` row count + max id (one aggregate
-    query), so a drifted table re-seeds. Seeding changes the table it hashes, so an executed
-    unit's hash is re-pinned to the post-seed table state (unless another done unit already
-    holds it); an unchanged rerun then skips (``seed_sources`` not called, zero summary).
+    query), so a drifted table re-seeds. The hash is fixed before the seed, so a seed that
+    inserts rows makes the next run one no-op pass; after that an unchanged rerun skips
+    (``seed_sources`` not called, zero summary), as for ``index``.
     Any error fails the unit and the run, then propagates. Returns ``(summary, skipped)``.
     """
     scope_id = pack.scope.id
@@ -1193,28 +1191,11 @@ def _run_sources_unit(engine: Engine, pack: ScopePack) -> tuple[SeedSummary, int
 
     try:
         summary = StageRunner(engine).run("sources", units(), handle, run_id=run_id, catch=())
-        if not summary.skipped:
-            _repin_sources_hash(engine, run_id, scope_id, input_hash())
     except BaseException as exc:
         _close_run_aborting(engine, run_id, exc)
         raise
     _close_run(engine, run_id, FINISHED)
     return seeded, summary.skipped
-
-
-def _repin_sources_hash(engine: Engine, run_id: int, scope_id: str, post_hash: str) -> None:
-    """Point this run's done ``sources`` unit at the post-seed hash unless one already has it."""
-    key = (WorkUnit.stage == "sources") & (WorkUnit.unit_key == scope_id)
-    with engine.begin() as conn:
-        taken = conn.execute(
-            select(func.count(WorkUnit.id)).where(key, WorkUnit.input_hash == post_hash)
-        ).scalar_one()
-        if not taken:
-            conn.execute(
-                update(WorkUnit)
-                .where(key, WorkUnit.run_id == run_id, WorkUnit.status == DONE)
-                .values(input_hash=post_hash)
-            )
 
 
 def run_attribute_set(scope: Path, entity_id: int, attribute_id: str, text: str) -> None:

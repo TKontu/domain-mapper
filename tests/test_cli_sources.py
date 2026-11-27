@@ -37,13 +37,13 @@ def invoke(scope: Path):
     return CliRunner().invoke(cli.app, ["sources", "--scope", str(scope)])
 
 
-def test_first_run_inserts_then_rerun_skipped(db_url, scope):
+def test_first_run_inserts_then_rerun_unchanged(db_url, scope):
     first = invoke(scope)
     assert first.exit_code == 0, first.output
     assert first.stdout == "inserted 3 updated 0 unchanged 0\n"
     second = invoke(scope)
     assert second.exit_code == 0, second.output
-    assert second.stdout == "inserted 0 updated 0 unchanged 0\nskipped 1\n"
+    assert second.stdout == "inserted 0 updated 0 unchanged 3\n"
 
 
 def test_changed_pack_updates(db_url, scope):
