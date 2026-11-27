@@ -97,7 +97,13 @@ from adapters.http_transport import get_robots, make_post_transport
 from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
-from app.mosaic import entity_slug, filter_by_segments, render_entity_page, render_mosaic
+from app.mosaic import (
+    entity_slug,
+    filter_by_layers,
+    filter_by_segments,
+    render_entity_page,
+    render_mosaic,
+)
 from core.aggregate import TopicScore, score_topics
 from core.assess import AssessError, extract_criterion
 from core.assessment_store import (
@@ -1254,7 +1260,9 @@ def run_scores_export(scope: Path, out: Path) -> None:
     Entities stream in ascending id via :func:`iter_entities` and are batched
     (``SCORES_EXPORT_BATCH`` ids) into one
     :func:`core.screen_store.latest_screen_segments_many` query and one
-    :func:`core.assessment_store.iter_current_assessments` query per batch (AG-05). Entities
+    :func:`core.assessment_store.iter_current_assessments` query per batch (AG-05), plus one
+    :func:`core.presence_store.presences_many` query per batch whose countries give each line's
+    ``layers`` (FE-04; scope layer order, ``[]`` without presence). Entities
     without a screen result are skipped and counted; the rest are scored and written one line at
     a time to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no ``PATH``. Setup
     errors or an unwritable output directory exit 2; a ``ValueError`` from ``score_topics`` exits
@@ -1283,6 +1291,7 @@ def run_scores_export(scope: Path, out: Path) -> None:
                 def flush() -> None:
                     nonlocal count, skipped
                     segments_by_entity = latest_screen_segments_many(engine, batch)
+                    presences = presences_many(engine, batch)
                     grouped: dict[int, list[CurrentAssessment]] = {}
                     for assessment in iter_current_assessments(
                         engine, entity_ids=batch, rubric_version=version
@@ -1299,6 +1308,8 @@ def run_scores_export(scope: Path, out: Path) -> None:
                             typer.echo(f"error: entity {entity_id}: {exc}", err=True)
                             raise typer.Exit(1) from None
                         obj = _scores_object(entity_id, segments, version, scores)
+                        countries = (c for c, _ in presences.get(entity_id, ()))
+                        obj["layers"] = layer_ids_for(pack.scope.layers, countries)
                         handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
                         count += 1
                     batch.clear()
@@ -1354,6 +1365,7 @@ def run_mosaic(
     out: Path,
     entity_dir: Path | None = None,
     segments: list[str] | None = None,
+    layers: list[str] | None = None,
 ) -> None:
     """Write the FE-01 mosaic page for ``scores`` and ``export`` JSON Lines to ``out``.
 
@@ -1363,27 +1375,43 @@ def run_mosaic(
     bad scope pack or unwritable output exits 2; a malformed JSON line exits 1. With ``segments``
     (FE-03) only scores lines whose ``segments`` include one of the ids are rendered (and get
     entity pages) and the page heading names the filter by label; an unknown id exits 2.
+    ``layers`` (FE-04) filters the same way on each line's ``layers`` list (a line without one is
+    dropped); with both, a line must match both. Layers have no label, so the id is shown.
     """
     if not scope.is_dir():
         typer.echo(f"error: scope directory not found: {scope}", err=True)
         raise typer.Exit(2)
     pack = _load_pack_or_exit(scope)
     heading: str | None = None
+    parts: list[str] = []
     if segments:
         labels = {s.id: s.label for s in pack.scope.segments}
         for segment in segments:
             if segment not in labels:
                 typer.echo(f"error: unknown segment id: {segment}", err=True)
                 raise typer.Exit(2)
-        heading = "segment: " + ", ".join(labels[s] for s in dict.fromkeys(segments))
+        parts.append("segment: " + ", ".join(labels[s] for s in dict.fromkeys(segments)))
+    if layers:
+        layer_ids = {la.id for la in pack.scope.layers}
+        for layer in layers:
+            if layer not in layer_ids:
+                typer.echo(f"error: unknown layer id: {layer}", err=True)
+                raise typer.Exit(2)
+        parts.append("layer: " + ", ".join(dict.fromkeys(layers)))
+    if parts:
+        heading = "; ".join(parts)
     for path in (scores, export):
         if not path.is_file():
             typer.echo(f"error: input file not found: {path}", err=True)
             raise typer.Exit(2)
 
     def score_lines() -> Iterator[Mapping[str, Any]]:
-        lines = _iter_jsonl(scores)
-        return filter_by_segments(lines, segments) if segments else lines
+        lines: Iterator[Mapping[str, Any]] = _iter_jsonl(scores)
+        if segments:
+            lines = filter_by_segments(lines, segments)
+        if layers:
+            lines = filter_by_layers(lines, layers)
+        return lines
 
     try:
         if entity_dir is None:
@@ -2231,9 +2259,13 @@ def mosaic(
         list[str] | None,
         typer.Option("--segment", help="Keep only entities in this segment id (repeatable)."),
     ] = None,
+    layer: Annotated[
+        list[str] | None,
+        typer.Option("--layer", help="Keep only entities in this layer id (repeatable)."),
+    ] = None,
 ) -> None:
     """Write one self-contained mosaic HTML page (FE-01) to ``--out``; entity pages (FE-02)."""
-    run_mosaic(scope, scores, export, out, entity_dir, segment)
+    run_mosaic(scope, scores, export, out, entity_dir, segment, layer)
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines.")
