@@ -252,7 +252,6 @@ Verifier (local, different model) ──► agree / disagree + reason
 - From registers (founding date, employees band, revenue where public, industry codes).
 - From content (number of certified services, number of sites, stated turnaround days, languages) via structured extraction + same verification pattern.
 - Derived (distance from a reference location, counts within a certificate scope).
-- Retrieval per entity × attribute is BM25 on the label, an enum's allowed values and the optional `query_terms` list in `attributes.yaml`; the attribute definition (including `query_terms`) is part of the `attributes_extract` unit hash, so editing it re-executes the unit.
 
 ### 9 · Claim verification
 
