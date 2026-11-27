@@ -15,9 +15,9 @@ segments:
     definition: Platforms or cooperatives brokering independent translators.
 
 layers:
-  - {id: home,   countries: [XA],         discovery_target: exhaustive,      rubric_depth: full}
-  - {id: region, countries: [XA, XB, XC], discovery_target: near_exhaustive, rubric_depth: full}
-  - {id: global, countries: ["*"],        discovery_target: notable,         rubric_depth: core}
+  - {id: home,   label: Home market, countries: [XA],         discovery_target: exhaustive,      rubric_depth: full}
+  - {id: region, label: Region,      countries: [XA, XB, XC], discovery_target: near_exhaustive, rubric_depth: full}
+  - {id: global, label: Global,      countries: ["*"],        discovery_target: notable,         rubric_depth: core}
 
 languages:
   default: [en]

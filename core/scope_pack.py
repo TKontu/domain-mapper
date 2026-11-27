@@ -40,6 +40,7 @@ class Segment(_Model):
 
 class Layer(_Model):
     id: str
+    label: str | None = None  # FE-05: shown in the mosaic heading; the id when unset
     countries: list[str] = Field(min_length=1)
     discovery_target: Literal["exhaustive", "near_exhaustive", "notable"]
     rubric_depth: Literal["full", "core"]

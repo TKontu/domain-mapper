@@ -1804,7 +1804,7 @@ def run_mosaic(
     (FE-03) only scores lines whose ``segments`` include one of the ids are rendered (and get
     entity pages) and the page heading names the filter by label; an unknown id exits 2.
     ``layers`` (FE-04) filters the same way on each line's ``layers`` list (a line without one is
-    dropped); with both, a line must match both. Layers have no label, so the id is shown.
+    dropped); with both, a line must match both. A layer is named by its label (FE-05), else its id.
     """
     if not scope.is_dir():
         typer.echo(f"error: scope directory not found: {scope}", err=True)
@@ -1820,12 +1820,12 @@ def run_mosaic(
                 raise typer.Exit(2)
         parts.append("segment: " + ", ".join(labels[s] for s in dict.fromkeys(segments)))
     if layers:
-        layer_ids = {la.id for la in pack.scope.layers}
+        layer_names = {la.id: la.label or la.id for la in pack.scope.layers}
         for layer in layers:
-            if layer not in layer_ids:
+            if layer not in layer_names:
                 typer.echo(f"error: unknown layer id: {layer}", err=True)
                 raise typer.Exit(2)
-        parts.append("layer: " + ", ".join(dict.fromkeys(layers)))
+        parts.append("layer: " + ", ".join(layer_names[la] for la in dict.fromkeys(layers)))
     if parts:
         heading = "; ".join(parts)
     for path in (scores, export):
