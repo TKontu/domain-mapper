@@ -217,7 +217,7 @@ def test_bad_format_exits_2_without_file(engine, tmp_path) -> None:
     out = tmp_path / "current.jsonl"
     result = CliRunner().invoke(
         cli.app,
-        ["export", "--scope", EXAMPLE_SCOPE, "--format", "csv", "--out", str(out)],
+        ["export", "--scope", EXAMPLE_SCOPE, "--format", "parquet", "--out", str(out)],
     )
     assert result.exit_code == 2
     assert "unsupported format" in result.output

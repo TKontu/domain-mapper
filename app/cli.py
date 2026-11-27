@@ -1946,6 +1946,45 @@ def _export_object(row: CurrentAssessment) -> dict[str, object]:
     }
 
 
+EXPORT_FORMATS = ("json", "csv")
+_EXPORT_CSV_FIELDS = (
+    "id",
+    "entity_id",
+    "criterion_id",
+    "status",
+    "confidence",
+    "rationale",
+    "rubric_version",
+    "extractor_model",
+    "verifier_model",
+    "decided_by",
+    "route_kind",
+    "run_id",
+)
+EXPORT_CSV_HEADER = (
+    *_EXPORT_CSV_FIELDS,
+    "created_at",
+    "evidence_count",
+    "grounded_count",
+    "first_url",
+    "first_fetched_at",
+)
+
+
+def _export_csv_row(row: CurrentAssessment) -> list[str]:
+    """Flatten one current assessment into the XP-04 CSV row (``EXPORT_CSV_HEADER`` order)."""
+    first = row.evidence[0] if row.evidence else None
+    values: list[object] = [getattr(row, field) for field in _EXPORT_CSV_FIELDS]
+    values += [
+        row.created_at.isoformat(),
+        len(row.evidence),
+        sum(1 for ev in row.evidence if ev.grounded),
+        first.url if first else None,
+        first.fetched_at.isoformat() if first and first.fetched_at else None,
+    ]
+    return [_csv_cell(value) for value in values]
+
+
 def run_export(
     scope: Path,
     format: str,
@@ -1954,25 +1993,33 @@ def run_export(
     criterion_id: str | None,
     rubric_version: str | None,
 ) -> None:
-    """Write the current view (AS-11) as JSON Lines to ``out``; read-only, exit 2 on bad setup.
+    """Write the current view (AS-11) to ``out``; read-only, exit 2 on bad setup.
 
-    Rows go one at a time to ``<out>.tmp``, renamed to ``out`` on success, so a failed export
-    leaves no ``PATH``. Bad input or an unwritable output directory exits 2; an empty view writes
-    an empty file and prints ``exported 0 assessments to PATH``.
+    ``format`` ``json`` writes JSON Lines; ``csv`` (XP-04) writes one RFC 4180 row per current
+    assessment under ``EXPORT_CSV_HEADER`` (always written), evidence summarised as counts plus
+    the first evidence row's url/fetched_at, every cell via :func:`_csv_cell`. Any other format
+    exits 2 before setup. Rows go one at a time to ``<out>.tmp``, renamed to ``out`` on success,
+    so a failed export leaves no ``PATH``. Bad input or an unwritable output directory exits 2;
+    an empty view writes an empty file (CSV: header only) and prints
+    ``exported 0 assessments to PATH``.
     """
-    if format != "json":
-        typer.echo(f"error: unsupported format {format} (known: json)", err=True)
+    if format not in EXPORT_FORMATS:
+        known = ", ".join(EXPORT_FORMATS)
+        typer.echo(f"error: unsupported format {format} (known: {known})", err=True)
         raise typer.Exit(2)
     settings = _load(scope)
     tmp = Path(f"{out}.tmp")
     count = 0
     try:
         try:
-            handle = tmp.open("w", encoding="utf-8")
+            handle = tmp.open("w", encoding="utf-8", newline="" if format == "csv" else None)
         except OSError as exc:
             typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
             raise typer.Exit(2) from None
         with handle:
+            writer = csv.writer(handle) if format == "csv" else None
+            if writer is not None:
+                writer.writerow(EXPORT_CSV_HEADER)
             engine = _open_engine(settings)
             try:
                 for row in iter_current_assessments(
@@ -1981,7 +2028,10 @@ def run_export(
                     criterion_id=criterion_id,
                     rubric_version=rubric_version,
                 ):
-                    handle.write(json.dumps(_export_object(row), ensure_ascii=False) + "\n")
+                    if writer is not None:
+                        writer.writerow(_export_csv_row(row))
+                    else:
+                        handle.write(json.dumps(_export_object(row), ensure_ascii=False) + "\n")
                     count += 1
             except SQLAlchemyError as exc:
                 _exit_database_unavailable(engine, None, exc)
@@ -2914,10 +2964,10 @@ def mosaic(
     run_mosaic(scope, scores, export, out, entity_dir, segment, layer)
 
 
-@app.command(name="export", help="Export the current assessment view as JSON Lines.")
+@app.command(name="export", help="Export the current assessment view as JSON Lines or CSV.")
 def export(
     scope: ScopeOpt,
-    format: Annotated[str, typer.Option("--format", help="Output format; only json is defined.")],
+    format: Annotated[str, typer.Option("--format", help="Output format: json or csv.")],
     out: Annotated[Path, typer.Option("--out", help="Output file path.")],
     entity_id: Annotated[int | None, typer.Option("--entity", help="Entity id.")] = None,
     criterion: Annotated[str | None, typer.Option("--criterion", help="Criterion id.")] = None,
@@ -2925,7 +2975,7 @@ def export(
         str | None, typer.Option("--rubric-version", help="Rubric version.")
     ] = None,
 ) -> None:
-    """Write one JSON Lines object per current assessment (with evidence) to ``--out``."""
+    """Write one JSON Lines object or CSV row per current assessment to ``--out``."""
     run_export(scope, format, out, entity_id, criterion, rubric_version)
 
 
