@@ -193,9 +193,7 @@ class ApplyResolutionTest(unittest.TestCase):
 
     def _created_runs(self) -> dict[str, int | None]:
         with Session(self.engine) as session:
-            return {
-                e.primary_domain: e.created_run for e in session.scalars(sa.select(Entity))
-            }
+            return {e.primary_domain: e.created_run for e in session.scalars(sa.select(Entity))}
 
     def test_run_id_sets_created_run_default_none(self) -> None:
         self.seed3()

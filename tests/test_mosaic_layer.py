@@ -96,7 +96,7 @@ def test_cli_layer_and_segment_intersect(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert _rows(tmp_path) == ["1"]
     page = (tmp_path / "m.html").read_text(encoding="utf-8")
-    assert "segment: Agencies" in page and "layer: home" in page
+    assert "segment: Agencies" in page and "layer: Home market" in page
 
 
 def test_cli_unknown_layer_exits_2_and_writes_nothing(tmp_path: Path) -> None:
@@ -119,12 +119,13 @@ def test_without_flag_output_unchanged(tmp_path: Path) -> None:
 
 
 def test_heading_layer_label_escaped(tmp_path: Path) -> None:
-    """Layers carry no ``label`` in the scope pack, so the id is the label; it is escaped."""
+    """An unlabelled layer is named by its id in the heading; it is escaped."""
     scope = tmp_path / "scope"
     shutil.copytree(EXAMPLE_SCOPE, scope)
     y = scope / "scope.yaml"
     y.write_text(
-        y.read_text(encoding="utf-8").replace("{id: home,", '{id: "<h&o>",'), encoding="utf-8"
+        y.read_text(encoding="utf-8").replace("{id: home,   label: Home market,", '{id: "<h&o>",'),
+        encoding="utf-8",
     )
     load_scope_pack(scope)
     rows = [{"entity_id": 1, "layers": ["<h&o>"], "topics": []}]
