@@ -55,3 +55,13 @@ projects; the number is kept so `scripts/merge_guard.py` and the round prompt ci
   identical bodies are stored once. Implementing the interface and filesystem backend is a normal
   backlog item.
 - **Carried in:** `.env.example`, `todo.md` (Phase 0 raw-storage row).
+
+## D-006 — Layering rule and governance ratchets (2026-11-26, operator direction; drafted by planner, owed to operator)
+
+- **Ruling:** `core/` holds domain-agnostic engine logic and must not import concrete adapters;
+  `adapters/` implement core interfaces and must not import `core/`; the CLI composition root lives
+  in `app/`. Every public symbol has a production caller or an allowlisted "unwired by design" row.
+- **Consequences:** enforced shrink-only in the local gate by
+  `scripts/check_import_direction_ratchet.py` (GV-01) and `scripts/check_reachability_ratchet.py`
+  (GV-02); allowlists only shrink. The configured gate type-checks `core` and `app`.
+- **Carried in:** GV-01..GV-04 rows in `todo.md`, `.agent/config.toml` `[verification]`.

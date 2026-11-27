@@ -17,7 +17,7 @@ from this table. Keys marked `n/a` have no tooling yet; commands skip those step
 | lint      | uv run ruff check . |
 | lint-fix  | uv run ruff check --fix . |
 | format    | uv run ruff format . |
-| typecheck | uv run mypy core |
+| typecheck | uv run mypy core app |
 | run       | n/a |
 | build     | n/a |
 <!-- /claude:commands -->
