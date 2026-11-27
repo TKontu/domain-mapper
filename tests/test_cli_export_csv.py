@@ -150,6 +150,8 @@ def test_csv_first_source_empty_when_snapshot_missing(engine, tmp_path) -> None:
     assert invoke(out, "csv").exit_code == 0
     [_, row] = read_rows(out)
     assert row[13:] == ["1", "1", "", ""]
+    data = out.read_bytes()
+    assert b"\r\n" not in data and data.endswith(b"\n") and data.count(b"\n") == 2
 
 
 def test_csv_empty_view_writes_header_only(engine, tmp_path) -> None:
@@ -158,7 +160,8 @@ def test_csv_empty_view_writes_header_only(engine, tmp_path) -> None:
     assert result.exit_code == 0, result.output
     assert result.output == f"exported 0 assessments to {out}\n"
     assert read_rows(out) == [HEADER]
-    assert out.read_bytes().endswith(b"\r\n")
+    assert out.read_bytes().endswith(b"\n")
+    assert b"\r\n" not in out.read_bytes()
     assert not Path(f"{out}.tmp").exists()
 
 

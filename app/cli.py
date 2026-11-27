@@ -2017,7 +2017,7 @@ def run_export(
             typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
             raise typer.Exit(2) from None
         with handle:
-            writer = csv.writer(handle) if format == "csv" else None
+            writer = csv.writer(handle, lineterminator="\n") if format == "csv" else None
             if writer is not None:
                 writer.writerow(EXPORT_CSV_HEADER)
             engine = _open_engine(settings)
