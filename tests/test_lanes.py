@@ -55,7 +55,14 @@ class FakeWorld:
             return 0, "?? x" if cmd[2] in self.dirty else ""
         if cmd[:2] == ["git", "-C"] and cmd[3] == "rev-list":
             return 0, "abc" if cmd[2] in self.unpushed else ""
+        if cmd[:2] == ["git", "-C"] and cmd[3] == "clean":
+            gone = set(cmd[cmd.index("--") + 1 :])
+            left = [ln for ln in self.status.get(cmd[2], "").splitlines() if ln[3:] not in gone]
+            self.status[cmd[2]] = "\n".join(left)
+            return 0, ""
         if cmd[:2] == ["git", "worktree"] and cmd[2] in ("remove", "prune"):
+            if cmd[2] == "remove" and (self.status.get(cmd[3]) or cmd[3] in self.dirty):
+                return 128, "fatal: contains modified or untracked files, use --force"
             if cmd[2] == "remove":
                 self.trees.pop(cmd[3], None)
             return 0, ""
@@ -320,6 +327,10 @@ class CleanupTests(LaneTestCase):
              "?? .pytest_cache/", "?? .env", "?? HANDOFF.md", "?? .claude/settings.local.json"]
         )  # fmt: skip
         self.assertIn(f"would remove {path} (lane/a1)", self.cleanup(go=False))
+        self.assertIn(f"removed {path} (lane/a1)", self.cleanup())
+        clean = next(c for c in self.world.calls if c[3:4] == ["clean"])
+        self.assertEqual(clean[-1], ".claude/settings.local.json")
+        self.assertNotIn(path, self.world.trees)
 
     def test_real_uncommitted_files_still_hold_the_tree(self):
         path = self.finished_lane()

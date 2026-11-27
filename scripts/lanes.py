@@ -451,6 +451,18 @@ def _dirty(path: str, seams: Seams) -> bool:
     return any(not (ln.startswith("?? ") and disposable(ln[3:])) for ln in out.splitlines() if ln)
 
 
+def _clear_disposable(path: str, seams: Seams) -> tuple[int, str]:
+    """Delete untracked disposable files, which make plain ``git worktree remove`` refuse."""
+    rc, out = seams.run(["git", "-C", path, "status", "--porcelain"], 60)
+    if rc:
+        return rc, out
+    junk = [ln[3:].strip('"') for ln in out.splitlines() if ln.startswith("?? ")]
+    junk = [rel for rel in junk if disposable(rel)]
+    if not junk:
+        return 0, ""
+    return seams.run(["git", "-C", path, "clean", "-fdx", "--", *junk], 60)
+
+
 def _unpushed(path: str, seams: Seams) -> bool:
     """HEAD has commits on no remote branch (origin/main included)."""
     rc, out = seams.run(["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes"], 60)
@@ -605,7 +617,9 @@ def cleanup(
         elif not go:
             report.append(f"would remove {path} ({branch})")
         else:
-            rc, out = seams.run(["git", "worktree", "remove", path], 120)
+            rc, out = _clear_disposable(path, seams)
+            if not rc:
+                rc, out = seams.run(["git", "worktree", "remove", path], 120)
             if rc:
                 report.append(f"hold {path} ({branch}): remove failed: {out[:160]}")
             else:
