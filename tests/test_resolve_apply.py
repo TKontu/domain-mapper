@@ -234,7 +234,8 @@ class ResolveApplyCliTest(unittest.TestCase):
         self.assertEqual(first.stdout.splitlines(), ["created 2 linked 3 skipped 1"])
         second = self.invoke("--apply")
         self.assertEqual(second.exit_code, 0, second.output)
-        self.assertEqual(second.stdout.splitlines(), ["created 0 linked 0 skipped 1"])
+        # RT-01 (134/A1): unchanged candidates -> the resolve unit is skipped, not re-applied.
+        self.assertEqual(second.stdout.splitlines(), ["created 0 linked 0 skipped 0", "skipped 1"])
         engine = sa.create_engine(self.db_url)
         try:
             self.assertEqual({s for _, s, _, _, _, _ in _entities(engine)}, {"example"})
