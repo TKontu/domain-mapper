@@ -385,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--entities", type=int, default=20, help="Entities to seed (1-50).")
     parser.add_argument("--timeout", type=float, default=900.0, help="Per-call LLM timeout s.")
     parser.add_argument("--criteria", default=None, help="Comma-separated criterion ids.")
-    parser.add_argument("--jobs", type=int, default=1, help="Concurrent assess pairs (1-8).")
+    parser.add_argument("--jobs", type=int, default=1, help="Concurrent assess pairs and screen calls (1-8).")
     parser.add_argument(
         "--verifier-max-tokens", type=int, default=None, help="Verifier max tokens (1-8192)."
     )
@@ -439,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     failed: str | None = None
     mosaic: dict[str, dict[str, int]] = {}
     try:
-        runner.run(["screen", *scope])
+        runner.run(["screen", *scope, "--jobs", str(ns.jobs)])
         calls = [
             (["assess", *scope, "--entity", str(eid), "--criterion", cid], f"assess {eid} {cid}")
             for eid, cid in assess_pairs(db_url, ids, criteria)

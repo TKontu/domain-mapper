@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -487,13 +488,15 @@ class BudgetedLLM:
     ``spent`` sums :attr:`LlmResult.cost` of calls completed through this wrapper. Costs are
     known only after a call, so the last allowed call may overshoot the budget once. Zero-cost
     calls are never refused. Built by :func:`build_llm` (``budget_usd``) for ``landscape
-    screen``; one instance per run.
+    screen``; one instance per run. Safe to share across threads: ``spent`` is read and summed
+    under a lock (LM-04); concurrent calls that pass the check together may each overshoot.
     """
 
     def __init__(self, inner: LLM, budget_usd: float) -> None:
         self.inner = inner
         self.budget_usd = _validate_rate(budget_usd, "budget_usd")
         self.spent = 0.0
+        self._lock = threading.Lock()
         self.model: str = inner.model
 
     def complete(
@@ -504,15 +507,18 @@ class BudgetedLLM:
         run_id: int,
         json_schema: Mapping[str, object] | None = None,
     ) -> LlmResult:
-        if self.spent > 0 and self.spent >= self.budget_usd:
+        with self._lock:
+            spent = self.spent
+        if spent > 0 and spent >= self.budget_usd:
             # Numbers only: the prompt never reaches an exception message.
             raise LlmBudgetExceeded(
-                f"run spent {self.spent:.4f} USD of budget {self.budget_usd:.4f} USD"
+                f"run spent {spent:.4f} USD of budget {self.budget_usd:.4f} USD"
             )
         result = self.inner.complete(
             prompt, purpose=purpose, run_id=run_id, json_schema=json_schema
         )
-        self.spent += result.cost
+        with self._lock:
+            self.spent += result.cost
         return result
 
 

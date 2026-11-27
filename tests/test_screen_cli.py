@@ -575,3 +575,116 @@ def test_budget_stop_records_unit_failed_and_run_failed(engine, monkeypatch) -> 
 def _screen_runs_ids(engine) -> list[int]:
     with Session(engine) as session:
         return list(session.scalars(sa.select(Run.id).order_by(Run.id)))
+
+
+# --- LM-04: --jobs N overlaps screen LLM calls ------------------------------------
+
+
+class SlowLLM(FakeLLM):
+    """Thread-safe fake that sleeps per call and tracks peak concurrency."""
+
+    def __init__(self, answers: dict[str, dict[str, object] | Exception], delay: float) -> None:
+        super().__init__(answers)
+        import threading
+
+        self.delay = delay
+        self.lock = threading.Lock()
+        self.active = self.peak = 0
+
+    def complete(self, prompt: str, **kwargs: Any) -> LlmResult:  # type: ignore[override]
+        import time
+
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(self.delay)
+            with self.lock:
+                return super().complete(prompt, **kwargs)
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+@pytest.mark.parametrize("jobs", ["0", "9"])
+def test_jobs_out_of_range_exits_2(engine, monkeypatch, jobs: str) -> None:
+    use_llm(monkeypatch, FakeLLM({}))
+    assert invoke("--jobs", jobs).exit_code == 2
+
+
+def _seed_five(engine) -> list[int]:
+    ids = [seed_entity(engine, f"E{i}", [[(0, "page text")]]) for i in range(2)]
+    ids.append(seed_entity(engine, "NoText"))
+    ids += [seed_entity(engine, f"E{i}", [[(0, "page text")]]) for i in range(2, 5)]
+    return ids
+
+
+def test_jobs_parallel_bounded_and_id_ordered(engine, monkeypatch) -> None:
+    ids = _seed_five(engine)
+    fake = SlowLLM({f"E{i}": answer() for i in range(5)}, delay=0.15)
+    use_llm(monkeypatch, fake)
+
+    result = invoke("--jobs", "3")
+
+    assert result.exit_code == 0, result.output
+    assert 1 < fake.peak <= 3
+    lines = result.output.splitlines()
+    assert [int(line.split()[1]) for line in lines[:-1]] == ids
+    assert lines[2] == f"skipped {ids[2]} no-text"
+    assert lines[-1] == "screened 5 skipped 1 errors 0"
+    rows = result_rows(engine)
+    assert [r[0] for r in rows] == [i for i in ids if i != ids[2]]
+    assert [u[0] for u in _work_units(engine)] == [str(i) for i in ids if i != ids[2]]
+
+
+def test_jobs_1_output_matches_default(engine, monkeypatch, tmp_path) -> None:
+    _seed_five(engine)
+    use_llm(monkeypatch, SlowLLM({f"E{i}": answer() for i in range(5)}, delay=0.0))
+    default = invoke()
+    assert default.exit_code == 0
+    with Session(engine) as session:
+        session.execute(sa.delete(ScreenResultRow))
+        session.execute(sa.update(Entity).values(status=STATUS_UNSCREENED))
+        session.commit()
+    from core.runs import WorkUnit
+
+    with Session(engine) as session:
+        session.execute(sa.delete(WorkUnit))
+        session.commit()
+    fake = SlowLLM({f"E{i}": answer() for i in range(5)}, delay=0.0)
+    use_llm(monkeypatch, fake)
+    serial = invoke("--jobs", "1")
+    assert serial.output == default.output
+    assert fake.peak == 1
+
+
+def test_jobs_budget_exceeded_stops_and_discards(engine, monkeypatch) -> None:
+    import adapters.llm as llm_module
+
+    ids = [seed_entity(engine, f"E{i}", [[(0, "page text")]]) for i in range(8)]
+    fake = SlowLLM({f"E{i}": answer() for i in range(8)}, delay=0.1)
+    original = fake.complete
+
+    def costly(prompt: str, **kwargs: Any) -> LlmResult:
+        r = original(prompt, **kwargs)
+        return dataclasses_replace(r, cost=0.75)
+
+    fake.complete = costly  # type: ignore[method-assign]
+    monkeypatch.setenv("DM_LLM_BUDGET_USD", "0.5")
+    monkeypatch.setattr(llm_module, "OpenAICompatibleLLM", lambda *a, **k: fake)
+
+    result = invoke("--jobs", "3")
+
+    assert result.exit_code == 1, result.output
+    assert "LlmBudgetExceeded" in result.output
+    assert len(fake.calls) < len(ids)
+    screened = [r[0] for r in result_rows(engine)]
+    assert screened == ids[: len(screened)]
+    assert entity_status(engine, ids[-1]) == STATUS_UNSCREENED
+    assert _screen_runs(engine) == [("screen", "failed")]
+
+
+def dataclasses_replace(result: LlmResult, **changes: Any) -> LlmResult:
+    import dataclasses
+
+    return dataclasses.replace(result, **changes)
