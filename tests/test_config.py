@@ -69,6 +69,20 @@ class DefaultsTests(SettingsTestCase):
         self.assertNotIn("super-secret-key", repr(settings))
         self.assertNotIn("super-secret-key", str(settings))
 
+    def test_gateway_key_is_loaded_and_absent_from_repr(self) -> None:
+        os.environ["DM_LLM_GATEWAY_API_KEY"] = "fake-test-key"
+
+        settings = load_settings(self.absent_env_file())
+
+        self.assertEqual(settings.llm_gateway_api_key, "fake-test-key")
+        self.assertNotIn("fake-test-key", repr(settings))
+        self.assertNotIn("fake-test-key", str(settings))
+
+    def test_blank_or_missing_gateway_key_is_none(self) -> None:
+        self.assertIsNone(load_settings(self.absent_env_file()).llm_gateway_api_key)
+        os.environ["DM_LLM_GATEWAY_API_KEY"] = "   "
+        self.assertIsNone(load_settings(self.absent_env_file()).llm_gateway_api_key)
+
     def test_database_url_password_is_absent_from_repr(self) -> None:
         os.environ["DM_DATABASE_URL"] = (
             "postgresql+psycopg://domain_mapper:db-secret@db:5432/domain_mapper"

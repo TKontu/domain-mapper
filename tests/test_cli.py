@@ -55,6 +55,13 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("sk-very-secret-value", result.output)
         self.assertNotIn("cloud_api_key", result.output)
 
+    def test_gateway_key_never_printed(self) -> None:
+        os.environ["DM_LLM_GATEWAY_API_KEY"] = "fake-test-key"
+        result = self.invoke("assess", "--scope", EXAMPLE_SCOPE, "--dry-run")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("fake-test-key", result.output)
+        self.assertNotIn("llm_gateway_api_key", result.output)
+
     def test_database_password_never_printed(self) -> None:
         os.environ["DM_DATABASE_URL"] = (
             "postgresql+psycopg://domain_mapper:db-secret@db:5432/domain_mapper"

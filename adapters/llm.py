@@ -557,6 +557,7 @@ def _build_inner(
             settings.llm_gateway_url,
             settings.local_model,
             db=db,
+            api_key=settings.llm_gateway_api_key,
             transport=transport,
             timeout=timeout,
             cost_per_mtok_in=settings.local_cost_per_mtok_in,
