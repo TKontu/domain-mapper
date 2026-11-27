@@ -635,7 +635,13 @@ def _make_screen_llm(settings: Settings, db: DbTarget) -> LLM:
 
     One budget per invocation (= per run): ``settings.llm_budget_usd`` caps the run's spend.
     """
-    return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
+    return build_llm(
+        settings,
+        "local",
+        db=db,
+        budget_usd=settings.llm_budget_usd,
+        timeout=settings.llm_timeout_s,
+    )
 
 
 def _open_run(engine: Engine, stage: str) -> int:
@@ -1608,13 +1614,25 @@ def run_export(
 
 def _make_assess_llm(settings: Settings, db: DbTarget) -> LLM:
     """Build the local extractor model for assess (§6 routing); the test seam for a fake adapter."""
-    return build_llm(settings, "local", db=db, budget_usd=settings.llm_budget_usd)
+    return build_llm(
+        settings,
+        "local",
+        db=db,
+        budget_usd=settings.llm_budget_usd,
+        timeout=settings.llm_timeout_s,
+    )
 
 
 def _make_verify_llm(settings: Settings, db: DbTarget) -> LLM:
     """Build the local verifier from ``settings.verifier_model`` (§6 routing); the test seam."""
     verifier_settings = dataclasses.replace(settings, local_model=settings.verifier_model)
-    return build_llm(verifier_settings, "local", db=db, budget_usd=settings.llm_budget_usd)
+    return build_llm(
+        verifier_settings,
+        "local",
+        db=db,
+        budget_usd=settings.llm_budget_usd,
+        timeout=settings.llm_timeout_s,
+    )
 
 
 def _find_criterion(rubric: Rubric, criterion_id: str) -> Criterion | None:

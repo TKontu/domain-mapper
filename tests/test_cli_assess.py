@@ -270,7 +270,7 @@ def test_verifier_built_from_verifier_model(engine, monkeypatch) -> None:
     built: list[tuple[str, str]] = []
     verifier = FakeLLM(AGREE)
 
-    def fake_build(settings, backend, *, db, budget_usd=None):  # type: ignore[no-untyped-def]
+    def fake_build(settings, backend, *, db, budget_usd=None, timeout=None):  # type: ignore[no-untyped-def]
         built.append((backend, settings.local_model))
         return verifier
 
