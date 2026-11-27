@@ -123,7 +123,7 @@ def test_rerun_embeds_zero(engine, monkeypatch) -> None:
 
     assert first.exit_code == 0, first.output
     assert second.exit_code == 0, second.output
-    assert second.stdout.splitlines() == ["embedded 0 batches 0"]
+    assert second.stdout.splitlines() == ["embedded 0 batches 0", "skipped 1"]  # RT-01 135/A1
     assert len(fake.calls) == 1  # the rerun made no embed call
 
 

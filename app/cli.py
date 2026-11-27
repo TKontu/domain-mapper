@@ -960,9 +960,10 @@ def _run_index_unit(
 ) -> tuple[EmbedStats, int]:
     """RT-01: run ``embed_pending_chunks`` as one :class:`core.runs.StageRunner` unit.
 
-    Stage ``index``, unit key ``"<model>"``, input hash = sha256 over the model, the pending
-    chunk count + max pending chunk id for that model (one aggregate query, the
-    ``core.embed_store`` pending predicate), ``limit`` and ``batch_size``. A unit already
+    Stage ``index``, unit key ``"<model>"``, input hash = sha256 over the model, the total
+    chunk count + max chunk id (one aggregate query), ``limit`` and ``batch_size``; with
+    ``limit`` set it also covers the chunks still pending for ``model`` (``core.embed_store``
+    predicate) so a bounded run continues on the next invocation. A unit already
     ``done`` for the same hash is skipped (no embedding, zero stats). Errors fail the unit and
     propagate; the caller owns the run row. Returns ``(stats, skipped)``.
     """
@@ -971,10 +972,14 @@ def _run_index_unit(
     def units() -> Iterator[tuple[str, str]]:
         pending = or_(ChunkRow.embedding_model.is_(None), ChunkRow.embedding_model != model)
         with engine.connect() as conn:
-            n, top = conn.execute(
-                select(func.count(ChunkRow.id), func.max(ChunkRow.id)).where(pending)
-            ).one()
-        raw = f"{model}\0{n}\0{top}\0{limit}\0{batch_size}"
+            n, top = conn.execute(select(func.count(ChunkRow.id), func.max(ChunkRow.id))).one()
+            # A bounded run may leave chunks pending; hash their count so the next run continues.
+            left = (
+                conn.execute(select(func.count(ChunkRow.id)).where(pending)).scalar_one()
+                if limit is not None
+                else ""
+            )
+        raw = f"{model}\0{n}\0{top}\0{left}\0{limit}\0{batch_size}"
         yield model, hashlib.sha256(raw.encode()).hexdigest()
 
     def handle(_key: str) -> None:
