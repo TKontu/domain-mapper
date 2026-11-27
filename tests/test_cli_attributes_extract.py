@@ -296,9 +296,7 @@ TWO_ATTRS = (
 )
 
 
-def seed_status(
-    engine, name: str, texts: list[str], status: str, scope_id: str = SCOPE_ID
-) -> int:
+def seed_status(engine, name: str, texts: list[str], status: str, scope_id: str = SCOPE_ID) -> int:
     with Session(engine) as session, session.begin():
         entity = Entity(
             scope_id=scope_id,
@@ -476,8 +474,12 @@ def test_all_invalid_output_one_pair_is_recorded_and_batch_continues(engine, tmp
             if self.calls == 1:
                 self.prompts.append(prompt)
                 return LlmResult(
-                    text="{}", parsed="not an object", tokens_in=1, tokens_out=1,
-                    cost=0.0, cache_hit=False,
+                    text="{}",
+                    parsed="not an object",
+                    tokens_in=1,
+                    tokens_out=1,
+                    cost=0.0,
+                    cache_hit=False,
                 )
             return super().complete(prompt, purpose=purpose, run_id=run_id, json_schema=json_schema)
 
@@ -506,7 +508,10 @@ def test_all_ungrounded_pair_exits_1_not_written_others_written(engine, tmp_path
             return LlmResult(
                 text="{}",
                 parsed={"value": 42, "quotes": [{"chunk_id": cid, "quote": quote}]},
-                tokens_in=1, tokens_out=1, cost=0.0, cache_hit=False,
+                tokens_in=1,
+                tokens_out=1,
+                cost=0.0,
+                cache_hit=False,
             )
 
     result, _ = invoke_batch(UngroundedOnce(), scope, "--all")
@@ -526,13 +531,18 @@ def test_all_ungrounded_pair_exits_1_not_written_others_written(engine, tmp_path
 def test_all_null_value_counts_null_exit_0(engine, tmp_path) -> None:
     scope = batch_scope(tmp_path, TWO_ATTRS)
     seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+
     # null value with no quotes -> checks pass, nothing stored
     class NullFake(GroundingFake):
         def complete(self, prompt, *, purpose, run_id, json_schema=None):
             self.prompts.append(prompt)
             return LlmResult(
-                text="{}", parsed={"value": None, "quotes": []},
-                tokens_in=1, tokens_out=1, cost=0.0, cache_hit=False,
+                text="{}",
+                parsed={"value": None, "quotes": []},
+                tokens_in=1,
+                tokens_out=1,
+                cost=0.0,
+                cache_hit=False,
             )
 
     result, _ = invoke_batch(NullFake(), scope, "--all")
