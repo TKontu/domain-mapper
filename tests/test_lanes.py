@@ -27,6 +27,7 @@ class FakeWorld:
         self.trees = {str(root): "main"}
         self.prs = {}  # branch -> [states]
         self.dirty = set()
+        self.status = {}  # path -> exact `git status --porcelain` output
         self.unpushed = set()
         self.tabs = []  # {"tab_id", "label"}
         self.panes = []  # {"tab_id", "cwd", "agent_status"}
@@ -49,10 +50,19 @@ class FakeWorld:
                 ]
             return 0, "\n".join(out)
         if cmd[:2] == ["git", "-C"] and cmd[3:5] == ["status", "--porcelain"]:
+            if cmd[2] in self.status:
+                return 0, self.status[cmd[2]]
             return 0, "?? x" if cmd[2] in self.dirty else ""
         if cmd[:2] == ["git", "-C"] and cmd[3] == "rev-list":
             return 0, "abc" if cmd[2] in self.unpushed else ""
+        if cmd[:2] == ["git", "-C"] and cmd[3] == "clean":
+            gone = set(cmd[cmd.index("--") + 1 :])
+            left = [ln for ln in self.status.get(cmd[2], "").splitlines() if ln[3:] not in gone]
+            self.status[cmd[2]] = "\n".join(left)
+            return 0, ""
         if cmd[:2] == ["git", "worktree"] and cmd[2] in ("remove", "prune"):
+            if cmd[2] == "remove" and (self.status.get(cmd[3]) or cmd[3] in self.dirty):
+                return 128, "fatal: contains modified or untracked files, use --force"
             if cmd[2] == "remove":
                 self.trees.pop(cmd[3], None)
             return 0, ""
@@ -296,6 +306,84 @@ class CleanupTests(LaneTestCase):
                 arrange()
                 self.assertIn(f"hold {path} (lane/a1): {reason}", self.cleanup())
                 self.assertIn(path, self.world.trees)
+
+    def recorded_lane(self, branch="lane/a1"):
+        """A finished, written-up command lane whose worktree has no tab left."""
+        record = self.start(cwd=self.lane_dir, branch=branch)
+        Path(record["rc_file"]).write_text("0\n2026-01-01T00:00:00Z\n")
+        lanes.mark_recorded(self.root, "a1", "round 9")
+        self.world.tabs, self.world.panes = [], []
+        path = record["cwd"]
+        self.world.trees[path] = branch
+        if branch:
+            self.world.prs[branch] = ["MERGED"]
+        return path
+
+    def test_a_tree_dirty_only_with_disposable_files_is_removed(self):
+        path = self.finished_lane()
+        self.world.tabs, self.world.panes = [], []
+        self.world.status[path] = "\n".join(
+            ["?? run.sh", "?? live_runner.sh", "?? .venv/", "?? core/__pycache__/",
+             "?? .pytest_cache/", "?? .env", "?? HANDOFF.md", "?? .claude/settings.local.json"]
+        )  # fmt: skip
+        self.assertIn(f"would remove {path} (lane/a1)", self.cleanup(go=False))
+        self.assertIn(f"removed {path} (lane/a1)", self.cleanup())
+        clean = next(c for c in self.world.calls if c[3:4] == ["clean"])
+        self.assertEqual(clean[-1], ".claude/settings.local.json")
+        self.assertNotIn(path, self.world.trees)
+
+    def test_real_uncommitted_files_still_hold_the_tree(self):
+        path = self.finished_lane()
+        self.world.tabs, self.world.panes = [], []
+        for status in ("?? run.sh\n?? core/new.py", " M run.sh", "?? docs/HANDOFF.md"):
+            with self.subTest(status):
+                self.world.status[path] = status
+                report = self.cleanup()
+                self.assertTrue(any(r.startswith(f"hold {path} (lane/a1): dirty") for r in report))
+                self.assertIn(path, self.world.trees)
+
+    def test_a_recorded_detached_tree_reachable_from_a_remote_is_removed(self):
+        path = self.recorded_lane(branch="")
+        self.world.status[path] = "?? run.sh"
+        report = self.cleanup()
+        self.assertIn(f"removed {path} (detached)", report)
+        self.assertNotIn(path, self.world.trees)
+        self.assertFalse(any(c[:3] == ["gh", "pr", "list"] for c in self.world.calls))
+
+    def test_a_recorded_branch_lane_without_a_pr_is_removed_once_pushed(self):
+        path = self.recorded_lane()
+        self.world.prs.pop("lane/a1")
+        self.assertIn(f"would remove {path} (lane/a1)", self.cleanup(go=False))
+
+    def test_a_detached_tree_with_unpushed_commits_or_no_record_is_held(self):
+        path = self.recorded_lane(branch="")
+        self.world.unpushed.add(path)
+        self.assertIn(f"hold {path} (detached): detached-unpushed", self.cleanup())
+        self.assertIn(path, self.world.trees)
+        other = str(Path(self.tmp.name) / "proj-other")
+        self.world.trees[other] = ""
+        self.assertIn(f"hold {other} (detached): detached", self.cleanup())
+
+    def test_a_running_detached_lane_is_untouched(self):
+        self.start(cwd=self.lane_dir, branch="")
+        Path(self.root / ".agent-runs/lanes/a1/runner.pid").write_text("99\n")
+        self.world.alive.add(99)
+        path = str(self.lane_dir.resolve())
+        self.world.trees[path] = ""
+        self.world.tabs, self.world.panes = [], []
+        report = self.cleanup()
+        self.assertIn(f"hold {path} (detached): lane a1 running", report)
+        self.assertFalse(any(c[:3] == ["git", "worktree", "remove"] for c in self.world.calls))
+
+    def test_a_carried_lane_is_released_once_it_is_recorded(self):
+        path = self.recorded_lane()
+        record = json.loads((self.root / ".agent-runs/lanes/a1/lane.json").read_text())
+        self.world.tabs = [{"tab_id": record["tab_id"], "label": record["label"]}]
+        self.world.panes = [{"tab_id": record["tab_id"], "cwd": path, "agent_status": "idle"}]
+        handoff = "## Carried lanes\n- live-proj-a1: long sweep, do not halt\n"
+        report = self.cleanup(go=False, handoff=handoff)
+        self.assertIn(f"would close tab {record['tab_id']} live-proj-a1", report)
+        self.assertIn(f"would remove {path} (lane/a1)", report)
 
     def test_carried_lanes_are_held(self):
         path = self.finished_lane()
