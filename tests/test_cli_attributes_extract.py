@@ -784,3 +784,122 @@ def test_all_chunk_text_edited_in_place_re_extracts_entity_pairs(engine, tmp_pat
     pair_lines = [ln for ln in result.output.splitlines() if ln.startswith("entity ")]
     assert all(ln.startswith(f"entity {first} ") for ln in pair_lines) and len(pair_lines) == 2
     assert result.output.splitlines()[-1] == "pairs 4 stored 2 null 0 failed 0 errors 0 skipped 2"
+
+
+# --- RT-01 (138/A1): single mode runs its pair as one StageRunner unit ------------
+
+
+def test_single_records_one_done_unit_under_finished_run(engine) -> None:  # RT-01
+    entity_id, ids = seed(engine, "acme", [TEXT])
+    fake = FakeLLM({"value": 42, "quotes": [{"chunk_id": ids[0], "quote": "headcount of 42"}]})
+    result, _ = invoke(fake, "--entity", str(entity_id), "--attribute", ATTR)
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[0] == "value 42 checks pass chunks 1"
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+    assert _extract_units(engine) == [(f"{entity_id}:{ATTR}", "done", 1, _run_ids(engine)[0])]
+
+
+def test_single_unchanged_rerun_is_skipped(engine) -> None:  # RT-01
+    entity_id, ids = seed(engine, "acme", [TEXT])
+    parsed = {"value": 42, "quotes": [{"chunk_id": ids[0], "quote": "headcount of 42"}]}
+    assert (
+        invoke(FakeLLM(parsed), "--entity", str(entity_id), "--attribute", ATTR)[0].exit_code == 0
+    )
+    fake = FakeLLM(parsed)
+    result, _ = invoke(fake, "--entity", str(entity_id), "--attribute", ATTR)
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["skipped 1"]
+    assert fake.prompts == []
+    assert len(values(engine)) == 1
+    assert runs(engine) == [("attributes_extract", FINISHED)] * 2
+
+
+def test_single_checks_fail_unit_is_done(engine) -> None:  # RT-01
+    entity_id, ids = seed(engine, "acme", [TEXT])
+    fake = FakeLLM({"value": 42, "quotes": [{"chunk_id": ids[0], "quote": "invented words"}]})
+    result, _ = invoke(fake, "--entity", str(entity_id), "--attribute", ATTR)
+    assert result.exit_code == 1
+    assert [u[1] for u in _extract_units(engine)] == ["done"]
+    assert runs(engine) == [("attributes_extract", FINISHED)]
+
+
+def test_single_changed_chunk_text_reruns(engine) -> None:  # RT-01
+    entity_id, ids = seed(engine, "acme", [TEXT])
+    parsed = {"value": 42, "quotes": [{"chunk_id": ids[0], "quote": "headcount of 42"}]}
+    assert (
+        invoke(FakeLLM(parsed), "--entity", str(entity_id), "--attribute", ATTR)[0].exit_code == 0
+    )
+    with Session(engine) as session, session.begin():
+        session.get(ChunkRow, ids[0]).text = "Edited: " + TEXT
+    fake = FakeLLM(parsed)
+    result, _ = invoke(fake, "--entity", str(entity_id), "--attribute", ATTR)
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 1
+
+
+def test_single_changed_n_reruns(engine) -> None:  # RT-01
+    entity_id, ids = seed(engine, "acme", [TEXT])
+    parsed = {"value": 42, "quotes": [{"chunk_id": ids[0], "quote": "headcount of 42"}]}
+    assert (
+        invoke(FakeLLM(parsed), "--entity", str(entity_id), "--attribute", ATTR)[0].exit_code == 0
+    )
+    fake = FakeLLM(parsed)
+    result, _ = invoke(fake, "--entity", str(entity_id), "--attribute", ATTR, "--n", "3")
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 1
+
+
+def test_single_changed_attribute_definition_reruns(engine, tmp_path) -> None:  # RT-01
+    entity = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    args = ("--entity", str(entity), "--attribute", "attr_a")
+    assert invoke_batch(GroundingFake(value=42), scope, *args)[0].exit_code == 0
+    (scope / "attributes.yaml").write_text(TWO_ATTRS.replace("label: Headcount", "label: Staff"))
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, *args)
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 1
+
+
+def test_single_llm_error_fails_unit_and_run(engine) -> None:  # RT-01
+    entity_id, _ = seed(engine, "acme", [TEXT])
+    result, _ = invoke(
+        FakeLLM(error=LlmError("boom")), "--entity", str(entity_id), "--attribute", ATTR
+    )
+    assert result.exit_code == 1
+    assert runs(engine) == [("attributes_extract", FAILED)]
+    assert [u[1] for u in _extract_units(engine)] == ["failed"]
+    assert values(engine) == []
+
+
+def test_single_setup_errors_leave_no_run_or_unit(engine) -> None:  # RT-01
+    entity_id, _ = seed(engine, "acme", [TEXT])
+    for args in (("--attribute", "nope"), ("--attribute", ATTR, "--n", "0")):
+        result, _ = invoke(FakeLLM(), "--entity", str(entity_id), *args)
+        assert result.exit_code == 2
+    with mock.patch.object(cli, "_make_assess_llm", side_effect=ValueError("bad")):
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "attributes-extract",
+                "--scope",
+                EXAMPLE_SCOPE,
+                "--entity",
+                str(entity_id),
+                "--attribute",
+                ATTR,
+            ],
+        )
+    assert result.exit_code == 2
+    assert runs(engine) == [] and _extract_units(engine) == []
+
+
+def test_single_skips_pair_done_by_batch(engine, tmp_path) -> None:  # RT-01
+    scope = batch_scope(tmp_path, TWO_ATTRS)
+    entity = seed_status(engine, "acme", [BATCH_TEXT], "in_scope")
+    assert invoke_batch(GroundingFake(value=42), scope, "--all")[0].exit_code == 0
+    fake = GroundingFake(value=42)
+    result, _ = invoke_batch(fake, scope, "--entity", str(entity), "--attribute", "attr_a")
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["skipped 1"]
+    assert fake.prompts == []
