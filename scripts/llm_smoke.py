@@ -30,6 +30,11 @@ from core.config import Settings, load_settings  # noqa: E402
 from core.runs import Run, create_all  # noqa: E402
 
 PROMPT = "Reply with the single word: ok"
+LONG_PROMPT = (
+    "Write one paragraph of about 200 words describing how a public library organises "
+    "its catalogue. Plain prose, no lists or headings."
+)
+PROMPTS = {"short": PROMPT, "long": LONG_PROMPT}
 PURPOSE = "smoke"
 
 
@@ -46,11 +51,23 @@ def _setup(env_file: str, db_path: str) -> tuple[Settings, Engine, int]:
 
 
 def run_smoke(
-    env_file: str, timeout: float, db_path: str, transport: Transport | None = None
+    env_file: str,
+    timeout: float,
+    db_path: str,
+    transport: Transport | None = None,
+    *,
+    prompt: str = "short",
+    max_tokens: int | None = None,
+    warmup: bool = False,
 ) -> dict[str, Any]:
     settings, engine, run_id = _setup(env_file, db_path)
-    result = _one_call(settings, engine, run_id, timeout, transport)
+    call = (settings, engine, run_id, timeout, transport, prompt, max_tokens)
+    warm = _one_call(*call)["latency_s"] if warmup else None
+    result = _one_call(*call)
     engine.dispose()
+    result.update(max_tokens=max_tokens, prompt=prompt)
+    if warmup:
+        result["warmup_latency_s"] = warm
     return result
 
 
@@ -61,17 +78,23 @@ def run_parallel(
     parallel: int,
     rounds: int,
     transport: Transport | None = None,
+    *,
+    prompt: str = "short",
+    max_tokens: int | None = None,
+    warmup: bool = False,
 ) -> dict[str, Any]:
-    """R rounds of N simultaneous completions; threads bounded by N."""
+    """R rounds of N simultaneous completions; threads bounded by N.
+
+    With ``warmup`` one call runs first; it is reported only as ``warmup_latency_s``.
+    """
     settings, engine, run_id = _setup(env_file, db_path)
+    call = (settings, engine, run_id, timeout, transport, prompt, max_tokens)
+    warm = _one_call(*call)["latency_s"] if warmup else None
     round_results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=parallel) as pool:
         for index in range(rounds):
             started = time.monotonic()
-            futures = [
-                pool.submit(_one_call, settings, engine, run_id, timeout, transport)
-                for _ in range(parallel)
-            ]
+            futures = [pool.submit(_one_call, *call) for _ in range(parallel)]
             calls = [f.result() for f in futures]
             latencies = [c["latency_s"] for c in calls]
             round_results.append(
@@ -80,18 +103,24 @@ def run_parallel(
                     "wall_s": round(time.monotonic() - started, 3),
                     "max_latency_s": max(latencies),
                     "min_latency_s": min(latencies),
+                    "tokens_out_total": sum(c["tokens_out"] or 0 for c in calls),
                     "calls": calls,
                 }
             )
     engine.dispose()
     ok = all(c["status"] == "ok" for r in round_results for c in r["calls"])
-    return {
+    summary: dict[str, Any] = {
         "model": settings.local_model,
         "parallel": parallel,
         "rounds": rounds,
+        "max_tokens": max_tokens,
+        "prompt": prompt,
         "status": "ok" if ok else "error",
         "round_results": round_results,
     }
+    if warmup:
+        summary["warmup_latency_s"] = warm
+    return summary
 
 
 def _one_call(
@@ -100,6 +129,8 @@ def _one_call(
     run_id: int,
     timeout: float,
     transport: Transport | None,
+    prompt: str = "short",
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "model": settings.local_model,
@@ -111,8 +142,15 @@ def _one_call(
     }
     started = time.monotonic()
     try:
-        llm = build_llm(settings, "local", db=engine, transport=transport, timeout=timeout)
-        out = llm.complete(PROMPT, purpose=PURPOSE, run_id=run_id)
+        llm = build_llm(
+            settings,
+            "local",
+            db=engine,
+            transport=transport,
+            timeout=timeout,
+            max_tokens=max_tokens,
+        )
+        out = llm.complete(PROMPTS[prompt], purpose=PURPOSE, run_id=run_id)
         result.update(status="ok", tokens_in=out.tokens_in, tokens_out=out.tokens_out)
     except Exception as exc:  # recorded, never re-raised: message may not be trusted
         result["error_class"] = type(exc).__name__
@@ -138,13 +176,21 @@ def main(argv: Sequence[str] | None = None, transport: Transport | None = None) 
     parser.add_argument("--out", default=None)
     parser.add_argument("--parallel", type=_bounded(1, 8), default=1)
     parser.add_argument("--rounds", type=_bounded(1, 5), default=1)
+    parser.add_argument("--max-tokens", type=_bounded(1, 4096), default=None)
+    parser.add_argument("--long", action="store_true", help="ask for a ~200-word paragraph")
+    parser.add_argument("--warmup", action="store_true", help="one unreported call first")
     args = parser.parse_args(argv)
+    opts: dict[str, Any] = {
+        "prompt": "long" if args.long else "short",
+        "max_tokens": args.max_tokens,
+        "warmup": args.warmup,
+    }
     db = args.db or str(Path(tempfile.mkdtemp(prefix="llm-smoke-")) / "smoke.sqlite")
     if args.parallel == 1 and args.rounds == 1:
-        result = run_smoke(args.env_file, args.timeout, db, transport)
+        result = run_smoke(args.env_file, args.timeout, db, transport, **opts)
     else:
         result = run_parallel(
-            args.env_file, args.timeout, db, args.parallel, args.rounds, transport
+            args.env_file, args.timeout, db, args.parallel, args.rounds, transport, **opts
         )
     text = json.dumps(result, sort_keys=True)
     if args.out:

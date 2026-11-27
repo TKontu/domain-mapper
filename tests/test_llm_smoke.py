@@ -72,7 +72,17 @@ def test_smoke_ok_hides_secrets(env_file, tmp_path, capsys):
     result = json.loads(out.read_text(encoding="utf-8"))
     assert result["status"] == "ok" and result["model"] == "fake-model"
     assert (result["tokens_in"], result["tokens_out"]) == (7, 1)
-    assert set(result) == {"model", "latency_s", "status", "error_class", "tokens_in", "tokens_out"}
+    assert set(result) == {
+        "model",
+        "latency_s",
+        "status",
+        "error_class",
+        "tokens_in",
+        "tokens_out",
+        "max_tokens",
+        "prompt",
+    }
+    assert result["max_tokens"] is None and result["prompt"] == "short"
 
 
 def test_smoke_error_records_class(env_file, tmp_path, capsys):
@@ -153,3 +163,103 @@ def test_parallel_one_failure_exit_1(env_file, tmp_path, capsys):
     calls = json.loads(out.read_text(encoding="utf-8"))["round_results"][0]["calls"]
     assert sorted(c["status"] for c in calls) == ["error", "ok", "ok"]
     assert [c["error_class"] for c in calls if c["status"] == "error"] == ["LlmError"]
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.bodies: list[dict] = []
+        self.lock = threading.Lock()
+
+    def __call__(
+        self, url: str, *, headers: Mapping[str, str], body: bytes, timeout: float
+    ) -> HttpResponse:
+        with self.lock:
+            self.bodies.append(json.loads(body))
+        return _ok(url, headers=headers, body=body, timeout=timeout)
+
+
+def _prompt_text(body: dict) -> str:
+    return " ".join(m["content"] for m in body["messages"])
+
+
+def test_max_tokens_reaches_payload(env_file, tmp_path, capsys):
+    out = tmp_path / "r.json"
+    rec = _Recorder()
+    rc = _load().main(
+        ["--env-file", str(env_file), "--out", str(out), "--max-tokens", "512"], transport=rec
+    )
+    assert rc == 0
+    _check_no_leak(capsys, out)
+    assert [b["max_tokens"] for b in rec.bodies] == [512]
+    assert json.loads(out.read_text(encoding="utf-8"))["max_tokens"] == 512
+
+
+def test_default_has_no_max_tokens(env_file, tmp_path, capsys):
+    rec = _Recorder()
+    assert _load().main(["--env-file", str(env_file)], transport=rec) == 0
+    assert "max_tokens" not in rec.bodies[0]
+
+
+@pytest.mark.parametrize("value", ["0", "4097"])
+def test_max_tokens_bounds_exit_2(env_file, value):
+    with pytest.raises(SystemExit) as exc:
+        _load().main(["--env-file", str(env_file), "--max-tokens", value], transport=_ok)
+    assert exc.value.code == 2
+
+
+def test_long_changes_prompt(env_file, tmp_path, capsys):
+    mod = _load()
+    short, long_ = _Recorder(), _Recorder()
+    out = tmp_path / "r.json"
+    assert mod.main(["--env-file", str(env_file)], transport=short) == 0
+    assert (
+        mod.main(["--env-file", str(env_file), "--long", "--out", str(out)], transport=long_) == 0
+    )
+    _check_no_leak(capsys, out)
+    assert _prompt_text(short.bodies[0]) == mod.PROMPT
+    assert _prompt_text(long_.bodies[0]) == mod.LONG_PROMPT != mod.PROMPT
+    assert "200" in mod.LONG_PROMPT
+    assert json.loads(out.read_text(encoding="utf-8"))["prompt"] == "long"
+
+
+def test_warmup_extra_call_excluded_from_rounds(env_file, tmp_path, capsys):
+    out = tmp_path / "r.json"
+    fake = _Slow(0.01)
+    rc = _load().main(
+        [
+            "--env-file",
+            str(env_file),
+            "--out",
+            str(out),
+            "--parallel",
+            "2",
+            "--rounds",
+            "2",
+            "--warmup",
+            "--long",
+            "--max-tokens",
+            "300",
+        ],
+        transport=fake,
+    )
+    assert rc == 0
+    _check_no_leak(capsys, out)
+    assert fake.count == 5
+    summary = json.loads(out.read_text(encoding="utf-8"))
+    assert isinstance(summary["warmup_latency_s"], float)
+    assert summary["max_tokens"] == 300 and summary["prompt"] == "long"
+    assert sum(len(r["calls"]) for r in summary["round_results"]) == 4
+    for rnd in summary["round_results"]:
+        assert rnd["tokens_out_total"] == sum(c["tokens_out"] for c in rnd["calls"]) == 2
+
+
+def test_warmup_single_call(env_file, tmp_path, capsys):
+    out = tmp_path / "r.json"
+    fake = _Slow(0.0)
+    assert (
+        _load().main(["--env-file", str(env_file), "--out", str(out), "--warmup"], transport=fake)
+        == 0
+    )
+    assert fake.count == 2
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert "warmup_latency_s" in result and result["tokens_out"] == 1
