@@ -6,6 +6,7 @@ by `landscape schema` (SP-03).
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -85,6 +86,28 @@ class Scope(_Model):
     layers: list[Layer] = Field(min_length=1)
     languages: dict[str, list[str]] = Field(default_factory=dict)
     crawl: CrawlPolicy = Field(default_factory=CrawlPolicy)
+    # MP-03: optional country -> literal terms for deterministic presence extraction.
+    presence_terms: dict[str, list[str]] | None = None
+
+    @field_validator("presence_terms")
+    @classmethod
+    def _valid_presence_terms(
+        cls, terms: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
+        if terms is None:
+            return None
+        for country, words in terms.items():
+            if not re.fullmatch(r"[A-Z]{2}", country):
+                raise ValueError(
+                    f"presence_terms country must be an uppercase ISO-3166 alpha-2 code, "
+                    f"got {country!r}"
+                )
+            if not words:
+                raise ValueError(f"presence_terms {country} must list at least one term")
+            for word in words:
+                if not word.strip():
+                    raise ValueError(f"presence_terms {country} has an empty term")
+        return terms
 
 
 # --- rubric.yaml --------------------------------------------------------------
