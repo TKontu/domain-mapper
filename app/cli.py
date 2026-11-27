@@ -67,8 +67,10 @@ directory exits 2 and leaves no ``PATH``.
 
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import dataclasses
+import functools
 import hashlib
 import json
 import os
@@ -167,7 +169,7 @@ from core.scope_pack import (
     load_scope_pack,
     scope_pack_json_schemas,
 )
-from core.screen import ScreenError, screen_entity
+from core.screen import ScreenError, ScreenResult, screen_entity
 from core.screen_store import (
     DEFAULT_MAX_CHARS,
     STATUS_IN_SCOPE,
@@ -234,6 +236,9 @@ IndexLimitOpt = Annotated[
     int | None, typer.Option("--limit", min=0, help="Max chunks to embed; 0 embeds none.")
 ]
 DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Print the plan and exit.")]
+JobsOpt = Annotated[
+    int, typer.Option("--jobs", min=1, max=8, help="Concurrent screen LLM calls (1-8).")
+]
 
 
 UrlOpt = Annotated[
@@ -702,11 +707,18 @@ class _ScreenBudgetStop(Exception):
     """Raised by the screen handler so StageRunner records the unit failed and stops."""
 
 
-def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool) -> None:
+def run_screen(
+    scope: Path, layer: str | None, limit: int | None, dry_run: bool, jobs: int = 1
+) -> None:
     """Screen each ``unscreened`` entity of ``scope``'s id with the small local model.
 
-    One entity at a time in id order, at most ``limit``. Prints one line per entity and the final
+    Entities in id order, at most ``limit``. Prints one line per entity and the final
     ``screened S skipped K errors E``. Exits 1 if any entity errored, 2 on bad setup.
+
+    With ``jobs`` > 1 (LM-04) up to ``jobs`` ``screen_entity`` calls run on a bounded thread pool,
+    prefetched at most ``jobs`` units ahead of the StageRunner; results, output lines and unit
+    records stay on the main thread in id order. A budget stop cancels not-yet-started calls;
+    running ones finish and their results are discarded (those entities stay unscreened).
     """
     settings = _load(scope)
     if dry_run:
@@ -729,38 +741,72 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
 
         run_id = _open_run(engine, "screen")
         screened = skipped = errors = 0
-        current: dict[str, tuple[EntityRef, str]] = {}  # the one entity in flight
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=jobs) if jobs > 1 else None
+        # Units handed to the StageRunner, keyed by unit key: entity and a result getter.
+        current: dict[str, tuple[EntityRef, Callable[[], ScreenResult]]] = {}
+        # Prefetch window in id order: ``(entity, None)`` is a no-text skip.
+        window: deque[tuple[EntityRef, tuple[str, str, Callable[[], ScreenResult]] | None]] = (
+            deque()
+        )
+        futures: list[concurrent.futures.Future[ScreenResult]] = []
+
+        def call(entity: EntityRef, text: str) -> ScreenResult:
+            return screen_entity(
+                llm,
+                pack,
+                name=entity.name,
+                domain=entity.primary_domain,
+                text=text,
+                run_id=run_id,
+                max_chars=DEFAULT_MAX_CHARS,
+            )
 
         def units() -> Iterator[tuple[str, str]]:
             nonlocal skipped
-            for entity in iter_entities(
-                engine, pack.scope.id, limit=limit, status=STATUS_UNSCREENED
-            ):
-                text = load_entity_text(engine, entity.id)
-                if not text.strip():
+            source = iter_entities(engine, pack.scope.id, limit=limit, status=STATUS_UNSCREENED)
+            exhausted = False
+
+            def fill() -> None:
+                nonlocal exhausted
+                while not exhausted and sum(1 for _, u in window if u) < max(jobs, 1):
+                    entity = next(source, None)
+                    if entity is None:
+                        exhausted = True
+                        return
+                    text = load_entity_text(engine, entity.id)
+                    if not text.strip():
+                        window.append((entity, None))
+                        continue
+                    digest = hashlib.sha256(f"{pack.scope.id}\0{text}".encode()).hexdigest()
+                    getter: Callable[[], ScreenResult]
+                    if pool is None:
+                        getter = functools.partial(call, entity, text)
+                    else:
+                        future = pool.submit(call, entity, text)
+                        futures.append(future)
+                        getter = future.result
+                    window.append((entity, (str(entity.id), digest, getter)))
+
+            while True:
+                fill()
+                if not window:
+                    return
+                entity, unit = window.popleft()
+                if unit is None:
                     # Not recorded as a unit: it is retried once text arrives.
                     typer.echo(f"skipped {entity.id} no-text")
                     skipped += 1
                     continue
-                key = str(entity.id)
+                key, digest, getter = unit
                 current.clear()
-                current[key] = (entity, text)
-                digest = hashlib.sha256(f"{pack.scope.id}\0{text}".encode()).hexdigest()
+                current[key] = (entity, getter)
                 yield key, digest
 
         def handle(key: str) -> None:
             nonlocal screened, errors
-            entity, text = current.pop(key)
+            entity, getter = current.pop(key)
             try:
-                result = screen_entity(
-                    llm,
-                    pack,
-                    name=entity.name,
-                    domain=entity.primary_domain,
-                    text=text,
-                    run_id=run_id,
-                    max_chars=DEFAULT_MAX_CHARS,
-                )
+                result = getter()
             except LlmBudgetExceeded as exc:
                 # The run's budget is spent: stop cleanly, the rest stay unscreened.
                 typer.echo(f"error {entity.id} {type(exc).__name__}: {exc}")
@@ -783,6 +829,12 @@ def run_screen(scope: Path, layer: str | None, limit: int | None, dry_run: bool)
                 )
             except _ScreenBudgetStop:
                 pass
+            finally:
+                if pool is not None:
+                    # Not-yet-started calls are cancelled; running ones finish, results dropped.
+                    for future in futures:
+                        future.cancel()
+                    pool.shutdown(wait=True, cancel_futures=True)
         except SQLAlchemyError:
             raise  # the outer handler closes the run best-effort and prints one line (AB-01)
         except BaseException as exc:
@@ -2202,9 +2254,10 @@ def screen(
     layer: LayerOpt = None,
     limit: LimitOpt = None,
     dry_run: DryRunOpt = False,
+    jobs: JobsOpt = 1,
 ) -> None:
     """Classify each ``unscreened`` entity of the scope from its stored chunk text."""
-    run_screen(scope, layer, limit, dry_run)
+    run_screen(scope, layer, limit, dry_run, jobs)
 
 
 @app.command(name="assess", help="Assess one entity against one rubric criterion.")

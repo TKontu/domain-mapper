@@ -415,3 +415,12 @@ def test_verifier_max_tokens_omitted_passes_env_file_through(
     expected = "999" if line else None
     assert fake.envs and all(e.get("DM_VERIFIER_MAX_TOKENS") == expected for e in fake.envs)
     assert summary["verifier_max_tokens"] is None
+
+
+@pytest.mark.parametrize("jobs", ["1", "3"])
+def test_jobs_passed_to_screen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, jobs: str) -> None:
+    fake = _FakeRun()
+    _main_jobs(tmp_path, monkeypatch, fake, "--jobs", jobs)
+    screen = [c for c in fake.calls if "screen" in c]
+    assert len(screen) == 1
+    assert screen[0][screen[0].index("--jobs") + 1] == jobs

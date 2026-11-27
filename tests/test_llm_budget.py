@@ -206,3 +206,27 @@ def test_budget_refuses_the_second_call_now_that_cost_is_known(engine: Engine) -
 
     assert len(transport.calls) == 1
     assert len(call_rows(engine)) == 1
+
+
+def test_concurrent_calls_sum_spent_exactly() -> None:  # LM-04
+    import threading
+    import time
+
+    class SlowCost(CostLLM):
+        def complete(self, prompt: str, **kwargs: Any) -> LlmResult:  # type: ignore[override]
+            time.sleep(0.001)
+            return super().complete(prompt, **kwargs)
+
+    wrapper = BudgetedLLM(SlowCost(0.001), budget_usd=1000.0)
+    threads = [
+        threading.Thread(
+            target=lambda: [wrapper.complete(PROMPT, purpose="screen", run_id=1) for _ in range(50)]
+        )
+        for _ in range(8)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert math.isclose(wrapper.spent, 400 * 0.001)
+    assert hasattr(wrapper, "_lock")
