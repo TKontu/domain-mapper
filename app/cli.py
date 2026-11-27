@@ -85,7 +85,7 @@ from typing import Annotated, Any, NoReturn
 from urllib.parse import urlsplit
 
 import typer
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -132,7 +132,7 @@ from core.attribute_store import (
 from core.candidate_store import Candidate, NewCandidate, record_candidates
 from core.chunk_store import ChunkRow
 from core.config import Settings, load_settings
-from core.embed_store import EmbedStoreError, embed_pending_chunks
+from core.embed_store import EmbedStats, EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, Entity, EntityRef, iter_entities
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
@@ -950,6 +950,43 @@ def _make_reranker(settings: Settings, model: str) -> Reranker:
     return build_reranker(settings, model)
 
 
+def _run_index_unit(
+    engine: Engine,
+    run_id: int,
+    embedder: Embedder,
+    model: str,
+    batch_size: int,
+    limit: int | None,
+) -> tuple[EmbedStats, int]:
+    """RT-01: run ``embed_pending_chunks`` as one :class:`core.runs.StageRunner` unit.
+
+    Stage ``index``, unit key ``"<model>"``, input hash = sha256 over the model, the pending
+    chunk count + max pending chunk id for that model (one aggregate query, the
+    ``core.embed_store`` pending predicate), ``limit`` and ``batch_size``. A unit already
+    ``done`` for the same hash is skipped (no embedding, zero stats). Errors fail the unit and
+    propagate; the caller owns the run row. Returns ``(stats, skipped)``.
+    """
+    stats = EmbedStats(embedded=0, batches=0)
+
+    def units() -> Iterator[tuple[str, str]]:
+        pending = or_(ChunkRow.embedding_model.is_(None), ChunkRow.embedding_model != model)
+        with engine.connect() as conn:
+            n, top = conn.execute(
+                select(func.count(ChunkRow.id), func.max(ChunkRow.id)).where(pending)
+            ).one()
+        raw = f"{model}\0{n}\0{top}\0{limit}\0{batch_size}"
+        yield model, hashlib.sha256(raw.encode()).hexdigest()
+
+    def handle(_key: str) -> None:
+        nonlocal stats
+        stats = embed_pending_chunks(
+            engine, embedder, model=model, batch_size=batch_size, limit=limit
+        )
+
+    summary = StageRunner(engine).run("index", units(), handle, run_id=run_id, catch=())
+    return stats, summary.skipped
+
+
 def run_index(model: str, batch_size: int, limit: int | None) -> None:
     """Embed pending chunks via the configured embedding service inside a ``run`` row (IX-02).
 
@@ -981,13 +1018,7 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
             raise typer.Exit(2) from None
         run_id = _open_run(engine, "index")
         try:
-            stats = embed_pending_chunks(
-                engine,
-                embedder,
-                model=model,
-                batch_size=batch_size,
-                limit=limit,
-            )
+            stats, skipped = _run_index_unit(engine, run_id, embedder, model, batch_size, limit)
         except (EmbeddingError, EmbedStoreError) as exc:
             typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
             _close_run(engine, run_id, FAILED)
@@ -1000,6 +1031,8 @@ def run_index(model: str, batch_size: int, limit: int | None) -> None:
             raise
         _close_run(engine, run_id, FINISHED)
         typer.echo(f"embedded {stats.embedded} batches {stats.batches}")
+        if skipped:
+            typer.echo(f"skipped {skipped}")
     except SQLAlchemyError as exc:  # URL never echoed; a failed close stays silent (AB-01)
         _exit_database_unavailable(engine, run_id, exc)
     finally:
