@@ -13,6 +13,7 @@ from core.entity_store import Entity
 from core.presence_store import (
     MarketPresenceRow,
     layer_ids_for,
+    presence_evidence_many,
     presences_many,
     record_presence,
 )
@@ -92,3 +93,32 @@ def test_presences_many_is_one_query(engine):
 def test_layer_ids_for_example_layers(countries, expected):
     layers = load_scope_pack(EXAMPLE_SCOPE).scope.layers
     assert layer_ids_for(layers, countries) == expected
+
+
+def test_record_with_evidence_reads_back(engine):
+    row_id = record_presence(engine, 1, "XA", "hq", evidence_id=7)
+    assert presence_evidence_many(engine, [1]) == {1: [("XA", "hq", 7)]}
+    assert presences_many(engine, [1]) == {1: [("XA", "hq")]}
+    assert record_presence(engine, 1, "XA", "hq") == row_id
+
+
+def test_null_evidence_then_evidence_fills_it(engine):
+    row_id = record_presence(engine, 1, "XA", "hq")
+    assert record_presence(engine, 1, "XA", "hq", evidence_id=5) == row_id
+    assert presence_evidence_many(engine, [1]) == {1: [("XA", "hq", 5)]}
+
+
+def test_evidence_then_other_evidence_keeps_first(engine):
+    row_id = record_presence(engine, 1, "XA", "hq", evidence_id=5)
+    assert record_presence(engine, 1, "XA", "hq", evidence_id=9) == row_id
+    assert presence_evidence_many(engine, [1]) == {1: [("XA", "hq", 5)]}
+
+
+def test_presence_evidence_many_multi_entity_and_empty(engine):
+    record_presence(engine, 1, "XB", "sales")
+    record_presence(engine, 2, "XA", "site", evidence_id=3)
+    assert presence_evidence_many(engine, [1, 2, 3]) == {
+        1: [("XB", "sales", None)],
+        2: [("XA", "site", 3)],
+    }
+    assert presence_evidence_many(engine, []) == {}

@@ -4,7 +4,8 @@ ARCHITECTURE.md §5 data model ``market_presence(entity_id, country, presence_ty
 and the Layer row ("membership derived from market presence"). :func:`record_presence` stores one
 idempotent ``(entity_id, country, presence_type)`` row; :func:`presences_many` reads rows for many
 entities in one query; :func:`layer_ids_for` derives the scope layers a set of countries belongs
-to. The declarative base is ``core.runs.Base``, so ``core.runs.create_all`` creates the table.
+to; :func:`presence_evidence_many` adds each row's ``evidence_id`` chunk id (MP-02). The
+declarative base is ``core.runs.Base``, so ``core.runs.create_all`` creates the table.
 Production callers: ``app.cli.run_presence_set`` and ``app.cli.run_presences``.
 """
 
@@ -48,31 +49,45 @@ def check_presence(country: str, presence_type: str) -> None:
 
 
 def record_presence(
-    engine_or_session: Engine | Session, entity_id: int, country: str, presence_type: str
+    engine_or_session: Engine | Session,
+    entity_id: int,
+    country: str,
+    presence_type: str,
+    evidence_id: int | None = None,
 ) -> int:
     """Store one presence row (idempotent on its triple) and return its id.
+
+    ``evidence_id`` (MP-02) is a chunk id. On an existing row a NULL evidence_id is filled by a
+    non-NULL value; an existing non-NULL value is kept. The chunk is not checked here.
 
     Validation runs first, so an invalid value writes nothing. Given a ``Session`` the caller owns
     the transaction (this flushes, does not commit); given an ``Engine`` it commits its own.
     """
     check_presence(country, presence_type)
     if isinstance(engine_or_session, Session):
-        return _record(engine_or_session, entity_id, country, presence_type)
+        return _record(engine_or_session, entity_id, country, presence_type, evidence_id)
     with Session(engine_or_session) as session, session.begin():
-        return _record(session, entity_id, country, presence_type)
+        return _record(session, entity_id, country, presence_type, evidence_id)
 
 
-def _record(session: Session, entity_id: int, country: str, presence_type: str) -> int:
+def _record(
+    session: Session, entity_id: int, country: str, presence_type: str, evidence_id: int | None
+) -> int:
     existing = session.scalar(
-        sa.select(MarketPresenceRow.id).where(
+        sa.select(MarketPresenceRow).where(
             MarketPresenceRow.entity_id == entity_id,
             MarketPresenceRow.country == country,
             MarketPresenceRow.presence_type == presence_type,
         )
     )
     if existing is not None:
-        return existing
-    row = MarketPresenceRow(entity_id=entity_id, country=country, presence_type=presence_type)
+        if existing.evidence_id is None and evidence_id is not None:
+            existing.evidence_id = evidence_id
+            session.flush()
+        return existing.id
+    row = MarketPresenceRow(
+        entity_id=entity_id, country=country, presence_type=presence_type, evidence_id=evidence_id
+    )
     session.add(row)
     session.flush()
     return row.id
@@ -105,6 +120,38 @@ def presences_many(
             rows = list(conn.execute(stmt))
     for entity_id, country, presence_type in rows:
         found.setdefault(entity_id, []).append((country, presence_type))
+    return found
+
+
+def presence_evidence_many(
+    engine: Engine | Session, entity_ids: Sequence[int]
+) -> dict[int, list[tuple[str, str, int | None]]]:
+    """Like :func:`presences_many` but each row carries its ``evidence_id`` (MP-02); one query.
+
+    Same ordering, absence and empty-input rules; callers bound the ``IN`` list (<=500 ids).
+    """
+    if not entity_ids:
+        return {}
+    stmt = (
+        sa.select(
+            MarketPresenceRow.entity_id,
+            MarketPresenceRow.country,
+            MarketPresenceRow.presence_type,
+            MarketPresenceRow.evidence_id,
+        )
+        .where(MarketPresenceRow.entity_id.in_(list(entity_ids)))
+        .order_by(
+            MarketPresenceRow.entity_id, MarketPresenceRow.country, MarketPresenceRow.presence_type
+        )
+    )
+    found: dict[int, list[tuple[str, str, int | None]]] = {}
+    if isinstance(engine, Session):
+        rows = list(engine.execute(stmt))
+    else:
+        with engine.connect() as conn:
+            rows = list(conn.execute(stmt))
+    for entity_id, country, presence_type, evidence_id in rows:
+        found.setdefault(entity_id, []).append((country, presence_type, evidence_id))
     return found
 
 

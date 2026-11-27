@@ -135,7 +135,13 @@ from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.log import configure_logging
-from core.presence_store import check_presence, layer_ids_for, presences_many, record_presence
+from core.presence_store import (
+    check_presence,
+    layer_ids_for,
+    presence_evidence_many,
+    presences_many,
+    record_presence,
+)
 from core.resolve import apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import (
@@ -998,10 +1004,13 @@ def _entity_in_scope(session: Session, entity_id: int, scope_id: str) -> bool:
     return entity is not None and entity.scope_id == scope_id
 
 
-def run_presence_set(scope: Path, entity_id: int, country: str, presence_type: str) -> None:
-    """Record one manual market presence (MP-01) and commit; evidence_id stays NULL.
+def run_presence_set(
+    scope: Path, entity_id: int, country: str, presence_type: str, evidence_id: int | None = None
+) -> None:
+    """Record one manual market presence (MP-01) and commit, optionally citing a chunk (MP-02).
 
-    An invalid type or country, or an entity not in the scope, exits 2 with one line and writes
+    An invalid type or country, an entity not in the scope, or an ``evidence_id`` chunk that is
+    missing or whose snapshot belongs to another (or no) entity exits 2 with one line and writes
     nothing.
     """
     settings = _load(scope)
@@ -1017,7 +1026,19 @@ def run_presence_set(scope: Path, entity_id: int, country: str, presence_type: s
             if not _entity_in_scope(session, entity_id, pack.scope.id):
                 typer.echo(f"error: unknown entity {entity_id}", err=True)
                 raise typer.Exit(2)
-            row_id = record_presence(session, entity_id, country, presence_type)
+            if evidence_id is not None:
+                owner = session.scalar(
+                    select(SnapshotRow.entity_id)
+                    .join(ChunkRow, ChunkRow.snapshot_id == SnapshotRow.id)
+                    .where(ChunkRow.id == evidence_id)
+                )
+                if owner != entity_id:
+                    typer.echo(
+                        f"error: evidence chunk {evidence_id} is not a chunk of entity {entity_id}",
+                        err=True,
+                    )
+                    raise typer.Exit(2)
+            row_id = record_presence(session, entity_id, country, presence_type, evidence_id)
     except SQLAlchemyError as exc:
         _exit_database_unavailable(engine, None, exc)
     finally:
@@ -1038,14 +1059,15 @@ def run_presences(scope: Path, entity_id: int) -> None:
             if not _entity_in_scope(session, entity_id, pack.scope.id):
                 typer.echo(f"error: unknown entity {entity_id}", err=True)
                 raise typer.Exit(2)
-            rows = presences_many(session, [entity_id]).get(entity_id, [])
+            rows = presence_evidence_many(session, [entity_id]).get(entity_id, [])
     except SQLAlchemyError as exc:
         _exit_database_unavailable(engine, None, exc)
     finally:
         engine.dispose()
-    for country, presence_type in rows:
-        typer.echo(f"{country} {presence_type}")
-    layers = layer_ids_for(pack.scope.layers, {country for country, _ in rows})
+    for country, presence_type, evidence_id in rows:
+        suffix = f" evidence {evidence_id}" if evidence_id is not None else ""
+        typer.echo(f"{country} {presence_type}{suffix}")
+    layers = layer_ids_for(pack.scope.layers, {country for country, _, _ in rows})
     typer.echo(f"layers: {', '.join(layers)}")
 
 
@@ -2143,9 +2165,12 @@ def presence_set(
     presence_type: Annotated[
         str, typer.Option("--type", help="hq, site, field_service, sales or remote.")
     ],
+    evidence_id: Annotated[
+        int | None, typer.Option("--evidence", help="Chunk id of this entity citing it.")
+    ] = None,
 ) -> None:
     """Validate and store one presence row; print its id."""
-    run_presence_set(scope, entity_id, country, presence_type)
+    run_presence_set(scope, entity_id, country, presence_type, evidence_id)
 
 
 @app.command(name="presences", help="List an entity's market presence and derived layers.")
