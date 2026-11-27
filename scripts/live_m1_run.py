@@ -23,10 +23,11 @@ were present but no screen ``llm_call`` returned ok (dead gateway, or none ran) 
 ``"degraded": true`` and the exit is 3.
 
 Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH [--jobs N]
-[--verifier-max-tokens N]``
+[--verifier-max-tokens N] [--max-tokens N]``
 
 ``--verifier-max-tokens N`` (1-8192) sets ``DM_VERIFIER_MAX_TOKENS`` in the child environment,
 overriding any env-file value; omitted, the env-file value (if any) passes through.
+``--max-tokens N`` (1-8192) likewise sets ``DM_LOCAL_MAX_TOKENS`` (screen and assess extractor).
 """
 
 from __future__ import annotations
@@ -391,6 +392,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--verifier-max-tokens", type=int, default=None, help="Verifier max tokens (1-8192)."
     )
+    parser.add_argument(
+        "--max-tokens", type=int, default=None, help="Local screen/extractor max tokens (1-8192)."
+    )
     ns = parser.parse_args(argv)
     if not 1 <= ns.entities <= 50:
         parser.error("--entities must be in 1..50")
@@ -400,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--jobs must be in 1..8")
     if ns.verifier_max_tokens is not None and not 1 <= ns.verifier_max_tokens <= 8192:
         parser.error("--verifier-max-tokens must be in 1..8192")
+    if ns.max_tokens is not None and not 1 <= ns.max_tokens <= 8192:
+        parser.error("--max-tokens must be in 1..8192")
     if not ns.env_file.is_file():
         parser.error("--env-file not found")
     out: Path = ns.out.resolve()
@@ -435,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     env["DM_LLM_TIMEOUT_S"] = str(ns.timeout)
     if ns.verifier_max_tokens is not None:
         env["DM_VERIFIER_MAX_TOKENS"] = str(ns.verifier_max_tokens)
+    if ns.max_tokens is not None:
+        env["DM_LOCAL_MAX_TOKENS"] = str(ns.max_tokens)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH")]))
     runner = Runner(env, out, secrets)  # cwd=out: no stray .env from the checkout is read
     scope = ["--scope", str(SCOPE)]
@@ -468,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         "timeout_s": ns.timeout,
         "jobs": ns.jobs,
         "verifier_max_tokens": ns.verifier_max_tokens,
+        "max_tokens": ns.max_tokens,
         "steps": runner.steps,
         "failed_step": failed,
         "mosaic": mosaic,

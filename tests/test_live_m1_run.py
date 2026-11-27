@@ -344,6 +344,47 @@ def test_jobs_default_serial_unchanged(tmp_path: Path, monkeypatch: pytest.Monke
     assert [f"assess {c[c.index('--entity') + 1]} {c[-1]}" for c in assessed] == LABELS
 
 
+@pytest.mark.parametrize("value", ["0", "8193", "x"])
+def test_max_tokens_out_of_range_exits_2(tmp_path: Path, value: str) -> None:
+    mod = _load_script()
+    env_file = tmp_path / "fake.env"
+    env_file.write_text("DM_X=1\n", encoding="utf-8")
+    argv = ["--out", str(tmp_path / "o"), "--env-file", str(env_file)]
+    with pytest.raises(SystemExit) as exc:
+        mod.main([*argv, "--max-tokens", value])  # type: ignore[attr-defined]
+    assert exc.value.code == 2
+
+
+def test_max_tokens_overrides_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    text = f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\nDM_LOCAL_MAX_TOKENS=4096\n"
+    fake, summary = _main_env(tmp_path, monkeypatch, text, "--max-tokens", "512")
+    assert fake.envs and all(e["DM_LOCAL_MAX_TOKENS"] == "512" for e in fake.envs)
+    assert summary["max_tokens"] == 512
+
+
+@pytest.mark.parametrize("line", ["", "DM_LOCAL_MAX_TOKENS=4096\n"])
+def test_max_tokens_omitted_no_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str
+) -> None:
+    text = f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\n{line}"
+    fake, summary = _main_env(tmp_path, monkeypatch, text)
+    expected = "4096" if line else None
+    assert fake.envs and all(e.get("DM_LOCAL_MAX_TOKENS") == expected for e in fake.envs)
+    assert summary["max_tokens"] is None
+
+
+def test_max_tokens_and_verifier_max_tokens_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\n"
+    extra = ("--max-tokens", "512", "--verifier-max-tokens", "256")
+    fake, summary = _main_env(tmp_path, monkeypatch, text, *extra)
+    assert fake.envs
+    assert all(e["DM_LOCAL_MAX_TOKENS"] == "512" for e in fake.envs)
+    assert all(e["DM_VERIFIER_MAX_TOKENS"] == "256" for e in fake.envs)
+    assert summary["max_tokens"] == 512 and summary["verifier_max_tokens"] == 256
+
+
 @pytest.mark.parametrize("jobs", ["1", "3"])
 def test_jobs_fatal_assess_stops_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, jobs: str
@@ -378,6 +419,7 @@ def _main_env(
     monkeypatch.setattr(mod.subprocess, "run", fake)  # type: ignore[attr-defined]
     monkeypatch.setattr(mod, "assess_pairs", lambda *a: list(PAIRS))
     monkeypatch.delenv("DM_VERIFIER_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("DM_LOCAL_MAX_TOKENS", raising=False)
     env_file = tmp_path / "fake.env"
     env_file.write_text(env_text, encoding="utf-8")
     out = tmp_path / "run"
