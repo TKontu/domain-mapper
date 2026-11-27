@@ -259,3 +259,100 @@ def test_no_entities_is_not_degraded(tmp_path: Path) -> None:
     db_url = f"sqlite:///{tmp_path / 'empty.sqlite'}"
     mod.seed(db_url, "scope-x", 0)  # type: ignore[attr-defined]
     assert mod.db_counts(db_url, "scope-x")["degraded"] is False  # type: ignore[attr-defined]
+
+
+class _FakeRun:
+    """Thread-safe stand-in for ``subprocess.run``: tracks concurrent assess calls."""
+
+    def __init__(self, delay: float = 0.0, fatal: str | None = None) -> None:
+        self.delay, self.fatal = delay, fatal
+        self.lock = threading.Lock()
+        self.active = self.peak = 0
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        import time
+
+        args = [str(a) for a in cmd]
+        with self.lock:
+            self.calls.append(args)
+        if "--out" in args:
+            Path(args[args.index("--out") + 1]).write_text("", encoding="utf-8")
+        code = 0
+        if "assess" in args:
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            time.sleep(self.delay)
+            with self.lock:
+                self.active -= 1
+            label = f"assess {args[args.index('--entity') + 1]} {args[-1]}"
+            code = 2 if label == self.fatal else 1 if label.endswith("c2") else 0
+        return subprocess.CompletedProcess(args, code, "", "")
+
+
+PAIRS = [(e, c) for e in (1, 2, 3) for c in ("c1", "c2")]
+LABELS = [f"assess {e} {c}" for e, c in PAIRS]
+
+
+def _main_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: _FakeRun, *extra: str
+) -> tuple[int, dict[str, object]]:
+    mod = _load_script()
+    monkeypatch.setattr(mod.subprocess, "run", fake)  # type: ignore[attr-defined]
+    monkeypatch.setattr(mod, "assess_pairs", lambda *a: list(PAIRS))
+    env_file = tmp_path / "fake.env"
+    env_file.write_text(f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+    out = tmp_path / "run"
+    argv = ["--out", str(out), "--env-file", str(env_file), "--entities", "2", *extra]
+    code = mod.main(argv)  # type: ignore[attr-defined]
+    return code, json.loads((out / "summary.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("jobs", ["0", "9", "x"])
+def test_jobs_out_of_range_exits_2(tmp_path: Path, jobs: str) -> None:
+    mod = _load_script()
+    env_file = tmp_path / "fake.env"
+    env_file.write_text("DM_X=1\n", encoding="utf-8")
+    argv = ["--out", str(tmp_path / "o"), "--env-file", str(env_file), "--jobs", jobs]
+    with pytest.raises(SystemExit) as exc:
+        mod.main(argv)  # type: ignore[attr-defined]
+    assert exc.value.code == 2
+
+
+def test_jobs_parallel_bounded_and_pair_ordered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeRun(delay=0.2)
+    code, summary = _main_jobs(tmp_path, monkeypatch, fake, "--jobs", "3")
+    assert code == 3  # no screen calls in the DB -> degraded, as in the serial stub test
+    assert 1 < fake.peak <= 3
+    names = [s["command"] for s in summary["steps"]]  # type: ignore[index]
+    assert names[1:7] == LABELS and names[0] == "screen" and "mosaic all" in names
+    assert summary["jobs"] == 3 and summary["failed_step"] is None
+
+
+def test_jobs_default_serial_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeRun()
+    _, summary = _main_jobs(tmp_path, monkeypatch, fake)
+    assert fake.peak == 1 and summary["jobs"] == 1
+    names = [s["command"] for s in summary["steps"]]  # type: ignore[index]
+    assert names[:8] == ["screen", *LABELS, "presence-extract"]
+    codes = [s["exit_code"] for s in summary["steps"]][1:7]  # type: ignore[index]
+    assert codes == [0, 1] * 3
+    assessed = [c for c in fake.calls if "assess" in c]
+    assert [f"assess {c[c.index('--entity') + 1]} {c[-1]}" for c in assessed] == LABELS
+
+
+@pytest.mark.parametrize("jobs", ["1", "3"])
+def test_jobs_fatal_assess_stops_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, jobs: str
+) -> None:
+    fake = _FakeRun(delay=0.05, fatal="assess 2 c1")
+    code, summary = _main_jobs(tmp_path, monkeypatch, fake, "--jobs", jobs)
+    assert code == 1 and summary["failed_step"] == "assess 2 c1"
+    names = [s["command"] for s in summary["steps"]]  # type: ignore[index]
+    assert "presence-extract" not in names and not any(n.startswith("mosaic") for n in names)
+    assessed = [n for n in names if n.startswith("assess")]
+    assert assessed == [lab for lab in LABELS if lab in assessed]  # pair order
+    assert not any("presence-extract" in c for c in fake.calls)
