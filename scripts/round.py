@@ -42,9 +42,7 @@ def identifier(value):
 
 
 def inside(root, relative):
-    require(
-        text(relative) and not Path(relative).is_absolute(), "Expected a relative path"
-    )
+    require(text(relative) and not Path(relative).is_absolute(), "Expected a relative path")
     path = (root / relative).resolve()
     require(path.is_relative_to(root.resolve()), "Path escapes its record directory")
     return path
@@ -74,9 +72,7 @@ def bound_packet(root, assignment):
 
 def validate_result(data, manifest, assignment):
     require(data["base_sha"] == manifest["base_sha"], "Result base mismatch")
-    require(
-        data["packet_sha256"] == assignment["packet_sha256"], "Result packet mismatch"
-    )
+    require(data["packet_sha256"] == assignment["packet_sha256"], "Result packet mismatch")
     status = data.get("status", "result-ready")
     require(status in {"result-ready", "blocked"}, "Unknown result status")
     if status == "blocked":
@@ -112,9 +108,7 @@ def initialize(repo, root, args):
     try:
         git(repo, "check-ignore", "-q", ".agent-runs/probe")
     except ValueError:
-        raise ValueError(
-            "Add .agent-runs/ to .gitignore before initializing a round"
-        ) from None
+        raise ValueError("Add .agent-runs/ to .gitignore before initializing a round") from None
     base = commit(repo, args.base)
     for other in root.parent.glob("*/round.json"):
         try:
@@ -142,8 +136,7 @@ def assign(repo, root, manifest, args):
     git(repo, "check-ref-format", "--branch", args.branch)
     require(
         all(
-            (a["item"] != args.item or a["state"] == "cancelled")
-            and a["branch"] != args.branch
+            (a["item"] != args.item or a["state"] == "cancelled") and a["branch"] != args.branch
             for a in assignments.values()
         ),
         "Item or branch already assigned",
@@ -152,9 +145,7 @@ def assign(repo, root, manifest, args):
     require(spec.strip(), "Assignment spec is empty")
     relative = f"prompts/{args.assignment}.md"
     packet = inside(root, relative)
-    require(
-        not packet.exists(), "Packet already exists; inspect interrupted assignment"
-    )
+    require(not packet.exists(), "Packet already exists; inspect interrupted assignment")
     packet.parent.mkdir(parents=True, exist_ok=True)
     content = (
         f"# Assignment {manifest['id']}/{args.assignment}\n\n"
@@ -176,16 +167,12 @@ def assign(repo, root, manifest, args):
 def record(root, manifest, args):
     data = read(Path(args.result))
     assignment = manifest["assignments"][data["assignment"]]
-    require(
-        assignment["state"] not in {"merged", "cancelled"}, "Assignment is terminal"
-    )
+    require(assignment["state"] not in {"merged", "cancelled"}, "Assignment is terminal")
     bound_packet(root, assignment)
     status = validate_result(data, manifest, assignment)
     path = f"results/{data['assignment']}-{len(assignment['results']) + 1}.json"
     target = inside(root, path)
-    require(
-        not target.exists(), "Result already exists; inspect interrupted submission"
-    )
+    require(not target.exists(), "Result already exists; inspect interrupted submission")
     save(target, data)
     assignment["results"].append(path)
     assignment["state"] = status
@@ -193,14 +180,10 @@ def record(root, manifest, args):
 
 def resolve(repo, root, manifest, args):
     assignment = manifest["assignments"][args.assignment]
-    require(
-        assignment["state"] not in {"merged", "cancelled"}, "Assignment is terminal"
-    )
+    require(assignment["state"] not in {"merged", "cancelled"}, "Assignment is terminal")
     require(text(args.evidence), "Resolution needs review or cancellation evidence")
     if args.waive is not None:
-        require(
-            args.outcome == "merged", "--waive is only valid with --outcome merged"
-        )
+        require(args.outcome == "merged", "--waive is only valid with --outcome merged")
         require(text(args.waive), "--waive needs a reason")
     if args.outcome == "merged":
         bound_packet(root, assignment)
@@ -216,14 +199,11 @@ def resolve(repo, root, manifest, args):
         if args.waive is None:
             require(not not_passed, "Not all checks passed")
         else:
-            require(
-                not_passed, "--waive is only for non-passed checks; all checks passed"
-            )
+            require(not_passed, "--waive is only for non-passed checks; all checks passed")
             assignment["waived"] = {
                 "reason": args.waive,
                 "checks": [
-                    {"command": check["command"], "status": check["status"]}
-                    for check in not_passed
+                    {"command": check["command"], "status": check["status"]} for check in not_passed
                 ],
             }
         require(
@@ -260,9 +240,7 @@ def validate_handoff(handoff):
         )
         body = re.sub(r"<!--.*?-->", "", section[1], flags=re.DOTALL) if section else ""
         # Template placeholders such as <One exact action> are not content; autolinks are.
-        body = re.sub(
-            r"^[ \t]*<(?![^>\n]*://)[^<>\n]*>[ \t]*$", "", body, flags=re.MULTILINE
-        )
+        body = re.sub(r"^[ \t]*<(?![^>\n]*://)[^<>\n]*>[ \t]*$", "", body, flags=re.MULTILINE)
         require(re.search(r"\w", body), f"Handoff needs a nonempty '{heading}' section")
     require(
         re.search(r"^Main-SHA: (?:[0-9a-f]{40}|[0-9a-f]{64})$", handoff, re.MULTILINE),
@@ -272,10 +250,7 @@ def validate_handoff(handoff):
 
 def close(repo, root, manifest, args):
     require(
-        all(
-            a["state"] in {"merged", "cancelled"}
-            for a in manifest["assignments"].values()
-        ),
+        all(a["state"] in {"merged", "cancelled"} for a in manifest["assignments"].values()),
         "Unresolved assignments remain",
     )
     final = commit(repo, args.main)
@@ -332,9 +307,7 @@ def parser():
             sub.add_argument("--result", required=True)
         elif name == "resolve":
             sub.add_argument("assignment")
-            sub.add_argument(
-                "--outcome", choices=["merged", "cancelled"], required=True
-            )
+            sub.add_argument("--outcome", choices=["merged", "cancelled"], required=True)
             sub.add_argument("--head")
             sub.add_argument("--merge")
             sub.add_argument(

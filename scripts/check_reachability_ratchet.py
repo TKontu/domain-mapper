@@ -55,9 +55,7 @@ def public_symbols(path: Path) -> set[str]:
                 names.add(node.name)
         elif isinstance(node, ast.Assign):
             names.update(
-                t.id
-                for t in node.targets
-                if isinstance(t, ast.Name) and not t.id.startswith("_")
+                t.id for t in node.targets if isinstance(t, ast.Name) and not t.id.startswith("_")
             )
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             if not node.target.id.startswith("_"):
