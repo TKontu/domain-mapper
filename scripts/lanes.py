@@ -138,7 +138,10 @@ def default_seams() -> Seams:
 
 
 def _herdr(seams: Seams, *args: str) -> dict[str, Any] | None:
-    """A subcommand's ``result``; ``{"_error": code}`` when Herdr reports one; None if unreachable."""
+    """A subcommand's ``result``.
+
+    ``{"_error": code}`` when Herdr reports one; None if unreachable.
+    """
     rc, out = seams.run(["herdr", *args], 60)
     try:
         payload = json.loads(out or "{}")
@@ -159,7 +162,10 @@ def _ok(result: dict[str, Any] | None) -> bool:
 
 
 def lane_prefix(root: Path = ROOT) -> str:
-    """The supervisor's naming rule: ``live-<slug>-``, slug from ``[supervisor] name`` or the dir."""
+    """The supervisor's naming rule: ``live-<slug>-``.
+
+    The slug comes from ``[supervisor] name`` or the dir.
+    """
     try:
         raw = tomllib.loads((root / ".agent" / "config.toml").read_text()).get("supervisor", {})
         raw = raw.get("name")
@@ -208,7 +214,11 @@ cd {shlex.quote(str(cwd))} || exit 2
 rm -f {rc}
 child= pending=
 # A signal can land after the fork but before child=$! runs: keep it, never drop it.
-forward() {{ if [ -n "$child" ]; then kill -s "$1" "-$child" 2>/dev/null || kill -s "$1" "$child" 2>/dev/null; else pending=$1; fi; }}
+forward() {{
+  if [ -n "$child" ]; then
+    kill -s "$1" "-$child" 2>/dev/null || kill -s "$1" "$child" 2>/dev/null
+  else pending=$1; fi
+}}
 trap 'forward TERM' TERM
 trap 'forward INT' INT
 trap 'forward HUP' HUP

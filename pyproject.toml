@@ -39,7 +39,7 @@ addopts = "-ra"
 target-version = "py312"
 line-length = 100
 # Workflow tooling predates the stack; PF-01 does not reformat or retype it.
-extend-exclude = ["scripts", "tests", "scopes"]
+extend-exclude = ["scripts/merge_guard.py", "tests", "scopes"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
