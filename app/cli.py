@@ -3047,3 +3047,7 @@ def cost_report(
 def main() -> None:
     """Console-script entry point for ``landscape``."""
     app()
+
+
+if __name__ == "__main__":
+    main()
