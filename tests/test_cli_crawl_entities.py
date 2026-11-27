@@ -27,7 +27,7 @@ from typer.testing import CliRunner
 from app import cli
 from app.cli import app
 from core.entity_store import STATUS_UNSCREENED, Entity
-from core.runs import Run, create_all
+from core.runs import DONE, FAILED, Run, WorkUnit, create_all
 from core.snapshot_store import SnapshotRow
 
 EXAMPLE_SCOPE = str(Path(__file__).resolve().parent.parent / "scopes" / "_example")
@@ -562,7 +562,9 @@ class EntityCrawlCliTest(unittest.TestCase):
         explicit = self.crawl("--entity-scheme", "https")
         self.assertEqual(default.exit_code, 0, default.output)
         self.assertEqual(explicit.exit_code, 0, explicit.output)
-        self.assertEqual(self.state.scrapes, ["https://a.example.com/", "https://a.example.com/"])
+        # RT-01: identical unit input hash, so the explicit run skips the done unit.
+        self.assertEqual(self.state.scrapes, ["https://a.example.com/"])
+        self.assertEqual(explicit.stdout.splitlines(), ["skipped 1"])
 
     def test_entity_scheme_unknown_value_exits_2_and_fetches_nothing(self) -> None:
         self.seed([(SCOPE_ID, "a.example.com")])
@@ -590,6 +592,109 @@ class EntityCrawlCliTest(unittest.TestCase):
         expected = [home, f"http://{host}/a", f"http://{host}/b"]
         self.assertEqual(self.state.scrapes, expected)
         self.assertEqual(self.snapshots(), [(eid, url) for url in expected])
+
+    # RT-01 (133/A1): each entity is one StageRunner unit of the crawl run row.
+
+    def crawl_units(self) -> dict[str, tuple[str, int, int]]:
+        """``unit_key -> (status, attempts, run_id)`` for stage ``crawl``."""
+        engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
+        try:
+            with Session(engine) as session:
+                return {
+                    u.unit_key: (u.status, u.attempts, u.run_id)
+                    for u in session.scalars(sa.select(WorkUnit).where(WorkUnit.stage == "crawl"))
+                }
+        finally:
+            engine.dispose()
+
+    def all_unit_count(self) -> int:
+        engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
+        try:
+            create = sa.inspect(engine).has_table("work_unit")
+            if not create:
+                return 0
+            with Session(engine) as session:
+                return len(list(session.scalars(sa.select(WorkUnit))))
+        finally:
+            engine.dispose()
+
+    def test_first_run_one_run_row_two_done_units_same_output(self) -> None:
+        a_id, b_id = self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 0, result.output)
+        runs = self.crawl_run_ids()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(
+            self.crawl_units(), {str(a_id): (DONE, 1, runs[0]), str(b_id): (DONE, 1, runs[0])}
+        )
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 2, result.stdout)
+        self.assertTrue(lines[0].startswith("ok https://a.example.com/ snapshot="))
+        self.assertTrue(lines[1].startswith("ok https://b.example.com/ snapshot="))
+
+    def test_rerun_unchanged_fetches_nothing_and_prints_skipped(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        self.assertEqual(self.crawl().exit_code, 0)
+        self.state.scrapes.clear()
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, [])
+        self.assertEqual(result.stdout.splitlines(), ["skipped 2"])
+        self.assertEqual(len(self.crawl_run_ids()), 2)
+
+    def test_changed_policy_reruns_both_units(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        self.assertEqual(self.crawl().exit_code, 0)
+        self.state.scrapes.clear()
+        scope = self.scope_with_crawl("crawl:\n  max_pages: 2\n  priority_paths: [/about]\n")
+        result = self.crawl(scope=scope)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(self.state.scrapes), 4)
+        self.assertNotIn("skipped 2", result.stdout)
+
+    def test_changed_scheme_reruns_both_units(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com"), (SCOPE_ID, "b.example.com")])
+        self.assertEqual(self.crawl().exit_code, 0)
+        self.state.scrapes.clear()
+        result = self.crawl("--entity-scheme", "http")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.state.scrapes, ["http://a.example.com/", "http://b.example.com/"])
+
+    def test_failed_entity_unit_failed_other_done_and_rerun_retries_only_it(self) -> None:
+        broken_id, ok_id = self.seed(
+            [(SCOPE_ID, "broken.example.com"), (SCOPE_ID, "a.example.com")]
+        )
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 1, result.output)
+        units = self.crawl_units()
+        self.assertEqual(units[str(broken_id)][0], FAILED)
+        self.assertEqual(units[str(ok_id)][0], DONE)
+        engine = sa.create_engine(f"sqlite+pysqlite:///{self.db}")
+        try:
+            with Session(engine) as session:
+                self.assertEqual(session.get(Run, self.crawl_run_ids()[0]).status, FAILED)
+        finally:
+            engine.dispose()
+        self.state.scrapes.clear()
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertEqual(self.state.scrapes, ["https://broken.example.com/"])
+        self.assertEqual(result.stdout.splitlines()[-1], "skipped 1")
+        self.assertEqual(self.crawl_units()[str(broken_id)][:2], (FAILED, 2))
+
+    def test_robots_skip_is_not_a_failed_unit(self) -> None:
+        (eid,) = self.seed([(SCOPE_ID, "blocked.example.com")])
+        result = self.crawl()
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.crawl_units()[str(eid)][0], DONE)
+
+    def test_dry_run_and_url_mode_create_no_work_units(self) -> None:
+        self.seed([(SCOPE_ID, "a.example.com")])
+        self.assertEqual(self.crawl("--dry-run").exit_code, 0)
+        self.assertEqual(self.all_unit_count(), 0)
+        result = self.crawl("--url", "https://a.example.com/")
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.all_unit_count(), 0)
 
 
 if __name__ == "__main__":

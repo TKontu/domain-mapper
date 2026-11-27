@@ -412,6 +412,7 @@ def _crawl_entities(
     policy = pack.scope.crawl
     engine = _open_engine(settings)
     run_id: int | None = None
+    skipped = 0
     try:
         entities = iter_entities(engine, pack.scope.id, limit=limit)
         try:
@@ -427,8 +428,9 @@ def _crawl_entities(
         run_id = _open_run(engine, "crawl")
         crawler = _Crawler(engine, fetcher, run_id=run_id)
         try:
-            for entity in chain((first,), entities):
-                _crawl_entity(crawler, entity, policy, scheme)
+            skipped = _run_crawl_entity_units(
+                engine, crawler, chain((first,), entities), pack.scope.id, policy, scheme, run_id
+            )
         except SQLAlchemyError:
             raise  # closed best-effort below (CR-18)
         except BaseException as exc:
@@ -442,8 +444,63 @@ def _crawl_entities(
         _exit_database_unavailable(engine, run_id, exc)
     finally:
         engine.dispose()
+    if skipped:
+        typer.echo(f"skipped {skipped}")
     if failed:
         raise typer.Exit(1)
+
+
+class _EntityCrawlFailed(Exception):
+    """Raised by the crawl unit handler so StageRunner records the entity's unit failed."""
+
+
+def _run_crawl_entity_units(
+    engine: Engine,
+    crawler: _Crawler,
+    entities: Iterable[EntityRef],
+    scope_id: str,
+    policy: CrawlPolicy,
+    scheme: str,
+    run_id: int,
+) -> int:
+    """RT-01: one :class:`core.runs.StageRunner` unit per entity under the crawl run ``run_id``.
+
+    Stage ``crawl``, unit key ``"<entity_id>"``, input hash = sha256 over the scope id, the
+    entity's primary domain, the URL scheme and the canonical JSON of the crawl policy. A unit
+    already ``done`` for the same hash is skipped (nothing fetched). An entity with any failed
+    URL marks its unit failed (retried next time) and sets ``crawler.failed``; the rest
+    continue. Entities stream one at a time. Returns the skipped count.
+    """
+    policy_json = json.dumps(policy.model_dump(mode="json"), sort_keys=True)
+    current: dict[str, EntityRef] = {}
+
+    def units() -> Iterator[tuple[str, str]]:
+        for entity in entities:
+            key = str(entity.id)
+            current.clear()
+            current[key] = entity
+            digest = hashlib.sha256(
+                f"{scope_id}\0{entity.primary_domain}\0{scheme}\0{policy_json}".encode()
+            ).hexdigest()
+            yield key, digest
+
+    any_failed = False
+
+    def handle(key: str) -> None:
+        nonlocal any_failed
+        crawler.failed = False
+        _crawl_entity(crawler, current[key], policy, scheme)
+        if crawler.failed:
+            any_failed = True
+            raise _EntityCrawlFailed(f"entity {key} had a failed URL")
+
+    try:
+        summary = StageRunner(engine).run(
+            "crawl", units(), handle, run_id=run_id, catch=(_EntityCrawlFailed,)
+        )
+    finally:
+        crawler.failed = any_failed
+    return summary.skipped
 
 
 def _entity_targets(
