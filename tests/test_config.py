@@ -265,5 +265,32 @@ class ValidationTests(SettingsTestCase):
             load_settings(self.absent_env_file())
 
 
+class LlmTimeoutTests(SettingsTestCase):
+    def test_timeout_defaults_to_the_adapter_default(self) -> None:
+        from adapters.llm import DEFAULT_TIMEOUT_SECONDS
+
+        settings = load_settings(self.absent_env_file())
+
+        self.assertEqual(settings.llm_timeout_s, 60.0)
+        self.assertEqual(settings.llm_timeout_s, DEFAULT_TIMEOUT_SECONDS)
+
+    def test_timeout_comes_from_the_environment(self) -> None:
+        os.environ["DM_LLM_TIMEOUT_S"] = "900"
+
+        self.assertEqual(load_settings(self.absent_env_file()).llm_timeout_s, 900.0)
+
+    def test_non_numeric_timeout_names_the_variable(self) -> None:
+        os.environ["DM_LLM_TIMEOUT_S"] = "abc"
+
+        with self.assertRaisesRegex(ValueError, "DM_LLM_TIMEOUT_S"):
+            load_settings(self.absent_env_file())
+
+    def test_non_positive_timeout_names_the_variable(self) -> None:
+        for value in ("0", "-5"):
+            os.environ["DM_LLM_TIMEOUT_S"] = value
+            with self.assertRaisesRegex(ValueError, "DM_LLM_TIMEOUT_S"):
+                load_settings(self.absent_env_file())
+
+
 if __name__ == "__main__":
     unittest.main()

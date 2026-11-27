@@ -27,6 +27,8 @@ DEFAULT_LLM_BUDGET_USD = 0.0
 # Token cost rates in USD per million tokens; 0.0 keeps spend untracked.
 DEFAULT_COST_PER_MTOK = 0.0
 DEFAULT_MAX_CRAWL_CONCURRENCY = 2
+# Per-request LLM timeout in seconds; equals adapters.llm.DEFAULT_TIMEOUT_SECONDS.
+DEFAULT_LLM_TIMEOUT_S = 60.0
 # Local compose `db` placeholders (host/port/user/database); the password is set
 # in .env, so it is not part of the default URL.
 DEFAULT_DATABASE_URL = "postgresql+psycopg://domain_mapper@localhost:5432/domain_mapper"
@@ -50,6 +52,7 @@ class Settings:
     cloud_cost_per_mtok_in: float = DEFAULT_COST_PER_MTOK
     cloud_cost_per_mtok_out: float = DEFAULT_COST_PER_MTOK
     max_crawl_concurrency: int = DEFAULT_MAX_CRAWL_CONCURRENCY
+    llm_timeout_s: float = DEFAULT_LLM_TIMEOUT_S
     database_url: str = field(default=DEFAULT_DATABASE_URL, repr=False)
 
 
@@ -58,7 +61,7 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
 
     A missing ``env_file`` is not an error (fresh checkouts have no ``.env``).
     Raises ``ValueError`` naming the offending variable for malformed numbers,
-    a negative budget or a crawl concurrency below one.
+    a negative budget, a non-positive LLM timeout or a crawl concurrency below one.
     """
     file_values = _read_env_file(Path(env_file))
 
@@ -107,6 +110,9 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
         max_crawl_concurrency=_parse_int(
             "MAX_CRAWL_CONCURRENCY", raw("MAX_CRAWL_CONCURRENCY"), DEFAULT_MAX_CRAWL_CONCURRENCY
         ),
+        llm_timeout_s=_parse_positive_float(
+            "LLM_TIMEOUT_S", raw("LLM_TIMEOUT_S"), DEFAULT_LLM_TIMEOUT_S
+        ),
         database_url=_text(raw("DATABASE_URL"), DEFAULT_DATABASE_URL),
     )
 
@@ -126,6 +132,13 @@ def _parse_float(name: str, value: str | None, default: float) -> float:
         raise ValueError(f"{ENV_PREFIX}{name} must be a finite number, got {value!r}")
     if parsed < 0:
         raise ValueError(f"{ENV_PREFIX}{name} must be >= 0, got {value!r}")
+    return parsed
+
+
+def _parse_positive_float(name: str, value: str | None, default: float) -> float:
+    parsed = _parse_float(name, value, default)
+    if parsed <= 0:
+        raise ValueError(f"{ENV_PREFIX}{name} must be > 0, got {value!r}")
     return parsed
 
 
