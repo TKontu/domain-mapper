@@ -18,8 +18,9 @@ them) and ``export`` copies them into its JSONL, so after the steps every other 
 ``screen`` and ``assess`` exit 1 for per-unit outcomes (an entity errored, checks failed,
 adjudicate); those are recorded and the run continues. Any other nonzero exit stops the run.
 The JSON summary (steps with command name, exit code and elapsed seconds; screen, assessment,
-llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.json``. When every
-screen ``llm_call`` returned ok while entities were present (dead gateway, or none ran) the summary has ``"degraded": true`` and the exit is 3.
+llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.json``. When entities
+were present but no screen ``llm_call`` returned ok (dead gateway, or none ran) the summary has
+``"degraded": true`` and the exit is 3.
 
 Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH``
 """
