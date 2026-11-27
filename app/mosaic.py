@@ -147,6 +147,20 @@ def filter_by_segments(
             yield line
 
 
+def filter_by_layers(
+    scores_lines: Iterable[Mapping[str, Any]], layer_ids: Collection[str]
+) -> Iterator[Mapping[str, Any]]:
+    """Yield, in input order, scores lines whose ``layers`` list contains any of ``layer_ids``.
+
+    Streaming (FE-04); a line without a ``layers`` list never matches.
+    """
+    wanted = set(layer_ids)
+    for line in scores_lines:
+        layers = line.get("layers")
+        if isinstance(layers, list) and wanted.intersection(str(la) for la in layers):
+            yield line
+
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 
 

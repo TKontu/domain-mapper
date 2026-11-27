@@ -118,7 +118,10 @@ def test_two_screened_entities_match_scores_json(engine, tmp_path) -> None:
     result = export(out)
     assert result.exit_code == 0, result.output
     lines = out.read_text(encoding="utf-8").splitlines()
-    assert [json.loads(line) for line in lines] == [scores_json(a), scores_json(b)]
+    assert [json.loads(line) for line in lines] == [
+        {**scores_json(a), "layers": []},
+        {**scores_json(b), "layers": []},
+    ]
     assert result.stdout == f"exported 2 entities to {out} (skipped 0 without screen result)\n"
     assert not Path(f"{out}.tmp").exists()
 
@@ -147,7 +150,7 @@ def test_screened_entity_without_assessments_has_null_scores(engine, tmp_path) -
     topics = json.loads(line)["topics"]
     assert topics and all(t["score"] is None for t in topics)
     assert all(t["coverage"] in (None, 0.0) for t in topics)
-    assert json.loads(line) == scores_json(a)
+    assert json.loads(line) == {**scores_json(a), "layers": []}
 
 
 def test_empty_scope_writes_empty_file(engine, tmp_path) -> None:

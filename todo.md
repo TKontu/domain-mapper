@@ -175,6 +175,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Entity page
   - [ ] **FE-02** → [docs/items/FE-02.md](docs/items/FE-02.md) `landscape mosaic --entity-dir DIR` writes one static HTML page per scored entity (every criterion in rubric order with status, confidence, rationale, evidence) linked from mosaic row headers and back — partial 2026-11-26: merged PR #243 at bbf811e (main e3a60ad, round 107/A1; planner gate at head 1583 passed, 5 skipped; CI pass); seen offline only (tests); residuals: no browser run, no run over real exports, --entity-dir holds both JSONL files in memory
   - [ ] **FE-03** → [docs/items/FE-03.md](docs/items/FE-03.md) `landscape mosaic --segment ID` (repeatable) renders only entities in the given scope segments, entity pages only for kept entities, heading names the filter; unknown id exits 2 — partial 2026-11-26: merged PR #245 at 82023e9 (main c341572, round 108/A1; planner gate at head 1589 passed, 5 skipped; CI pass); seen offline only (tests); residuals: no layer filter (scores lines carry no layer), no browser or real-export run
+  - [ ] **FE-04** → [docs/items/FE-04.md](docs/items/FE-04.md) `scores-export` lines carry `layers` (from market presence); `landscape mosaic --layer ID` (repeatable) filters by layer, intersects with `--segment`; unknown id exits 2 — partial 2026-11-26: PR (round 110/A1, see PR list); seen offline only (SQLite tests); residuals: no browser or real-export run, manual presence only, layers have no label (heading shows id)
 
 **Milestone M1:** mosaic of ~20 providers for one layer of one scope, every cell clickable to evidence.
 
@@ -209,7 +210,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Tender-source channel (e.g. TED Search API: classification codes + keywords, tenderer country filter)
 - [ ] Group resolution across countries; inherited group documents
 - [ ] Market presence model: `hq / site / field_service / sales / remote` incl. foreign providers serving a layer
-  - [ ] **MP-01** → [docs/items/MP-01.md](docs/items/MP-01.md) `core/presence_store.py` market presence per entity, `layer_ids_for` layer membership, `landscape presence-set` / `landscape presences` CLI — partial 2026-11-27: merged PR #247 at 65813b8 (main adc765e, round 109/A1; planner gate at head and on main 1608 passed, 5 skipped; CI pass); seen offline only (SQLite); next consumer: mosaic --layer filter (needs layers in scores-export lines); residuals: manual presence only, no evidence linkage, any presence type counts toward a layer
+  - [ ] **MP-01** → [docs/items/MP-01.md](docs/items/MP-01.md) `core/presence_store.py` market presence per entity, `layer_ids_for` layer membership, `landscape presence-set` / `landscape presences` CLI — partial 2026-11-27: merged PR #247 at 65813b8 (main adc765e, round 109/A1; planner gate at head and on main 1608 passed, 5 skipped; CI pass); seen offline only (SQLite); consumer: FE-04; residuals: manual presence only, no evidence linkage, any presence type counts toward a layer
 - [ ] Capture–recapture recall estimate per segment × country
 - [ ] Map view (MapLibre), layer + segment filters
 - [ ] Throughput: batch scheduling on vLLM, crawl concurrency per host, cache hit-rate metrics
