@@ -246,7 +246,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Weight profiles UI
 - [ ] Method page generated from scope pack + eval results + versions
 - [ ] Exports: Parquet / CSV / JSON
-  - [ ] **XP-01** → [docs/items/XP-01.md](docs/items/XP-01.md) `landscape scores-export --format csv` writes one RFC 4180 row per screened entity (flattened topics, header always); `jsonl` default unchanged — partial 2026-11-27: merged PR #271 at a3028ab (main bad4d6d, round 121/A1; executor gate 1667 passed, 5 skipped; CI pass); seen offline only (SQLite tests); needs one `scores-export --format csv` run over real assessments; residuals: Parquet not done, Postgres unexercised, no spreadsheet formula-injection escaping
+  - [ ] **XP-01** → [docs/items/XP-01.md](docs/items/XP-01.md) `landscape scores-export --format csv` writes one RFC 4180 row per screened entity (flattened topics, header always); `jsonl` default unchanged — partial 2026-11-27: merged PR #271 at a3028ab (main bad4d6d, round 121/A1; executor gate 1667 passed, 5 skipped; CI pass); seen offline only (SQLite tests); needs one `scores-export --format csv` run over real assessments; residuals: Parquet not done, Postgres unexercised, formula-injection escaping: XP-02
+  - [ ] **XP-02** → [docs/items/XP-02.md](docs/items/XP-02.md) `scores-export --format csv` neutralises spreadsheet formula cells (text starting = + - @ TAB CR gets a leading ')
 - [ ] Hosting with access control; publishing gated by the scope's declared purpose
 
 **Milestone M4:** full site: Map · Mosaic · Compare · Matrix · Market · Entity · Method.
