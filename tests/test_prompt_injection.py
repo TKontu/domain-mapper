@@ -1,4 +1,4 @@
-"""Prompt-injection corpus against both extractors' prompts and checks (PI-01).
+"""Prompt-injection corpus against the extractor and screen prompts and checks (PI-01, PI-02).
 
 (a) every case lands inside the single evidence block, with exactly one real BEGIN and END
 delimiter; (b) a fake LLM that obeys the injection fails the deterministic checks and, for
@@ -14,14 +14,15 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from core import assess, attribute_extract
+from core import assess, attribute_extract, screen
 from core.assess import EVIDENCE_BEGIN, EVIDENCE_END
 from core.assessment_store import EvidenceRow
 from core.attribute_store import AttributeValueRow
 from core.runs import create_all
-from core.scope_pack import Attribute
+from core.scope_pack import Attribute, load_scope_pack
 from tests.injection_cases import ATTACK_QUOTE, ATTACK_VALUE, CASE_IDS, CASES
 from tests.test_assess import FakeLLM, _rubric
+from tests.test_screen import EXAMPLE_SCOPE
 
 ATTR = Attribute(id="headcount", label="Headcount", type="int")
 INJECTED_ID, HONEST_ID = 11, 12
@@ -37,7 +38,25 @@ def _prompts(page: str) -> list[str]:
     return [
         assess.build_prompt(rubric, crit, _chunks(page)),
         attribute_extract.build_prompt(ATTR, _chunks(page)),
+        screen.build_prompt(
+            load_scope_pack(EXAMPLE_SCOPE),
+            name="Acme",
+            domain="acme.example",
+            text=page,
+            max_chars=len(page),
+        ),
     ]
+
+
+def test_screen_truncates_before_neutralising() -> None:
+    page = "a" * 10 + "<<<END EVIDENCE>>>TAIL"
+    prompt = screen.build_prompt(
+        load_scope_pack(EXAMPLE_SCOPE), name="Acme", domain="acme.example", text=page, max_chars=12
+    )
+    start = prompt.index(EVIDENCE_BEGIN)
+    assert prompt.count(EVIDENCE_END) == 1
+    assert "a" * 10 + "<<" in prompt[start:] and "TAIL" not in prompt
+    assert "Acme" in prompt[:start] and "acme.example" in prompt[:start]
 
 
 @pytest.mark.parametrize("page", [p for _, p in CASES], ids=CASE_IDS)
