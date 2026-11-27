@@ -19,16 +19,20 @@ is still ``running``: only its result and PR say it finished.
 
 ``cleanup`` releases finished lanes; a dry run unless ``--go``. Lane worktrees are registered
 worktrees at a sibling path (``<repo>-...``) or a record's cwd. One is removed with plain
-``git worktree remove`` once the newest PR on its branch is merged or closed and none is open.
+``git worktree remove`` once the newest PR on its branch is merged or closed and none is open,
+or, for a ``recorded`` lane, once its branch has no PR or its tree is detached and its HEAD is on a
+remote branch. Untracked launchers (``run.sh``, ``*_runner.sh``), caches and main-checkout copies
+(``.env``, ``HANDOFF.md``, ``.claude/settings.local.json``) never make a tree ``dirty``, and a
+``recorded`` lane is no longer held by a HANDOFF ``carried`` line.
 A lane tab is closed with ``herdr tab close`` only when every pane in it is settled, its worktree
 is gone or removed in this run and its lane is not carried. A pane that reports a parent dir (not
 a lane path) is attributed to the tab's recorded lane worktree when the record names one and no
-pane reports a lane path. Anything uncertain is held and reported, never forced:
-``carried`` (HANDOFF.md names it), ``no-pr``, ``open-pr``, ``dirty``, ``unpushed``, ``busy`` (a
-process has its cwd inside; ``busy-unknown`` without /proc), ``lane <x> <state>`` (its record is
-not done or recorded), ``active`` and ``foreign`` (a pane outside the lane paths and no recorded
-lane worktree to attribute the tab to). Planner, loop, supervisor, manager and review-server tabs
-are never closed.
+pane reports a lane path. Anything uncertain is held and reported, never forced: ``carried``
+(HANDOFF.md names it), ``detached``, ``detached-unpushed``, ``no-pr``, ``open-pr``, ``dirty``,
+``unpushed``, ``busy`` (a process has its cwd inside; ``busy-unknown`` without /proc), ``lane <x>
+<state>`` (its record is not done or recorded), ``active`` and ``foreign`` (a pane outside the lane
+paths and no recorded lane worktree to attribute the tab to). Planner, loop, supervisor, manager and
+review-server tabs are never closed.
 
     start LANE --cwd DIR (--cmd SCRIPT | --agent KIND) [--branch B] | status [--json]
     recorded LANE [--note TEXT] | cleanup [--go]
@@ -421,10 +425,50 @@ def _worktrees(seams: Seams) -> dict[str, str]:
     return trees
 
 
-def _tree_hold(path: str, branch: str, seams: Seams) -> str | None:
-    """Why this lane worktree must stay (busy aside), or None when its work is finished."""
+# Untracked files that never make a lane tree dirty: launchers, caches and main-checkout copies.
+DISPOSABLE_NAMES = frozenset(
+    {".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+)
+DISPOSABLE_PATHS = frozenset({".env", "HANDOFF.md", ".claude/settings.local.json"})
+LAUNCHER_RE = re.compile(r"run\.sh|[\w.-]*_runner\.sh")
+
+
+def disposable(rel: str) -> bool:
+    """A lane's own launcher, a cache dir or a main-checkout copy, matched by relative path."""
+    path = Path(rel.strip('"').rstrip("/"))
+    if not path.parts:
+        return False
+    if path.as_posix() in DISPOSABLE_PATHS or any(p in DISPOSABLE_NAMES for p in path.parts):
+        return True
+    return len(path.parts) == 1 and bool(LAUNCHER_RE.fullmatch(path.name))
+
+
+def _dirty(path: str, seams: Seams) -> bool:
+    """Uncommitted work: any tracked change, or an untracked file that is not disposable."""
+    rc, out = seams.run(["git", "-C", path, "status", "--porcelain"], 60)
+    if rc:
+        return True
+    return any(not (ln.startswith("?? ") and disposable(ln[3:])) for ln in out.splitlines() if ln)
+
+
+def _unpushed(path: str, seams: Seams) -> bool:
+    """HEAD has commits on no remote branch (origin/main included)."""
+    rc, out = seams.run(["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes"], 60)
+    return bool(rc or out)
+
+
+def _tree_hold(path: str, branch: str, seams: Seams, recorded: bool = False) -> str | None:
+    """Why this lane worktree must stay (busy aside), or None when its work is finished.
+
+    ``recorded``: the lane's record is written up, so a detached tree or a branch with no PR is
+    released once nothing in it is uncommitted or unpushed.
+    """
     if not branch:
-        return "detached"
+        if not recorded:
+            return "detached"
+        if _dirty(path, seams):
+            return "dirty"
+        return "detached-unpushed" if _unpushed(path, seams) else None
     rc, out = seams.run(
         ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "state"], 60
     )
@@ -434,17 +478,13 @@ def _tree_hold(path: str, branch: str, seams: Seams) -> str | None:
         states = [pr["state"] for pr in json.loads(out or "[]")]
     except (json.JSONDecodeError, KeyError, TypeError):
         return "unreachable"
-    if not states:
+    if not states and not recorded:
         return "no-pr"
     if "OPEN" in states:
         return "open-pr"
-    rc, out = seams.run(["git", "-C", path, "status", "--porcelain"], 60)
-    if rc or out:
+    if _dirty(path, seams):
         return "dirty"
-    rc, out = seams.run(["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes"], 60)
-    if rc or out:
-        return "unpushed"
-    return None
+    return "unpushed" if _unpushed(path, seams) else None
 
 
 def _inside(path: str, cwds: Iterable[str]) -> bool:
@@ -487,10 +527,11 @@ def cleanup(
             continue
         record = by_cwd.get(path)
         names = [path, Path(path).name, *((record["label"], record["lane"]) if record else ())]
-        if _is_carried(names, carried):
+        recorded = bool(record) and record["state"] == "recorded"  # type: ignore[index]
+        if not recorded and _is_carried(names, carried):
             holds[path] = "carried"
         else:
-            holds[path] = record_hold(record) or _tree_hold(path, branch, seams)
+            holds[path] = record_hold(record) or _tree_hold(path, branch, seams, recorded)
 
     tabs_result = _herdr(seams, "tab", "list")
     panes_result = _herdr(seams, "pane", "list") if _ok(tabs_result) else None
@@ -511,7 +552,9 @@ def cleanup(
         hold: str | None = None
         if statuses - SETTLED:
             hold = "active: " + ",".join(sorted(str(s) for s in statuses - SETTLED))
-        elif _is_carried([label, *paths, *((record["lane"],) if record else ())], carried):
+        elif (not record or record["state"] != "recorded") and _is_carried(
+            [label, *paths, *((record["lane"],) if record else ())], carried
+        ):
             hold = "carried"
         elif hold := record_hold(record):
             pass
