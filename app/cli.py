@@ -129,7 +129,7 @@ from core.attribute_store import (
     current_attribute_values_many,
     record_attribute_value,
 )
-from core.candidate_store import NewCandidate, record_candidates
+from core.candidate_store import Candidate, NewCandidate, record_candidates
 from core.chunk_store import ChunkRow
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStoreError, embed_pending_chunks
@@ -148,7 +148,7 @@ from core.presence_store import (
     presences_many,
     record_presence,
 )
-from core.resolve import apply_resolution, group_candidates
+from core.resolve import ApplySummary, apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import (
     FAILED,
@@ -669,13 +669,15 @@ def run_resolve(scope: Path, apply: bool = False) -> None:
             engine = create_db_engine(settings.database_url)
             try:
                 create_all(engine)
-                applied = apply_resolution(engine, scope_id)
+                applied, skipped = _run_resolve_unit(engine, scope_id)
             finally:
                 engine.dispose()
         except Exception as exc:  # noqa: BLE001 - never echo the database URL
             typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
             raise typer.Exit(2) from None
         typer.echo(f"created {applied.created} linked {applied.linked} skipped {applied.skipped}")
+        if skipped:
+            typer.echo(f"skipped {skipped}")
         return
     try:
         engine = create_db_engine(settings.database_url)
@@ -692,6 +694,36 @@ def run_resolve(scope: Path, apply: bool = False) -> None:
     typer.echo(f"domains {len(summary.groups)} candidates {summary.candidates}")
     if summary.skipped:
         typer.echo(f"skipped {summary.skipped}")
+
+
+def _run_resolve_unit(engine: Engine, scope_id: str) -> tuple[ApplySummary, int]:
+    """RT-01: run ``apply_resolution`` as one :class:`core.runs.StageRunner` unit under one run.
+
+    Stage ``resolve``, unit key ``"<scope_id>"``, input hash = sha256 over the scope id and the
+    candidate count + max candidate id (one aggregate query). A unit already ``done`` for the
+    same hash is skipped (``apply_resolution`` not called, zero summary). The run row is
+    FINISHED on success; any error fails the unit and the run, then propagates. Returns
+    ``(summary, skipped)``.
+    """
+    run_id = _open_run(engine, "resolve")
+    applied = ApplySummary(created=0, linked=0, skipped=0)
+
+    def units() -> Iterator[tuple[str, str]]:
+        with engine.connect() as conn:
+            n, top = conn.execute(select(func.count(Candidate.id), func.max(Candidate.id))).one()
+        yield scope_id, hashlib.sha256(f"{scope_id}\0{n}\0{top}".encode()).hexdigest()
+
+    def handle(_key: str) -> None:
+        nonlocal applied
+        applied = apply_resolution(engine, scope_id)
+
+    try:
+        summary = StageRunner(engine).run("resolve", units(), handle, run_id=run_id, catch=())
+    except BaseException as exc:
+        _close_run_aborting(engine, run_id, exc)
+        raise
+    _close_run(engine, run_id, FINISHED)
+    return applied, summary.skipped
 
 
 def _make_screen_llm(settings: Settings, db: DbTarget) -> LLM:
