@@ -1454,9 +1454,11 @@ def run_attributes(scope: Path, entity_id: int) -> None:
 
 
 ATTRIBUTES_EXPORT_BATCH = 500
+ATTRIBUTES_EXPORT_FORMATS = ("jsonl", "csv")
+_CSV_ATTRIBUTE_FIELDS = ("value", "unit", "evidence_count", "grounded_count")
 
 
-def run_attributes_export(scope: Path, out: Path) -> None:
+def run_attributes_export(scope: Path, out: Path, format: str = "jsonl") -> None:
     """Write one attributes object per entity of ``scope`` with current values to ``out`` (AT-03).
 
     Entities stream in ascending id via :func:`iter_entities` and are batched
@@ -1469,18 +1471,34 @@ def run_attributes_export(scope: Path, out: Path) -> None:
     when it has none) to ``<out>.tmp``, renamed to ``out`` on success so a failure leaves no
     ``PATH``. Setup errors or an unwritable output directory exit 2. Production caller: the
     ``attributes-export`` command; consumer is the later static-site row.
+
+    ``format`` ``jsonl`` (default) writes the objects above; ``csv`` (XP-03) writes a header
+    (always) of ``entity_id`` then ``<attr_id>.value/unit/evidence_count/grounded_count`` per
+    pack attribute in pack order and one row per exported entity, cells via :func:`_csv_cell`
+    (XP-02 formula escaping); attributes not in the pack are dropped from CSV, an attribute
+    without a current value gives four empty cells. Any other format exits 2 before setup.
     """
+    if format not in ATTRIBUTES_EXPORT_FORMATS:
+        typer.echo(f"error: unknown format {format!r}", err=True)
+        raise typer.Exit(2)
     settings = _load(scope)
     pack = _load_pack_or_exit(scope)
     tmp = Path(f"{out}.tmp")
     count = skipped = 0
     try:
         try:
-            handle = tmp.open("w", encoding="utf-8")
+            handle = tmp.open("w", encoding="utf-8", newline="")
         except OSError as exc:
             typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
             raise typer.Exit(2) from None
         with handle:
+            attr_ids = [attribute.id for attribute in pack.attributes.attributes]
+            writer = csv.writer(handle, lineterminator="\n") if format == "csv" else None
+            if writer is not None:
+                writer.writerow(
+                    ["entity_id"]
+                    + [f"{aid}.{field}" for aid in attr_ids for field in _CSV_ATTRIBUTE_FIELDS]
+                )
             engine = _open_engine(settings)
             try:
                 batch: list[int] = []
@@ -1515,7 +1533,10 @@ def run_attributes_export(scope: Path, out: Path) -> None:
                             },
                             "units": {key: values[key][2] for key in keys},
                         }
-                        handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        if writer is None:
+                            handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                        else:
+                            writer.writerow(_attributes_csv_row(obj, attr_ids))
                         count += 1
                     batch.clear()
 
@@ -1538,6 +1559,25 @@ def run_attributes_export(scope: Path, out: Path) -> None:
         tmp.unlink(missing_ok=True)
         raise
     typer.echo(f"exported {count} entities to {out} (skipped {skipped} without attributes)")
+
+
+def _attributes_csv_row(obj: Mapping[str, Any], attr_ids: Sequence[str]) -> list[str]:
+    """Flatten one attributes-export object into the XP-03 CSV row for ``attr_ids`` (pack order)."""
+    row = [_csv_cell(obj["entity_id"])]
+    for attr_id in attr_ids:
+        if attr_id not in obj["attributes"]:
+            row.extend([""] * len(_CSV_ATTRIBUTE_FIELDS))
+            continue
+        evidence = obj["evidence"][attr_id]
+        row.extend(
+            [
+                _csv_cell(obj["attributes"][attr_id]),
+                _csv_cell(obj["units"][attr_id]),
+                _csv_cell(len(evidence)),
+                _csv_cell(sum(1 for e in evidence if e["grounded"])),
+            ]
+        )
+    return row
 
 
 def _fmt_ratio(value: float | None) -> str:
@@ -2764,14 +2804,18 @@ def attributes(
 
 
 @app.command(
-    name="attributes-export", help="Export current attribute values per entity as JSON Lines."
+    name="attributes-export",
+    help="Export current attribute values per entity as JSON Lines or CSV.",
 )
 def attributes_export(
     scope: ScopeOpt,
     out: Annotated[Path, typer.Option("--out", help="Output file path.")],
+    format: Annotated[
+        str, typer.Option("--format", help="Output format: jsonl (default) or csv.")
+    ] = "jsonl",
 ) -> None:
     """Write one attributes object per entity of the scope to ``--out``."""
-    run_attributes_export(scope, out)
+    run_attributes_export(scope, out, format)
 
 
 @app.command(
