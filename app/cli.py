@@ -1995,6 +1995,108 @@ def _find_criterion(rubric: Rubric, criterion_id: str) -> Criterion | None:
     return None
 
 
+class _AssessUnitFailed(Exception):
+    """Raised by the assess unit handler (error already printed) so the unit and run fail."""
+
+
+_AssessOutcome = tuple[list[Any], Any, Any, int]
+
+
+def _run_assess_unit(
+    engine: Engine,
+    run_id: int,
+    pack: ScopePack,
+    criterion: Any,
+    entity_id: int,
+    n: int,
+    k: int,
+    *,
+    llm: Any,
+    verify_llm: Any,
+    embedder: Any,
+    embedding_model: str | None,
+    reranker: Any,
+    rerank_model: str | None,
+) -> _AssessOutcome | None:
+    """RT-01: retrieve/extract/verify/record one pair as one StageRunner unit under ``run_id``.
+
+    Stage ``assess``, unit key ``"<entity_id>:<criterion_id>"``, input hash = sha256 over the
+    scope id, the criterion's canonical JSON, ``n``, ``k``, the embedding and rerank models and
+    the entity's chunk fingerprint (:func:`_chunk_fingerprints`). A unit already ``done`` for
+    the same hash returns ``None`` (no retrieval or LLM call). ``AssessError``/``LlmError``/
+    ``EmbeddingError`` or an out-of-range rerank hit print one line and raise
+    :class:`_AssessUnitFailed` with the unit ``failed``; other errors fail the unit and propagate.
+    """
+    criterion_json = json.dumps(
+        criterion.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    key = f"{entity_id}:{criterion.id}"
+    outcome: _AssessOutcome | None = None
+
+    def units() -> Iterator[tuple[str, str]]:
+        chunks = _chunk_fingerprints(engine, [entity_id]).get(entity_id, "")
+        payload = json.dumps(
+            [pack.scope.id, criterion_json, n, k, embedding_model, rerank_model, chunks]
+        )
+        yield key, hashlib.sha256(payload.encode()).hexdigest()
+
+    def retrieve() -> list[Any]:
+        if reranker is None and embedder is None:
+            return retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
+        if reranker is None:
+            return retrieve_evidence(
+                engine,
+                criterion,
+                entity_id=entity_id,
+                n=n,
+                k=k,
+                embedder=embedder,
+                model=embedding_model,
+            )
+        try:
+            return retrieve_evidence(
+                engine,
+                criterion,
+                entity_id=entity_id,
+                n=n,
+                k=k,
+                embedder=embedder,
+                model=embedding_model,
+                reranker=reranker,
+            )
+        except ValueError as exc:  # out-of-range rerank hit (AS-08)
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            raise _AssessUnitFailed(str(exc)) from exc
+
+    def handle(_key: str) -> None:
+        nonlocal outcome
+        try:
+            chunks = retrieve()
+            extraction = extract_criterion(llm, pack.rubric, criterion, chunks, run_id=run_id)
+            verification = verify_extraction(
+                verify_llm, pack.rubric, criterion, chunks, extraction, run_id=run_id
+            )
+            routed = route(extraction, verification)
+            assessment_id = record_assessment(
+                engine,
+                entity_id=entity_id,
+                criterion_id=criterion.id,
+                extraction=extraction,
+                route=routed,
+                rubric_version=pack.scope.version,
+                extractor_model=llm.model,
+                verifier_model=verify_llm.model,
+                run_id=run_id,
+            )
+        except (AssessError, LlmError, EmbeddingError) as exc:
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            raise _AssessUnitFailed(str(exc)) from exc
+        outcome = (chunks, extraction, routed, assessment_id)
+
+    summary = StageRunner(engine).run("assess", units(), handle, run_id=run_id, catch=())
+    return None if summary.skipped else outcome
+
+
 def run_assess(
     scope: Path,
     entity_id: int | None,
@@ -2022,6 +2124,8 @@ def run_assess(
     With ``rerank_model`` set (AS-09), a Reranker is built via :func:`_make_reranker` the same way
     and reranks the top-``k`` pool to ``n``; ``EmbeddingError`` or an out-of-range hit
     ``ValueError`` closes the run ``failed`` and exits 1.
+    RT-01: the body runs as one StageRunner unit (:func:`_run_assess_unit`); an unchanged pair
+    already ``done`` prints ``skipped 1``, exits 0 and closes the run ``finished``.
     """
     settings = _load(scope)
     if dry_run:
@@ -2067,52 +2171,22 @@ def run_assess(
             raise typer.Exit(2) from None
         run_id = _open_run(engine, "assess")
         try:
-            if reranker is None and embedder is None:
-                chunks = retrieve_evidence(engine, criterion, entity_id=entity_id, n=n, k=k)
-            elif reranker is None:
-                chunks = retrieve_evidence(
-                    engine,
-                    criterion,
-                    entity_id=entity_id,
-                    n=n,
-                    k=k,
-                    embedder=embedder,
-                    model=embedding_model,
-                )
-            else:
-                try:
-                    chunks = retrieve_evidence(
-                        engine,
-                        criterion,
-                        entity_id=entity_id,
-                        n=n,
-                        k=k,
-                        embedder=embedder,
-                        model=embedding_model,
-                        reranker=reranker,
-                    )
-                except ValueError as exc:  # out-of-range rerank hit (AS-08)
-                    typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
-                    _close_run(engine, run_id, FAILED)
-                    raise typer.Exit(1) from None
-            extraction = extract_criterion(llm, pack.rubric, criterion, chunks, run_id=run_id)
-            verification = verify_extraction(
-                verify_llm, pack.rubric, criterion, chunks, extraction, run_id=run_id
-            )
-            routed = route(extraction, verification)
-            assessment_id = record_assessment(
+            outcome = _run_assess_unit(
                 engine,
-                entity_id=entity_id,
-                criterion_id=criterion.id,
-                extraction=extraction,
-                route=routed,
-                rubric_version=pack.scope.version,
-                extractor_model=llm.model,
-                verifier_model=verify_llm.model,
-                run_id=run_id,
+                run_id,
+                pack,
+                criterion,
+                entity_id,
+                n,
+                k,
+                llm=llm,
+                verify_llm=verify_llm,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                reranker=reranker,
+                rerank_model=rerank_model,
             )
-        except (AssessError, LlmError, EmbeddingError) as exc:
-            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+        except _AssessUnitFailed:
             _close_run(engine, run_id, FAILED)
             raise typer.Exit(1) from None
         except SQLAlchemyError:
@@ -2126,6 +2200,10 @@ def run_assess(
     finally:
         engine.dispose()
 
+    if outcome is None:
+        typer.echo("skipped 1")
+        return
+    chunks, extraction, routed, assessment_id = outcome
     checks = "pass" if extraction.checks_passed else "fail"
     typer.echo(f"status {extraction.status} checks {checks} chunks {len(chunks)}")
     for quote in extraction.quotes:
