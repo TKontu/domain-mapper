@@ -19,7 +19,7 @@ them) and ``export`` copies them into its JSONL, so after the steps every other 
 adjudicate); those are recorded and the run continues. Any other nonzero exit stops the run.
 The JSON summary (steps with command name, exit code and elapsed seconds; screen, assessment,
 llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.json``. When every
-screen ``llm_call`` errored (dead gateway) the summary has ``"degraded": true`` and the exit is 3.
+screen ``llm_call`` returned ok while entities were present (dead gateway, or none ran) the summary has ``"degraded": true`` and the exit is 3.
 
 Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH``
 """
@@ -291,8 +291,8 @@ def db_counts(db_url: str, scope_id: str) -> dict[str, object]:
             "unscreened": screened.get("unscreened", 0),
         },
         "assessments": {"by_status": by_status, "by_route": by_route},
-        # Every screen call errored (dead gateway): the run is degraded.
-        "degraded": bool(screen_calls) and screen_calls.get("ok", 0) == 0,
+        # Entities to screen but no screen call returned ok (dead gateway, or no call ran).
+        "degraded": sum(screened.values()) > 0 and screen_calls.get("ok", 0) == 0,
         "llm_calls": {"ok": calls.get("ok", 0), "error": calls.get("error", 0)},
         "tokens": {"in": int(tokens_in), "out": int(tokens_out)},
     }
