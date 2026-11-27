@@ -179,6 +179,30 @@ class OpenAITests(LlmAdapterTestCase):
         self.assertEqual(result.tokens_out, 7)
         self.assertFalse(result.cache_hit)
 
+    def test_no_max_tokens_in_payload_by_default(self) -> None:
+        transport = FakeTransport(json_response(openai_payload("hi")))
+        self.openai(transport).complete(PROMPT, purpose="screen", run_id=self.run_id)
+        self.assertNotIn("max_tokens", json.loads(transport.calls[0].body))
+
+    def test_max_tokens_cap_is_sent_when_set(self) -> None:
+        transport = FakeTransport(json_response(openai_payload("hi")))
+        self.openai(transport, max_tokens=512).complete(
+            PROMPT, purpose="screen", run_id=self.run_id
+        )
+        self.assertEqual(json.loads(transport.calls[0].body)["max_tokens"], 512)
+
+    def test_build_llm_passes_max_tokens_to_local_backend(self) -> None:
+        transport = FakeTransport(json_response(openai_payload("hi")))
+        llm = build_llm(
+            Settings(llm_gateway_url="http://gateway:8000/v1", local_model="local-small"),
+            "local",
+            db=self.engine,
+            transport=transport,
+            max_tokens=256,
+        )
+        llm.complete(PROMPT, purpose="screen", run_id=self.run_id)
+        self.assertEqual(json.loads(transport.calls[0].body)["max_tokens"], 256)
+
     def test_no_authorization_header_without_a_key(self) -> None:
         transport = FakeTransport(json_response(openai_payload("hi")))
         self.openai(transport).complete(PROMPT, purpose="screen", run_id=self.run_id)

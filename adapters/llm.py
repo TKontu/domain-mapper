@@ -270,6 +270,7 @@ class OpenAICompatibleLLM(_BaseHttpLLM):
         schema_mode: SchemaMode = "response_format",
         cost_per_mtok_in: float = 0.0,
         cost_per_mtok_out: float = 0.0,
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model,
@@ -284,6 +285,10 @@ class OpenAICompatibleLLM(_BaseHttpLLM):
             raise ValueError("schema_mode must be 'response_format' or 'guided_json'")
         self._schema_mode: SchemaMode = schema_mode
         self._api_key = api_key
+        # Optional output cap (LM-01); omitted from the payload when unset.
+        self._max_tokens = (
+            None if max_tokens is None else _require_positive_int(max_tokens, "max_tokens")
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -297,6 +302,8 @@ class OpenAICompatibleLLM(_BaseHttpLLM):
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if self._max_tokens is not None:
+            payload["max_tokens"] = self._max_tokens
         if json_schema is not None:
             if self._schema_mode == "guided_json":
                 payload["guided_json"] = dict(json_schema)
@@ -522,6 +529,7 @@ def build_llm(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     anthropic_base_url: str = DEFAULT_ANTHROPIC_BASE_URL,
     budget_usd: float | None = None,
+    max_tokens: int | None = None,
 ) -> LLM:
     """Build the adapter named by ``backend`` from :class:`core.config.Settings`.
 
@@ -529,6 +537,7 @@ def build_llm(
     ``settings.llm_gateway_url`` with ``settings.local_model``.
     ``cloud``/``anthropic``/``claude`` select Anthropic with
     ``settings.cloud_llm_model`` and refuse to build without a key.
+    ``max_tokens`` caps local output (ignored for cloud, which keeps its own default).
     With ``budget_usd`` the adapter is wrapped in :class:`BudgetedLLM` (one budget per run).
     """
     inner = _build_inner(
@@ -538,6 +547,7 @@ def build_llm(
         transport=transport,
         timeout=timeout,
         anthropic_base_url=anthropic_base_url,
+        max_tokens=max_tokens,
     )
     return inner if budget_usd is None else BudgetedLLM(inner, budget_usd)
 
@@ -550,6 +560,7 @@ def _build_inner(
     transport: Transport | None,
     timeout: float,
     anthropic_base_url: str,
+    max_tokens: int | None = None,
 ) -> LLM:
     name = backend.strip().lower()
     if name in _LOCAL_BACKENDS:
@@ -562,6 +573,7 @@ def _build_inner(
             timeout=timeout,
             cost_per_mtok_in=settings.local_cost_per_mtok_in,
             cost_per_mtok_out=settings.local_cost_per_mtok_out,
+            max_tokens=max_tokens,
         )
     if name in _CLOUD_BACKENDS:
         key = settings.cloud_api_key
