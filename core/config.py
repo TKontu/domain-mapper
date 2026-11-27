@@ -53,6 +53,8 @@ class Settings:
     cloud_cost_per_mtok_out: float = DEFAULT_COST_PER_MTOK
     max_crawl_concurrency: int = DEFAULT_MAX_CRAWL_CONCURRENCY
     llm_timeout_s: float = DEFAULT_LLM_TIMEOUT_S
+    local_max_tokens: int | None = None
+    verifier_max_tokens: int | None = None
     database_url: str = field(default=DEFAULT_DATABASE_URL, repr=False)
 
 
@@ -61,7 +63,7 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
 
     A missing ``env_file`` is not an error (fresh checkouts have no ``.env``).
     Raises ``ValueError`` naming the offending variable for malformed numbers,
-    a negative budget, a non-positive LLM timeout or a crawl concurrency below one.
+    a negative budget, a non-positive LLM timeout or token cap, or a crawl concurrency below one.
     """
     file_values = _read_env_file(Path(env_file))
 
@@ -113,6 +115,10 @@ def load_settings(env_file: str | Path = DEFAULT_ENV_FILE) -> Settings:
         llm_timeout_s=_parse_positive_float(
             "LLM_TIMEOUT_S", raw("LLM_TIMEOUT_S"), DEFAULT_LLM_TIMEOUT_S
         ),
+        local_max_tokens=_parse_optional_positive_int("LOCAL_MAX_TOKENS", raw("LOCAL_MAX_TOKENS")),
+        verifier_max_tokens=_parse_optional_positive_int(
+            "VERIFIER_MAX_TOKENS", raw("VERIFIER_MAX_TOKENS")
+        ),
         database_url=_text(raw("DATABASE_URL"), DEFAULT_DATABASE_URL),
     )
 
@@ -151,6 +157,19 @@ def _parse_int(name: str, value: str | None, default: int) -> int:
         raise ValueError(f"{ENV_PREFIX}{name} must be an integer, got {value!r}") from None
     if parsed < 1:
         raise ValueError(f"{ENV_PREFIX}{name} must be >= 1, got {value!r}")
+    return parsed
+
+
+def _parse_optional_positive_int(name: str, value: str | None) -> int | None:
+    """Return ``None`` when unset, else an integer > 0 (``ValueError`` names the variable)."""
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        raise ValueError(f"{ENV_PREFIX}{name} must be an integer, got {value!r}") from None
+    if parsed <= 0:
+        raise ValueError(f"{ENV_PREFIX}{name} must be > 0, got {value!r}")
     return parsed
 
 

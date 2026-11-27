@@ -292,5 +292,30 @@ class LlmTimeoutTests(SettingsTestCase):
                 load_settings(self.absent_env_file())
 
 
+class MaxTokensTests(SettingsTestCase):
+    """LM-01: optional output-token caps for the local backend."""
+
+    VARS = (("DM_LOCAL_MAX_TOKENS", "local_max_tokens"), ("DM_VERIFIER_MAX_TOKENS", "verifier_max_tokens"))
+
+    def test_unset_is_none(self) -> None:
+        settings = load_settings(self.absent_env_file())
+        self.assertIsNone(settings.local_max_tokens)
+        self.assertIsNone(settings.verifier_max_tokens)
+
+    def test_value_comes_from_the_environment(self) -> None:
+        for var, attr in self.VARS:
+            os.environ[var] = "512"
+            self.assertEqual(getattr(load_settings(self.absent_env_file()), attr), 512)
+            del os.environ[var]
+
+    def test_invalid_values_name_the_variable(self) -> None:
+        for var, _attr in self.VARS:
+            for value in ("abc", "0", "-3"):
+                os.environ[var] = value
+                with self.assertRaisesRegex(ValueError, var):
+                    load_settings(self.absent_env_file())
+            del os.environ[var]
+
+
 if __name__ == "__main__":
     unittest.main()

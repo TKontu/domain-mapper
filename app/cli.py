@@ -643,6 +643,7 @@ def _make_screen_llm(settings: Settings, db: DbTarget) -> LLM:
         db=db,
         budget_usd=settings.llm_budget_usd,
         timeout=settings.llm_timeout_s,
+        max_tokens=settings.local_max_tokens,
     )
 
 
@@ -1664,6 +1665,7 @@ def _make_assess_llm(settings: Settings, db: DbTarget) -> LLM:
         db=db,
         budget_usd=settings.llm_budget_usd,
         timeout=settings.llm_timeout_s,
+        max_tokens=settings.local_max_tokens,
     )
 
 
@@ -1676,6 +1678,11 @@ def _make_verify_llm(settings: Settings, db: DbTarget) -> LLM:
         db=db,
         budget_usd=settings.llm_budget_usd,
         timeout=settings.llm_timeout_s,
+        max_tokens=(
+            settings.verifier_max_tokens
+            if settings.verifier_max_tokens is not None
+            else settings.local_max_tokens
+        ),
     )
 
 
