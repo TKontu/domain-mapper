@@ -135,7 +135,9 @@ from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
 from core.log import configure_logging
+from core.presence_extract import compile_terms, extract_presence
 from core.presence_store import (
+    PRESENCE_TYPES,
     check_presence,
     layer_ids_for,
     presence_evidence_many,
@@ -1069,6 +1071,58 @@ def run_presences(scope: Path, entity_id: int) -> None:
         typer.echo(f"{country} {presence_type}{suffix}")
     layers = layer_ids_for(pack.scope.layers, {country for country, _, _ in rows})
     typer.echo(f"layers: {', '.join(layers)}")
+
+
+def run_presence_extract(
+    scope: Path, presence_type: str, entity_ids: list[int] | None, dry_run: bool
+) -> None:
+    """Record presence found by the pack's ``presence_terms`` in stored chunks (MP-03).
+
+    Prints ``entity E country CC chunk N`` per match then ``extracted K``; ``--dry-run`` prints
+    the same and writes nothing. An unknown type, or a pack without ``presence_terms``, exits 2
+    with one line. Without ``--entity`` every entity of the scope is scanned.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    if presence_type not in PRESENCE_TYPES:
+        typer.echo(
+            f"error: presence type must be one of {', '.join(PRESENCE_TYPES)}, "
+            f"got {presence_type!r}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if not pack.scope.presence_terms:
+        typer.echo("error: scope pack declares no presence_terms", err=True)
+        raise typer.Exit(2)
+    compiled = compile_terms(pack.scope.presence_terms)
+    engine = _open_engine(settings)
+    try:
+        with Session(engine) as session, session.begin():
+            if entity_ids:
+                ids = sorted(set(entity_ids))
+                for entity_id in ids:
+                    if not _entity_in_scope(session, entity_id, pack.scope.id):
+                        typer.echo(f"error: unknown entity {entity_id}", err=True)
+                        raise typer.Exit(2)
+            else:
+                ids = list(
+                    session.scalars(
+                        select(Entity.id)
+                        .where(Entity.scope_id == pack.scope.id)
+                        .order_by(Entity.id)
+                    )
+                )
+            matches = extract_presence(session, compiled, ids)
+            if not dry_run:
+                for m in matches:
+                    record_presence(session, m.entity_id, m.country, presence_type, m.chunk_id)
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    for m in matches:
+        typer.echo(f"entity {m.entity_id} country {m.country} chunk {m.chunk_id}")
+    typer.echo(f"extracted {len(matches)}")
 
 
 def run_attributes(scope: Path, entity_id: int) -> None:
@@ -2171,6 +2225,21 @@ def presence_set(
 ) -> None:
     """Validate and store one presence row; print its id."""
     run_presence_set(scope, entity_id, country, presence_type, evidence_id)
+
+
+@app.command(name="presence-extract", help="Extract market presence from stored chunks.")
+def presence_extract(
+    scope: ScopeOpt,
+    presence_type: Annotated[
+        str, typer.Option("--type", help="hq, site, field_service, sales or remote.")
+    ],
+    entity_ids: Annotated[
+        list[int] | None, typer.Option("--entity", help="Entity id (repeatable).")
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print matches only.")] = False,
+) -> None:
+    """Match the pack's presence_terms in each entity's chunks and record presence."""
+    run_presence_extract(scope, presence_type, entity_ids, dry_run)
 
 
 @app.command(name="presences", help="List an entity's market presence and derived layers.")

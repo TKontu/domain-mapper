@@ -27,3 +27,9 @@ crawl:
   max_pages: 3
   priority_paths: [/about, /services]
   discover_links: true
+
+# Illustrative presence terms (MP-03): invented place names matched in stored chunks.
+presence_terms:
+  XA: [Avalor, Port Avalor]
+  XB: [Brennmark]
+  XC: [Calvessa]
