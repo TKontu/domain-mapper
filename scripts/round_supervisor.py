@@ -8,8 +8,8 @@ A plain process (no LLM) in its own Herdr pane. Each round gets a new ``claude``
 supervisor-chosen session id, so "cleared" holds by construction. Completion is an explicit,
 validated sentinel, never Herdr's ``idle``: an orchestrator waiting on CI is idle too.
 
-Live lanes carry over untouched: they run in their own ``live-<repo>-<lane>`` Herdr tabs, and the only tab
-this process ever closes is the one it created for the round's orchestrator.
+Live lanes carry over untouched: they run in their own ``live-<repo>-<lane>`` Herdr tabs, and the
+only tab this process ever closes is the one it created for the round's orchestrator.
 
 Watchdog: transcript silence or no outward progress (main, PR heads, round manifests) earns a
 nudge; only outward progress refunds nudges, so a heartbeat that merely keeps the transcript
@@ -105,8 +105,8 @@ decisions in HANDOFF.md.
   python3 {lanes} start <lane> --cwd <lane worktree> (--cmd <script> | --agent <kind>), which
   names the agent and tab {lane_prefix}<lane> in this workspace, refuses duplicates and records
   pid, log and exit code; never create a Herdr workspace. Never wait for a lane to finish: carry
-  it in HANDOFF.md and end the round. Never halt, relaunch or take over a carried lane; each continues
-  across rounds until it completes. A dead lane is resumed with the command status prints.
+  it in HANDOFF.md and end the round. Never halt, relaunch or take over a carried lane; each
+  continues across rounds until it completes. A dead lane is resumed with the command status prints.
 - After /merge-round and again before /handoff run python3 {lanes} cleanup --go. It closes
   finished lanes' tabs and removes their worktrees by rule; carry every lane it holds, with its
   reason, in HANDOFF.md. Never close lane tabs or remove lane worktrees by hand.
@@ -333,7 +333,8 @@ class Herdr:
 
     def new_tab(self) -> tuple[str, str]:
         made = self._json(
-            "tab", "create", *own_workspace(), "--cwd", str(ROOT), "--label", TAB_LABEL, "--no-focus",
+            "tab", "create", *own_workspace(), "--cwd", str(ROOT), "--label", TAB_LABEL,
+            "--no-focus",
             "--env", f"ROUND_SUPERVISOR_ROOT={ROOT}",
         )  # fmt: skip
         return made["tab"]["tab_id"], made["root_pane"]["pane_id"]
@@ -458,7 +459,9 @@ class Supervisor:
         if not cur or agent is None:
             return False
         if agent.get("cwd") not in (None, str(ROOT)):
-            sys.exit(f"refusing: agent {AGENT} belongs to {agent.get('cwd')}; set [supervisor] name")
+            sys.exit(
+                f"refusing: agent {AGENT} belongs to {agent.get('cwd')}; set [supervisor] name"
+            )
         self.session, self.tab = cur["session"], cur["tab"]
         now = time.time()
         self.t = Tracker(round=cur["round"], started=cur["started"], last_progress=now,
@@ -532,7 +535,9 @@ class Supervisor:
             news("watchdog", f"Nudged the planner: {action.kind.removeprefix('nudge_')}")
             self.t.last_nudge = now
         elif action.kind == "deny":
-            self.herdr.notify(f"Round loop {NAMES['slug']}: dialog timed out", f"round {self.t.round}")
+            self.herdr.notify(
+                f"Round loop {NAMES['slug']}: dialog timed out", f"round {self.t.round}"
+            )
             news("watchdog", "An unanswered approval dialog was refused")
             self.herdr.keys("esc")
             time.sleep(2)
@@ -727,7 +732,8 @@ def render(view: dict[str, Any], width: int, rows: int, offset: int) -> list[str
         _paint("none", "2")
     ]
     lanes = "   ".join(f"{name} {state}" for name, state in view["lanes"]) or "none"
-    top += [rule, _paint("LANES ", "1") + _paint(view.get("lanes_kind", "(agent state, not lane state)"), "2")]
+    kind = view.get("lanes_kind", "(agent state, not lane state)")
+    top += [rule, _paint("LANES ", "1") + _paint(kind, "2")]
     top += textwrap.wrap(lanes, width) or []
     top += [rule, _paint("NEWS ", "1") + _paint("newest first", "2")]
     feed = [
@@ -886,7 +892,8 @@ def dry_run(cfg: Config) -> int:
     print("named agents:", [a.get("name") for a in agents if a.get("name")])
     holder = next((a for a in agents if a.get("name") == AGENT), None)
     print(f"names={NAMES}")
-    print(f"name {AGENT} in use:", holder is not None, f"(cwd {holder.get('cwd')})" if holder else "")
+    cwd_note = f"(cwd {holder.get('cwd')})" if holder else ""
+    print(f"name {AGENT} in use:", holder is not None, cwd_note)
     print("HALT present:", (STATE / "HALT").exists())
     print("fingerprint ok:", fingerprint() is not None)
     first = ROUND_PROMPT.format(round=1, script=SELF, lane_prefix=LANE_PREFIX, lanes=LANES)
