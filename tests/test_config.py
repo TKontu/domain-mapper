@@ -295,7 +295,10 @@ class LlmTimeoutTests(SettingsTestCase):
 class MaxTokensTests(SettingsTestCase):
     """LM-01: optional output-token caps for the local backend."""
 
-    VARS = (("DM_LOCAL_MAX_TOKENS", "local_max_tokens"), ("DM_VERIFIER_MAX_TOKENS", "verifier_max_tokens"))
+    VARS = (
+        ("DM_LOCAL_MAX_TOKENS", "local_max_tokens"),
+        ("DM_VERIFIER_MAX_TOKENS", "verifier_max_tokens"),
+    )
 
     def test_unset_is_none(self) -> None:
         settings = load_settings(self.absent_env_file())

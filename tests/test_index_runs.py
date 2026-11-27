@@ -54,7 +54,8 @@ def test_first_index_creates_one_run_and_one_done_unit(engine, monkeypatch) -> N
 def test_unchanged_rerun_skips_unit_without_embedding(engine, monkeypatch) -> None:
     seed_chunks(engine, ["alpha"])
     use_embedder(monkeypatch, FakeEmbedder())
-    assert invoke("--model", "m1").exit_code == 0  # embeds
+    assert invoke("--model", "m1").exit_code == 0  # embeds; pending changes to 0
+    assert invoke("--model", "m1").exit_code == 0  # zero pending: runs, embeds 0
     calls = count_embed_calls(monkeypatch)
 
     result = invoke("--model", "m1")
@@ -62,7 +63,7 @@ def test_unchanged_rerun_skips_unit_without_embedding(engine, monkeypatch) -> No
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == ["embedded 0 batches 0", "skipped 1"]
     assert calls == []
-    assert run_rows(engine) == [("index", "finished")] * 2
+    assert run_rows(engine) == [("index", "finished")] * 3
 
 
 def test_first_run_with_zero_pending_still_runs_unit(engine, monkeypatch) -> None:
@@ -81,6 +82,7 @@ def test_new_pending_chunk_reruns_unit(engine, monkeypatch) -> None:
     seed_chunks(engine, ["alpha"])
     fake = FakeEmbedder()
     use_embedder(monkeypatch, fake)
+    invoke("--model", "m1")
     invoke("--model", "m1")
     with Session(engine) as session, session.begin():
         session.add(
@@ -140,14 +142,20 @@ def test_unbuildable_embedder_leaves_no_run_or_unit(engine, monkeypatch) -> None
     assert units(engine) == []
 
 
+def test_model_switch_back_reembeds_instead_of_skipping(engine, monkeypatch) -> None:
+    seed_chunks(engine, ["alpha", "beta"])
+    use_embedder(monkeypatch, FakeEmbedder())
+    for _ in range(3):  # third A run is the skip
+        invoke("--model", "A")
+    assert invoke("--model", "B").stdout.splitlines() == ["embedded 2 batches 1"]
+
+    result = invoke("--model", "A")
+
+    assert result.stdout.splitlines() == ["embedded 2 batches 1"]  # pending for A, not skipped
+
+
 def test_bounded_run_continues_on_next_invocation(engine, monkeypatch) -> None:
     seed_chunks(engine, ["alpha", "beta"])
     use_embedder(monkeypatch, FakeEmbedder())
     assert invoke("--model", "m1", "--limit", "1").stdout.splitlines() == ["embedded 1 batches 1"]
-
-    result = invoke("--model", "m1", "--limit", "1")
-
-    assert result.stdout.splitlines() == ["embedded 1 batches 1"]
-    again = invoke("--model", "m1", "--limit", "1")
-    assert again.stdout.splitlines() == ["embedded 0 batches 0"]  # pending 1 -> 0 changes hash
-    assert invoke("--model", "m1", "--limit", "1").stdout.splitlines()[-1] == "skipped 1"
+    assert invoke("--model", "m1", "--limit", "1").stdout.splitlines() == ["embedded 1 batches 1"]
