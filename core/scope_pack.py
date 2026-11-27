@@ -177,6 +177,7 @@ class Attribute(_Model):
     unit: str | None = None
     values: list[str] = Field(default_factory=list)  # for enum
     applies_to: list[str] = Field(default_factory=list)
+    query_terms: list[str] = Field(default_factory=list)  # extra BM25 words (AT-12)
 
 
 class Attributes(_Model):

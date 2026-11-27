@@ -100,10 +100,11 @@ def attribute_schema(attribute: Attribute, chunk_ids: Sequence[int]) -> dict[str
 
 
 def attribute_query(attribute: Attribute) -> str:
-    """BM25 query text for ``attribute``: its label, plus the allowed values of an enum."""
+    """BM25 query text: the label, an enum's allowed values, then ``query_terms`` (AT-12)."""
     parts = [attribute.label]
     if attribute.type == "enum":
         parts.extend(attribute.values)
+    parts.extend(attribute.query_terms)
     return " ".join(parts)
 
 

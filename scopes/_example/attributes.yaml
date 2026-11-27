@@ -3,6 +3,7 @@ attributes:
   - id: headcount
     label: Headcount
     type: int
+    query_terms: [staff, employees]
     applies_to: [agency]
   - id: language_pairs
     label: Language pairs offered
