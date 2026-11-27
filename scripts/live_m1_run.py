@@ -18,7 +18,8 @@ them) and ``export`` copies them into its JSONL, so after the steps every other 
 ``screen`` and ``assess`` exit 1 for per-unit outcomes (an entity errored, checks failed,
 adjudicate); those are recorded and the run continues. Any other nonzero exit stops the run.
 The JSON summary (steps with command name, exit code and elapsed seconds; screen, assessment,
-llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.json``.
+llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.json``. When every
+screen ``llm_call`` errored (dead gateway) the summary has ``"degraded": true`` and the exit is 3.
 
 Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH``
 """
@@ -32,6 +33,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -133,6 +135,48 @@ def seed(db_url: str, scope_id: str, n: int) -> list[int]:
         engine.dispose()
 
 
+SECRET_KEYS = {
+    "DM_LLM_GATEWAY_API_KEY",
+    "DM_LLM_GATEWAY_URL",
+    "DM_LOCAL_MODEL",
+    "DM_VERIFIER_MODEL",
+}
+SECRET_SUFFIXES = ("_KEY", "_TOKEN", "_URL")
+MIN_SECRET_LEN = 4
+# Exit code when every screen llm_call errored (dead gateway).
+EXIT_DEGRADED = 3
+SCRUB_SKIP_SUFFIXES = ("-journal", "-wal", "-shm")
+
+
+def secret_values(values: dict[str, str]) -> list[str]:
+    """Values of secret/URL/model keys, their URL netlocs/hosts, and encoded forms.
+
+    Benign settings (``true``, short numbers) are never scrubbed: only the named keys and
+    ``*_KEY``/``*_TOKEN``/``*_URL`` count, and values shorter than 4 chars are skipped.
+    """
+    base: set[str] = set()
+    for key, value in values.items():
+        if key in SECRET_KEYS or key.endswith(SECRET_SUFFIXES):
+            base.add(value.strip())
+            if key.endswith("_URL"):
+                parts = urllib.parse.urlsplit(value.strip())
+                base.update({parts.netloc, parts.hostname or ""})
+    out: set[str] = set()
+    for value in base:
+        if len(value) < MIN_SECRET_LEN:
+            continue
+        out.update(
+            {
+                value,
+                urllib.parse.quote(value),
+                urllib.parse.quote(value, safe=""),
+                urllib.parse.quote_plus(value),
+                json.dumps(value)[1:-1],
+            }
+        )
+    return sorted((v for v in out if len(v) >= MIN_SECRET_LEN), key=len, reverse=True)
+
+
 def redact(text: str, secrets: list[str]) -> str:
     for value in sorted(secrets, key=len, reverse=True):
         text = text.replace(value, "[redacted]")
@@ -171,7 +215,7 @@ class Runner:
 
 
 def scrub_artifacts(out: Path, secrets: list[str]) -> int:
-    """Redact env-file values from every non-SQLite file under ``out``; return files changed.
+    """Redact secret values from every non-SQLite file under ``out``; return files changed.
 
     ``landscape export`` (and pages built from it) carry ``extractor_model``/``verifier_model``;
     the SQLite file keeps them (``llm_call.model``, ``assessment.*_model``) untouched.
@@ -180,6 +224,8 @@ def scrub_artifacts(out: Path, secrets: list[str]) -> int:
     for path in sorted(out.rglob("*")):
         if not path.is_file() or path.suffix == ".sqlite":
             continue
+        if ".sqlite-" in path.name or path.name.endswith(SCRUB_SKIP_SUFFIXES):
+            continue  # SQLite journal/WAL/SHM files: binary, owned by the database
         text = path.read_text(encoding="utf-8", errors="surrogateescape")
         clean = redact(text, secrets)
         if clean != text:
@@ -219,6 +265,13 @@ def db_counts(db_url: str, scope_id: str) -> dict[str, object]:
                     )
                 ).all()
             )
+            screen_calls = dict(
+                session.execute(
+                    select(LlmCall.status, func.count())
+                    .where(LlmCall.purpose == "screen")
+                    .group_by(LlmCall.status)
+                ).all()
+            )
             calls = dict(
                 session.execute(select(LlmCall.status, func.count()).group_by(LlmCall.status)).all()
             )
@@ -238,6 +291,8 @@ def db_counts(db_url: str, scope_id: str) -> dict[str, object]:
             "unscreened": screened.get("unscreened", 0),
         },
         "assessments": {"by_status": by_status, "by_route": by_route},
+        # Every screen call errored (dead gateway): the run is degraded.
+        "degraded": bool(screen_calls) and screen_calls.get("ok", 0) == 0,
         "llm_calls": {"ok": calls.get("ok", 0), "error": calls.get("error", 0)},
         "tokens": {"in": int(tokens_in), "out": int(tokens_out)},
     }
@@ -303,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --env-file is malformed (details withheld)", file=sys.stderr)
         return 2
     dm_values = {k: v for k, v in file_values.items() if k.startswith("DM_")}
-    secrets = [v for v in dm_values.values() if len(v.strip()) >= 3]
+    secrets = secret_values(dm_values)
 
     db = out / "live_m1.sqlite"
     if db.exists():
@@ -355,7 +410,9 @@ def main(argv: list[str] | None = None) -> int:
     line = json.dumps(summary, sort_keys=True)
     (out / "summary.json").write_text(line + "\n", encoding="utf-8")
     print(line)
-    return 1 if failed else 0
+    if failed:
+        return 1
+    return EXIT_DEGRADED if summary["degraded"] else 0
 
 
 if __name__ == "__main__":

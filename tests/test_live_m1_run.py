@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -93,7 +94,6 @@ def _env_file(tmp_path: Path, url: str) -> Path:
 
 
 def _run(out: Path, env_file: Path) -> subprocess.CompletedProcess[str]:
-    import os
 
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
     env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
@@ -127,7 +127,7 @@ def test_live_m1_run_fake_gateway(tmp_path: Path, server: str) -> None:
     summary = json.loads(proc.stdout.strip().splitlines()[-1])
     assert summary == json.loads((out / "summary.json").read_text(encoding="utf-8"))
     assert summary["entities"] == 3
-    assert summary["failed_step"] is None
+    assert summary["failed_step"] is None and summary["degraded"] is False
     assert all(step["exit_code"] == 0 for step in summary["steps"])
     names = [step["command"] for step in summary["steps"]]
     assert names[0] == "screen" and "presence-extract" in names and "mosaic all" in names
@@ -140,15 +140,18 @@ def test_live_m1_run_fake_gateway(tmp_path: Path, server: str) -> None:
     _assert_no_secrets(proc, out, server)
 
 
-def test_live_m1_run_step_failure(tmp_path: Path, server: str) -> None:
+def test_live_m1_run_dead_gateway_degraded(tmp_path: Path, server: str) -> None:
     _Handler.fail = True
     try:
         out = tmp_path / "run"
         proc = _run(out, _env_file(tmp_path, server))
     finally:
         _Handler.fail = False
-    # every screen call fails -> screen exits 1 (tolerated), nothing in scope; later steps run.
+    # every screen call fails -> screen exits 1 (tolerated), nothing in scope; later steps run,
+    # but the run is flagged degraded and exits 3.
+    assert proc.returncode == 3, proc.stderr
     summary = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert summary["degraded"] is True and summary["failed_step"] is None
     assert summary["steps"][0] == {**summary["steps"][0], "command": "screen", "exit_code": 1}
     assert summary["llm_calls"]["error"] > 0
     assert "Traceback" not in proc.stderr
@@ -158,10 +161,75 @@ def test_live_m1_run_step_failure(tmp_path: Path, server: str) -> None:
 def test_live_m1_run_fatal_step_names_step(tmp_path: Path) -> None:
     # a malformed setting exits 2 with the raw value in the child's error line: fatal + redacted
     env_file = tmp_path / "bad.env"
-    env_file.write_text(f"DM_LLM_BUDGET_USD=x{FAKE_KEY}\n", encoding="utf-8")
+    env_file.write_text(
+        f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\nDM_LLM_BUDGET_USD=x{FAKE_KEY}\n", encoding="utf-8"
+    )
     out = tmp_path / "run"
     proc = _run(out, env_file)
     assert proc.returncode == 1
     summary = json.loads(proc.stdout.strip().splitlines()[-1])
     assert summary["failed_step"] == "screen"
     assert "Traceback" not in proc.stderr and FAKE_KEY not in proc.stderr + proc.stdout
+
+
+def _load_script() -> object:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("live_m1_run", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_failure_tail_redacts_encoded_forms_and_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import urllib.parse
+
+    mod = _load_script()
+    host = "gw-fake-ll03.internal"
+    url = f"https://{host}:8443/v1"
+    key = 'sk-fake/ll03 key+"q&z'
+    secrets = mod.secret_values(  # type: ignore[attr-defined]
+        {"DM_LLM_GATEWAY_URL": url, "DM_LLM_GATEWAY_API_KEY": key, "DM_FOO": "true"}
+    )
+    forms = [
+        urllib.parse.quote(key),
+        urllib.parse.quote(key, safe=""),
+        urllib.parse.quote_plus(key),
+        json.dumps(key)[1:-1],
+        host,
+        f"{host}:8443",
+    ]
+    code = "import sys; print(' '.join(sys.argv[1:]), 'true'); sys.exit(2)"
+    monkeypatch.setattr(mod, "LANDSCAPE", [sys.executable, "-c", code])
+    runner = mod.Runner(dict(os.environ), tmp_path, secrets)  # type: ignore[attr-defined]
+    with pytest.raises(mod.StepFailed):  # type: ignore[attr-defined]
+        runner.run(["presence-extract", *forms])
+    err = capsys.readouterr().err
+    assert "[redacted]" in err and "true" in err
+    for form in forms:
+        assert form not in err, form
+
+
+def test_benign_values_not_scrubbed() -> None:
+    mod = _load_script()
+    values = {"DM_FOO": "true", "DM_LLM_RETRIES": "1", "DM_BAR_KEY": "abc", "DM_X_TOKEN": "tok-9"}
+    secrets = mod.secret_values(values)  # type: ignore[attr-defined]
+    assert "true" not in secrets and "1" not in secrets and "abc" not in secrets
+    assert "tok-9" in secrets
+    assert mod.redact("enabled=true retries=1", secrets) == "enabled=true retries=1"  # type: ignore[attr-defined]
+
+
+def test_scrub_skips_sqlite_journal_files(tmp_path: Path) -> None:
+    mod = _load_script()
+    secret = "fake-ll03-model-zz"
+    names = ["db.sqlite-journal", "db.sqlite-wal", "db.sqlite-shm", "x-journal", "y-wal", "z-shm"]
+    for name in names:
+        (tmp_path / name).write_text(secret, encoding="utf-8")
+    (tmp_path / "export.jsonl").write_text(secret, encoding="utf-8")
+    assert mod.scrub_artifacts(tmp_path, [secret]) == 1  # type: ignore[attr-defined]
+    for name in names:
+        assert (tmp_path / name).read_text(encoding="utf-8") == secret
+    assert secret not in (tmp_path / "export.jsonl").read_text(encoding="utf-8")
