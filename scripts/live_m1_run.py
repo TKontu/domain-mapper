@@ -22,7 +22,11 @@ llm_call, token and mosaic counts) is the last stdout line and ``DIR/summary.jso
 were present but no screen ``llm_call`` returned ok (dead gateway, or none ran) the summary has
 ``"degraded": true`` and the exit is 3.
 
-Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH [--jobs N]``
+Usage: ``uv run python scripts/live_m1_run.py --out DIR --env-file PATH [--jobs N]
+[--verifier-max-tokens N]``
+
+``--verifier-max-tokens N`` (1-8192) sets ``DM_VERIFIER_MAX_TOKENS`` in the child environment,
+overriding any env-file value; omitted, the env-file value (if any) passes through.
 """
 
 from __future__ import annotations
@@ -382,6 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=900.0, help="Per-call LLM timeout s.")
     parser.add_argument("--criteria", default=None, help="Comma-separated criterion ids.")
     parser.add_argument("--jobs", type=int, default=1, help="Concurrent assess pairs (1-8).")
+    parser.add_argument(
+        "--verifier-max-tokens", type=int, default=None, help="Verifier max tokens (1-8192)."
+    )
     ns = parser.parse_args(argv)
     if not 1 <= ns.entities <= 50:
         parser.error("--entities must be in 1..50")
@@ -389,6 +396,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--timeout must be > 0")
     if not 1 <= ns.jobs <= 8:
         parser.error("--jobs must be in 1..8")
+    if ns.verifier_max_tokens is not None and not 1 <= ns.verifier_max_tokens <= 8192:
+        parser.error("--verifier-max-tokens must be in 1..8192")
     if not ns.env_file.is_file():
         parser.error("--env-file not found")
     out: Path = ns.out.resolve()
@@ -422,6 +431,8 @@ def main(argv: list[str] | None = None) -> int:
     env.update(dm_values)
     env["DM_DATABASE_URL"] = db_url
     env["DM_LLM_TIMEOUT_S"] = str(ns.timeout)
+    if ns.verifier_max_tokens is not None:
+        env["DM_VERIFIER_MAX_TOKENS"] = str(ns.verifier_max_tokens)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH")]))
     runner = Runner(env, out, secrets)  # cwd=out: no stray .env from the checkout is read
     scope = ["--scope", str(SCOPE)]
@@ -454,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         "criteria": [c for c, _ in criteria],
         "timeout_s": ns.timeout,
         "jobs": ns.jobs,
+        "verifier_max_tokens": ns.verifier_max_tokens,
         "steps": runner.steps,
         "failed_step": failed,
         "mosaic": mosaic,

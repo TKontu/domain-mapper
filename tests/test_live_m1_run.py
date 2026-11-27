@@ -356,3 +356,62 @@ def test_jobs_fatal_assess_stops_run(
     assessed = [n for n in names if n.startswith("assess")]
     assert assessed == [lab for lab in LABELS if lab in assessed]  # pair order
     assert not any("presence-extract" in c for c in fake.calls)
+
+
+class _EnvRun(_FakeRun):
+    """Records the child environment of every call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.envs: list[dict[str, str]] = []
+
+    def __call__(self, cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        self.envs.append(dict(kw["env"]))  # type: ignore[call-overload]
+        return super().__call__(cmd)
+
+
+def _main_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_text: str, *extra: str
+) -> tuple[_EnvRun, dict[str, object]]:
+    mod = _load_script()
+    fake = _EnvRun()
+    monkeypatch.setattr(mod.subprocess, "run", fake)  # type: ignore[attr-defined]
+    monkeypatch.setattr(mod, "assess_pairs", lambda *a: list(PAIRS))
+    monkeypatch.delenv("DM_VERIFIER_MAX_TOKENS", raising=False)
+    env_file = tmp_path / "fake.env"
+    env_file.write_text(env_text, encoding="utf-8")
+    out = tmp_path / "run"
+    argv = ["--out", str(out), "--env-file", str(env_file), "--entities", "2", *extra]
+    mod.main(argv)  # type: ignore[attr-defined]
+    return fake, json.loads((out / "summary.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("value", ["0", "8193", "x"])
+def test_verifier_max_tokens_out_of_range_exits_2(tmp_path: Path, value: str) -> None:
+    mod = _load_script()
+    env_file = tmp_path / "fake.env"
+    env_file.write_text("DM_X=1\n", encoding="utf-8")
+    argv = ["--out", str(tmp_path / "o"), "--env-file", str(env_file)]
+    with pytest.raises(SystemExit) as exc:
+        mod.main([*argv, "--verifier-max-tokens", value])  # type: ignore[attr-defined]
+    assert exc.value.code == 2
+
+
+def test_verifier_max_tokens_overrides_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\nDM_VERIFIER_MAX_TOKENS=999\n"
+    fake, summary = _main_env(tmp_path, monkeypatch, text, "--verifier-max-tokens", "256")
+    assert fake.envs and all(e["DM_VERIFIER_MAX_TOKENS"] == "256" for e in fake.envs)
+    assert summary["verifier_max_tokens"] == 256
+
+
+@pytest.mark.parametrize("line", ["", "DM_VERIFIER_MAX_TOKENS=999\n"])
+def test_verifier_max_tokens_omitted_passes_env_file_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str
+) -> None:
+    text = f"DM_LLM_GATEWAY_API_KEY={FAKE_KEY}\n{line}"
+    fake, summary = _main_env(tmp_path, monkeypatch, text)
+    expected = "999" if line else None
+    assert fake.envs and all(e.get("DM_VERIFIER_MAX_TOKENS") == expected for e in fake.envs)
+    assert summary["verifier_max_tokens"] is None
