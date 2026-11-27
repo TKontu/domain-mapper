@@ -872,6 +872,25 @@ def test_single_llm_error_fails_unit_and_run(engine) -> None:  # RT-01
     assert values(engine) == []
 
 
+def test_single_invalid_output_fails_unit_and_run_and_rerun_reexecutes(engine) -> None:  # RT-01
+    entity_id, ids = seed(engine, "acme", [TEXT])
+    args = ("--entity", str(entity_id), "--attribute", ATTR)
+    result, _ = invoke(FakeLLM("not an object"), *args)
+    assert result.exit_code == 1, result.output
+    assert "AttributeExtractError" in result.output
+    assert runs(engine) == [("attributes_extract", FAILED)]
+    assert [u[1] for u in _extract_units(engine)] == ["failed"]
+    assert values(engine) == []
+    # the failed unit is not skipped on rerun: the pair is re-executed
+    fake = FakeLLM({"value": 42, "quotes": [{"chunk_id": ids[0], "quote": "headcount of 42"}]})
+    result, _ = invoke(fake, *args)
+    assert result.exit_code == 0, result.output
+    assert len(fake.prompts) == 1
+    assert len(values(engine)) == 1
+    assert runs(engine) == [("attributes_extract", FAILED), ("attributes_extract", FINISHED)]
+    assert [u[1] for u in _extract_units(engine)][-1] == "done"
+
+
 def test_single_setup_errors_leave_no_run_or_unit(engine) -> None:  # RT-01
     entity_id, _ = seed(engine, "acme", [TEXT])
     for args in (("--attribute", "nope"), ("--attribute", ATTR, "--n", "0")):
