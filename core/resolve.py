@@ -148,12 +148,15 @@ def group_candidates(engine: Engine, *, batch: int = DEFAULT_BATCH) -> ResolveSu
     return ResolveSummary(groups=groups, candidates=sum(counts.values()), skipped=skipped)
 
 
-def apply_resolution(engine: Engine, scope_id: str, *, batch: int = DEFAULT_BATCH) -> ApplySummary:
+def apply_resolution(
+    engine: Engine, scope_id: str, *, batch: int = DEFAULT_BATCH, run_id: int | None = None
+) -> ApplySummary:
     """Link unresolved candidates to per-domain entities of ``scope_id``; create missing ones.
 
     Candidates are paged in id order by keyset (``id > last``, ``LIMIT batch``) with each page
     read, resolved and committed in its own transaction; the read uses ``yield_per(batch)``.
     Memory holds only the committed ``domain -> entity_id`` map (bounded by distinct domains).
+    Newly created entities get ``created_run = run_id``; reused entities are not modified.
     """
     if batch < 1:
         raise ValueError(f"batch must be >= 1, got {batch}")
@@ -193,6 +196,7 @@ def apply_resolution(engine: Engine, scope_id: str, *, batch: int = DEFAULT_BATC
                             name=name,
                             primary_domain=domain,
                             status=STATUS_UNSCREENED,
+                            created_run=run_id,
                         )
                         session.add(entity)
                         session.flush()

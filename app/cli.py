@@ -715,7 +715,7 @@ def _run_resolve_unit(engine: Engine, scope_id: str) -> tuple[ApplySummary, int]
 
     def handle(_key: str) -> None:
         nonlocal applied
-        applied = apply_resolution(engine, scope_id)
+        applied = apply_resolution(engine, scope_id, run_id=run_id)
 
     try:
         summary = StageRunner(engine).run("resolve", units(), handle, run_id=run_id, catch=())
