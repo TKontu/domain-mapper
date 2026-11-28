@@ -902,9 +902,27 @@ def dry_run(cfg: Config) -> int:
 
 
 def with_overrides(cfg: Config, pairs: Sequence[str]) -> Config:
-    """Apply KEY=INT overrides (shortened timers for a trial); unknown keys are an error."""
-    changes = {key: int(value) for key, _, value in (pair.partition("=") for pair in pairs)}
+    """Apply KEY=INT overrides (shortened timers for a trial); unknown keys are an error.
+
+    A tuple-typed field takes comma-separated positive ints: backoff_schedule_s=60,120.
+    """
+    changes: dict[str, Any] = {}
+    for key, _, value in (pair.partition("=") for pair in pairs):
+        if isinstance(getattr(cfg, key, None), tuple):
+            changes[key] = _positive_ints(key, value)
+        else:
+            changes[key] = int(value)
     return dataclasses.replace(cfg, **changes)
+
+
+def _positive_ints(key: str, value: str) -> tuple[int, ...]:
+    try:
+        items = tuple(int(part) for part in value.split(","))
+    except ValueError:
+        raise ValueError(f"{key}: expected comma-separated positive ints, got {value!r}") from None
+    if any(item <= 0 for item in items):
+        raise ValueError(f"{key}: expected comma-separated positive ints, got {value!r}")
+    return items
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -915,7 +933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_p.add_argument("--allow-other", action="store_true")
     run_p.add_argument("--claude-arg", action="append", default=[])
     run_p.add_argument("--prompt-file", type=Path, help="trial only: replaces the round prompt")
-    run_p.add_argument("--set", action="append", default=[], metavar="KEY=SECONDS")
+    run_p.add_argument("--set", action="append", default=[], metavar="KEY=SECONDS[,SECONDS...]")
     for name in ("status", "stop-after-round", "stop", "clear-halt", "watch"):
         sub.add_parser(name)
     sub.add_parser("stop-in").add_argument("duration")
@@ -923,7 +941,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_p.add_argument("--for", dest="limit", help="finish the current round, then stop: 8h, 90m")
     up_p.add_argument("--prompt-file")
     up_p.add_argument("--allow-other", action="store_true")
-    up_p.add_argument("--set", action="append", default=[], metavar="KEY=SECONDS")
+    up_p.add_argument("--set", action="append", default=[], metavar="KEY=SECONDS[,SECONDS...]")
     note_p = sub.add_parser("note")
     note_p.add_argument("--kind", choices=(*FEED_KINDS[:4], "stage"))
     note_p.add_argument("--text", default="")

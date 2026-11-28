@@ -147,6 +147,17 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             rs.with_overrides(CFG, ["nope=1"])
 
+    def test_overrides_parse_a_tuple_field_as_comma_separated_ints(self):
+        cfg = rs.with_overrides(CFG, ["backoff_schedule_s=60,120"])
+        self.assertEqual(cfg.backoff_schedule_s, (60, 120))
+        self.assertIsInstance(rs.with_overrides(CFG, ["gap_s=5"]).gap_s, int)
+
+    def test_overrides_reject_bad_tuple_elements_naming_the_key(self):
+        for bad in ("", "60,", "60,x", "60,0", "-5"):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "backoff_schedule_s"):
+                    rs.with_overrides(CFG, [f"backoff_schedule_s={bad}"])
+
     def test_phase_shows_a_dead_supervisor_and_a_halt(self):
         self.assertEqual(rs.phase_of(halt=None, alive=False, stopping=False)[0], "SUPERVISOR DOWN")
         self.assertEqual(
