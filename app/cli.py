@@ -97,7 +97,15 @@ from adapters.fetcher import DEFAULT_MAX_BYTES, Fetcher, FetchError, TransientFe
 from adapters.firecrawl import FirecrawlFetcher
 from adapters.html_parser import HtmlParser
 from adapters.http_transport import get_robots, make_post_transport
-from adapters.llm import LLM, DbTarget, LlmBudgetExceeded, LlmError, build_llm
+from adapters.llm import (
+    DEFAULT_MAX_TOKENS,
+    LLM,
+    DbTarget,
+    LlmBudgetExceeded,
+    LlmError,
+    Transport,
+    build_llm,
+)
 from adapters.search import SearchError, SearchQuery
 from adapters.searxng import SearxngSearch
 from app.mosaic import (
@@ -144,6 +152,16 @@ from core.eval_thresholds import (
     gate_report,
     load_gate_report,
     load_thresholds,
+)
+from core.gold_pick import (
+    CLEAN_PURPOSE,
+    CLEAN_SCHEMA,
+    GOLD_PICK_STAGE,
+    GoldPickError,
+    Judge,
+    make_cloud_judge,
+    pick_cells,
+    write_cells,
 )
 from core.gold_set import GoldSetError, load_gold_set
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
@@ -3431,6 +3449,127 @@ def cost_report(
 ) -> None:
     """Aggregate ``llm_call`` rows per (run.stage, purpose, model); read-only (CO-01)."""
     run_cost_report(run_id)
+
+
+def _gold_pick_transport() -> Transport | None:
+    """HTTP transport for the gold-pick cloud judge; ``None`` is urllib. The test seam."""
+    return None
+
+
+def run_gold_pick(
+    scope: Path,
+    db: str | None,
+    out: Path,
+    entities: int,
+    per_entity: int,
+    clean: bool,
+    backend: str,
+) -> None:
+    """Write blind ``cells.jsonl`` and ``cells.key.jsonl`` from current assessments (GS-01).
+
+    Read-only without ``--clean``. With ``--clean`` one cloud call judges each candidate (at most
+    2 x entities x per-entity calls), each logged as an ``llm_call`` row under one ``gold-pick``
+    run row (the FK target ``cost-report`` groups by). Before every call the cumulative logged
+    spend plus the call's worst case must stay within ``DM_LLM_BUDGET_USD``; a zero budget or
+    zero cloud rates refuse to start. Argument, budget and pack errors exit 2; nothing is
+    written on a refusal.
+    """
+    settings = _load(scope)
+    if db is not None:
+        settings = dataclasses.replace(settings, database_url=db)
+    pack = _load_pack_or_exit(scope)
+    if entities < 1 or per_entity < 1:
+        typer.echo("error: --entities and --per-entity must be at least 1", err=True)
+        raise typer.Exit(2)
+    criteria = {c.id: c.question for t in pack.rubric.topics for c in t.criteria}
+    engine = _open_engine(settings)
+    run_id: int | None = None
+    try:
+        judge: Judge | None = None
+        if clean:
+            if backend.strip().lower() not in ("cloud", "anthropic", "claude"):
+                raise GoldPickError("--clean uses the cloud backend only (--backend cloud)")
+            llm = build_llm(
+                settings,
+                "cloud",
+                db=engine,
+                transport=_gold_pick_transport(),
+                timeout=settings.llm_timeout_s,
+            )
+            holder: dict[str, int] = {}
+
+            def complete(prompt: str) -> dict[str, object] | None:
+                return llm.complete(
+                    prompt, purpose=CLEAN_PURPOSE, run_id=holder["run"], json_schema=CLEAN_SCHEMA
+                ).parsed
+
+            judge = make_cloud_judge(
+                complete,
+                engine,
+                model=llm.model,
+                budget_usd=settings.llm_budget_usd,
+                rate_in=settings.cloud_cost_per_mtok_in,
+                rate_out=settings.cloud_cost_per_mtok_out,
+                max_tokens=DEFAULT_MAX_TOKENS,
+            )
+            run_id = _open_run(engine, GOLD_PICK_STAGE)
+            holder["run"] = run_id
+        result = pick_cells(
+            engine,
+            pack.scope.id,
+            criteria,
+            entities=entities,
+            per_entity=per_entity,
+            judge=judge,
+            max_judge_calls=2 * entities * per_entity if clean else None,
+        )
+    except (GoldPickError, ValueError) as exc:
+        if run_id is not None:
+            _close_run(engine, run_id, FAILED)
+        engine.dispose()
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    except LlmError as exc:
+        if run_id is not None:
+            _close_run(engine, run_id, FAILED)
+        engine.dispose()
+        typer.echo(f"error: cloud judge failed ({type(exc).__name__}: {exc})", err=True)
+        raise typer.Exit(1) from None
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, run_id, exc)
+    if run_id is not None:
+        _close_run(engine, run_id, FINISHED)
+    engine.dispose()
+    try:
+        write_cells(out, result.cells)
+    except OSError as exc:
+        typer.echo(f"error: cannot write {out}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(2) from None
+    statuses = len({c.status for c in result.cells})
+    typer.echo(
+        f"cells {len(result.cells)} entities {len({c.primary_domain for c in result.cells})}"
+        f" statuses {statuses} judged {result.judged} rejected {result.rejected}"
+    )
+    if result.exhausted_calls:
+        typer.echo("warning: cloud call bound (2 x target) reached before the target was met")
+
+
+@app.command(name="gold-pick", help="Pick and freeze a blind gold-set cell file (GS-01).")
+def gold_pick(
+    scope: ScopeOpt,
+    out: Annotated[Path, typer.Option("--out", help="Output directory.")],
+    db: Annotated[
+        str | None, typer.Option("--db", help="Database URL; default DM_DATABASE_URL.")
+    ] = None,
+    entities: Annotated[int, typer.Option("--entities", help="Entities to sample.")] = 8,
+    per_entity: Annotated[int, typer.Option("--per-entity", help="Cells per entity.")] = 5,
+    clean: Annotated[
+        bool, typer.Option("--clean/--no-clean", help="Cloud-judge each candidate cell.")
+    ] = False,
+    backend: Annotated[str, typer.Option("--backend", help="Judge backend (cloud).")] = "cloud",
+) -> None:
+    """Write cells.jsonl (blind) and cells.key.jsonl (model status) for labelling."""
+    run_gold_pick(scope, db, out, entities, per_entity, clean, backend)
 
 
 def run_snapshot_diff(entity_id: int, base_run_id: int | None, head_run_id: int | None) -> None:
