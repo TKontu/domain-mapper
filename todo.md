@@ -302,7 +302,7 @@ The private scope repo is already published (initial commit `d5714f3`).
     - SD-01 review nits fixed by SD-02.
   - [ ] **SD-02** → [docs/items/SD-02.md](docs/items/SD-02.md) read-only list of current assessments a snapshot diff makes stale (evidence URL changed/removed) (`landscape reassess-plan`); fixes SD-01 run-selection nits — partial 2026-11-28: merged PR #414 at 603222d (main 076d0be, round 199/A1; planner review APPROVE; planner gate 2048 passed, 5 skipped; CI pass); not yet seen on a DB with two crawl runs of one entity; residual: diff keys on snapshot url while evidence cites final_url, so redirected pages match only when equal
     - SD-02 redirect residual fixed by SD-03.
-  - [ ] **SD-03** → [docs/items/SD-03.md](docs/items/SD-03.md) `reassess-plan` also matches evidence citing a changed/removed snapshot's final_url (base or head run); trigger stays the snapshot url
+  - [ ] **SD-03** → [docs/items/SD-03.md](docs/items/SD-03.md) `reassess-plan` also matches evidence citing a changed/removed snapshot's final_url (base or head run); trigger stays the snapshot url — partial 2026-11-28: merged PR #416 at 35037d4 (main 60edab2, round 200/A1; planner review APPROVE; planner gate 2049 passed, 5 skipped; CI pass); not yet seen on a DB with two crawl runs of one entity
 - [ ] Changelog page (status changes, new/closed providers, certification changes)
 - [ ] Alerts: crawl failures, budget overrun, review backlog
 - [ ] Backups (DB + snapshots)
