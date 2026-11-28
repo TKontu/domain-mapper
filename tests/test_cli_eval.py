@@ -148,3 +148,84 @@ def test_gold_set_error_exits_2_with_line(engine, tmp_path):
     result = run("--gold", str(path))
     assert result.exit_code == 2
     assert "line 1" in result.stderr
+
+
+def _gate_fixture(engine, tmp_path):
+    """iso17100: 10 correct pairs (passes); public_terms: 10 pairs, all wrong (fails)."""
+    rows = []
+    for i in range(10):
+        d = f"e{i}.example"
+        eid = entity(engine, d)
+        assess(engine, eid, "iso17100", "standard")
+        assess(engine, eid, "public_terms", "weak")
+        rows.append(label(d, "iso17100", "standard"))
+        rows.append(label(d, "public_terms", "standard"))
+    return gold(tmp_path, rows)
+
+
+def test_without_gate_no_gate_lines(engine, tmp_path):
+    result = run("--gold", _gate_fixture(engine, tmp_path))
+    assert result.exit_code == 0, result.output
+    assert not any(line.startswith("gate ") for line in result.output.splitlines())
+
+
+def test_gate_fails_one_criterion_exit_1(engine, tmp_path):
+    result = run("--gold", _gate_fixture(engine, tmp_path), "--gate")
+    assert result.exit_code == 1, result.output
+    gate = [line for line in result.output.splitlines() if line.startswith("gate ")]
+    assert gate == [
+        "gate iso17100 pass",
+        "gate public_terms fail accuracy<0.8,kappa<0.6",
+        "gate overall fail",
+    ]
+
+
+def test_gate_override_file_makes_it_pass(engine, tmp_path):
+    path = _gate_fixture(engine, tmp_path)
+    override = tmp_path / "t.yaml"
+    override.write_text("criteria: {public_terms: {min_accuracy: 0.0, min_kappa: 0.0}}\n", encoding="utf-8")
+    result = run("--gold", path, "--gate", "--thresholds", str(override))
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[-1] == "gate overall pass"
+    assert "gate public_terms pass" in result.output.splitlines()
+
+
+def test_gate_scope_override_file_is_used(engine, tmp_path):
+    import shutil
+
+    scope = tmp_path / "scope"
+    shutil.copytree(EXAMPLE_SCOPE, scope)
+    (scope / "eval").mkdir()
+    (scope / "eval" / "thresholds.yaml").write_text(
+        "criteria: {public_terms: {min_accuracy: 0.0, min_kappa: 0.0}}\n", encoding="utf-8"
+    )
+    path = _gate_fixture(engine, tmp_path)
+    result = CliRunner().invoke(
+        cli.app, ["eval", "--scope", str(scope), "--gold", path, "--gate"]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[-1] == "gate overall pass"
+
+
+def test_gate_thresholds_error_exit_2(engine, tmp_path):
+    path = _gate_fixture(engine, tmp_path)
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("default: {min_accuracy: 7}\n", encoding="utf-8")
+    result = run("--gold", path, "--gate", "--thresholds", str(bad))
+    assert result.exit_code == 2
+    assert "min_accuracy" in result.output
+
+
+def test_gate_missing_engine_file_exit_2(engine, tmp_path, monkeypatch):
+    path = _gate_fixture(engine, tmp_path)
+    monkeypatch.setattr(cli, "ENGINE_THRESHOLDS", tmp_path / "none.yaml")
+    result = run("--gold", path, "--gate")
+    assert result.exit_code == 2
+    assert "thresholds file not found" in result.output
+
+
+def test_gate_explicit_missing_override_exit_2(engine, tmp_path):
+    path = _gate_fixture(engine, tmp_path)
+    result = run("--gold", path, "--gate", "--thresholds", str(tmp_path / "nope.yaml"))
+    assert result.exit_code == 2
+    assert "thresholds file not found" in result.output

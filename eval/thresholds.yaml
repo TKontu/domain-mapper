@@ -1,0 +1,10 @@
+# Engine-default release-gate thresholds (EV-03, ARCHITECTURE.md §7).
+# PROVISIONAL values: an expert/operator tunes them. Override per scope in
+# <scope>/eval/thresholds.yaml (same shape, merged key by key). Omitted key = no check.
+default:
+  min_n: 10
+  min_accuracy: 0.8
+  min_kappa: 0.6
+  max_silent_rate: 0.2
+  max_false_strong_rate: 0.05
+criteria: {}

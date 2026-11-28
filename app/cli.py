@@ -135,6 +135,7 @@ from core.config import Settings, load_settings
 from core.embed_store import EmbedStats, EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, Entity, EntityRef, iter_entities
 from core.eval_metrics import OVERALL, compute_metrics
+from core.eval_thresholds import Thresholds, ThresholdsError, check_gate, load_thresholds
 from core.gold_set import GoldSetError, load_gold_set
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
@@ -1111,7 +1112,16 @@ def _fmt_metric(value: float | None) -> str:
     return "-" if value is None else f"{value:.3f}"
 
 
-def run_eval(scope: Path, rubric_version: str | None, gold: Path | None) -> None:
+ENGINE_THRESHOLDS = Path(__file__).resolve().parent.parent / "eval" / "thresholds.yaml"
+
+
+def run_eval(
+    scope: Path,
+    rubric_version: str | None,
+    gold: Path | None,
+    gate: bool = False,
+    thresholds_path: Path | None = None,
+) -> None:
     """Score current assessments against a gold set (EV-02) and print EV-01 metrics.
 
     Gold labels (:func:`core.gold_set.load_gold_set`, default ``<scope>/gold/labels.jsonl``)
@@ -1122,9 +1132,29 @@ def run_eval(scope: Path, rubric_version: str | None, gold: Path | None) -> None
     criteria); entities and assessments are read in batches. With no ``--rubric-version`` and
     several versions current for one pair, the newest assessment is used. A missing gold file,
     a gold-set error, a pack error or a database error exits 2.
+
+    EV-03 ``gate``: thresholds load before any database read from ``ENGINE_THRESHOLDS``
+    (repo-root ``eval/thresholds.yaml``, located from this file, not the CWD) merged with
+    ``thresholds_path`` or ``<scope>/eval/thresholds.yaml``; after the metric lines prints
+    ``gate <criterion> pass|fail <reasons>`` (sorted) and ``gate overall pass|fail``, exiting 1
+    on any failure. A missing engine file or a ``ThresholdsError`` exits 2.
     """
     settings = _load(scope)
     pack = _load_pack_or_exit(scope)
+    limits: Thresholds | None = None
+    if gate:
+        override = thresholds_path or scope / "eval" / "thresholds.yaml"
+        if thresholds_path is not None and not thresholds_path.is_file():
+            typer.echo(f"error: thresholds file not found: {thresholds_path}", err=True)
+            raise typer.Exit(2)
+        try:
+            limits = load_thresholds(ENGINE_THRESHOLDS, override)
+        except FileNotFoundError:
+            typer.echo(f"error: thresholds file not found: {ENGINE_THRESHOLDS}", err=True)
+            raise typer.Exit(2) from None
+        except (ThresholdsError, OSError, UnicodeDecodeError) as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
     path = gold if gold is not None else scope / "gold" / "labels.jsonl"
     statuses = {s.id for s in pack.rubric.status_scale}
     valued = [s for s in pack.rubric.status_scale if s.value is not None]
@@ -1164,13 +1194,23 @@ def run_eval(scope: Path, rubric_version: str | None, gold: Path | None) -> None
     typer.echo(f"unmatched {total - len(auto)}")
     pairs = ((key[1], row.status, human[key]) for key, row in auto.items())
     kwargs = {"top_status": top_status} if top_status else {}
-    for m in compute_metrics(pairs, **kwargs):
+    metrics = compute_metrics(pairs, **kwargs)
+    for m in metrics:
         name = "overall" if m.criterion_id == OVERALL else m.criterion_id
         typer.echo(
             f"{name} n {m.n} accuracy {_fmt_metric(m.accuracy)} kappa {_fmt_metric(m.kappa)}"
             f" silent_rate {_fmt_metric(m.silent_rate)}"
             f" false_strong_rate {_fmt_metric(m.false_strong_rate)}"
         )
+    if limits is not None:
+        results = check_gate(metrics, limits)
+        for r in results:
+            suffix = "pass" if r.passed else "fail " + ",".join(r.reasons)
+            typer.echo(f"gate {r.criterion_id} {suffix}")
+        ok = all(r.passed for r in results)
+        typer.echo(f"gate overall {'pass' if ok else 'fail'}")
+        if not ok:
+            raise typer.Exit(1)
 
 
 def _parse_attribute_text(attribute: Attribute, text: str) -> object:
@@ -2866,9 +2906,16 @@ def eval_(
     gold: Annotated[
         Path | None, typer.Option("--gold", help="Gold JSONL; default <scope>/gold/labels.jsonl.")
     ] = None,
+    gate: Annotated[
+        bool, typer.Option("--gate", help="Check thresholds; exit 1 if any criterion fails.")
+    ] = False,
+    thresholds: Annotated[
+        Path | None,
+        typer.Option("--thresholds", help="Override file; default <scope>/eval/thresholds.yaml."),
+    ] = None,
 ) -> None:
     """Print per-criterion and overall metrics of current assessments vs. gold labels."""
-    run_eval(scope, rubric_version, gold)
+    run_eval(scope, rubric_version, gold, gate, thresholds)
 
 
 @app.command(name="attribute-set", help="Record one manual attribute value for an entity.")
