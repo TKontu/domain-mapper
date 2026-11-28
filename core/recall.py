@@ -12,6 +12,7 @@ via ``candidate`` rows. No page text enters the prompt, so no neutralisation is 
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Protocol
@@ -114,6 +115,19 @@ def _is_http_url(url: str) -> bool:
     return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
+_NAME_MAX = 200
+
+
+def _clean_name(name: str) -> str:
+    """Collapse whitespace/control runs (Cc, Cf, Zl, Zp, Zs) to one space; strip; cap."""
+    chars = [
+        " " if ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch
+        for ch in name
+    ]
+    collapsed = " ".join("".join(chars).split())
+    return collapsed[:_NAME_MAX].rstrip()
+
+
 def _parse(parsed: object) -> list[tuple[str, str]]:
     if not isinstance(parsed, dict):
         raise RecallError("response must be a JSON object")
@@ -129,7 +143,7 @@ def _parse(parsed: object) -> list[tuple[str, str]]:
             raise RecallError(f"candidates[{i}].name must be a string")
         if not isinstance(url, str):
             raise RecallError(f"candidates[{i}].url must be a string")
-        out.append((name.strip(), url.strip()))
+        out.append((_clean_name(name), url.strip()))
     return out
 
 
