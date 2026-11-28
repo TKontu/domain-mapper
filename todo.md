@@ -299,6 +299,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Scheduled re-crawls (cadence per layer from the scope pack)
 - [ ] Snapshot diffing → selective re-assessment
   - [ ] **SD-01** → [docs/items/SD-01.md](docs/items/SD-01.md) read-only per-URL snapshot diff of one entity across two crawl runs (`landscape snapshot-diff`) — partial 2026-11-28: merged PR #412 at 770518b (main b25e55e, round 198/A1; review-lens APPROVE; planner gate 2037 passed, 5 skipped; CI pass); seen on a local copy of the M1-01 run DB only the too-few-runs path (exit 2; no entity there has two crawl runs); needs a DB with two crawl runs of one entity to show a real diff; review nits: equal --base-run/--head-run gets the too-few-runs message, --base-run alone at the newest run diffs in reverse
+    - SD-01 review nits fixed by SD-02.
+  - [ ] **SD-02** → [docs/items/SD-02.md](docs/items/SD-02.md) read-only list of current assessments a snapshot diff makes stale (evidence URL changed/removed) (`landscape reassess-plan`); fixes SD-01 run-selection nits
 - [ ] Changelog page (status changes, new/closed providers, certification changes)
 - [ ] Alerts: crawl failures, budget overrun, review backlog
 - [ ] Backups (DB + snapshots)

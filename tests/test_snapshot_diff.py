@@ -1,4 +1,4 @@
-"""Tests for ``core.snapshot_diff`` (SD-01); offline SQLite under a temp dir."""
+"""Tests for ``core.snapshot_diff`` (SD-01, SD-02); offline SQLite under a temp dir."""
 
 from __future__ import annotations
 
@@ -10,8 +10,17 @@ from sqlalchemy.orm import Session
 
 import core.snapshot_store  # noqa: F401  (registers the snapshot table)
 from adapters.fetcher import FetchResult
+from core.assess import Extraction, Quote
+from core.assessment_store import record_assessment
+from core.chunk_store import ChunkRow
 from core.runs import Run, create_all
-from core.snapshot_diff import SnapshotDiffError, UrlDiff, diff_entity_runs
+from core.snapshot_diff import (
+    SnapshotDiffError,
+    UrlDiff,
+    diff_entity_runs,
+    stale_assessments,
+)
+from core.verify import Route
 from core.snapshot_store import record_snapshot
 
 T0 = datetime(2026, 11, 1, tzinfo=UTC)
@@ -35,7 +44,7 @@ def add_run(engine: Engine) -> int:
         return run.id
 
 
-def snap(engine, run_id, url, body, entity_id=1, minutes=0) -> None:
+def snap(engine, run_id, url, body, entity_id=1, minutes=0) -> int:
     result = FetchResult(
         final_url=url,
         status=200,
@@ -44,8 +53,41 @@ def snap(engine, run_id, url, body, entity_id=1, minutes=0) -> None:
         headers={},
         fetched_at=T0 + timedelta(minutes=minutes),
     )
-    record_snapshot(
+    return record_snapshot(
         engine, entity_id=entity_id, url=url, result=result, source_kind="crawl", run_id=run_id
+    )
+
+
+def chunk(engine, snapshot_id: int) -> int:
+    with Session(engine) as session, session.begin():
+        row = ChunkRow(
+            snapshot_id=snapshot_id,
+            seq=0,
+            text="t",
+            lang=None,
+            page=None,
+            heading_path=[],
+            char_start=0,
+            char_end=1,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+
+def assess(engine, run_id, criterion, chunk_ids, entity_id=1, rubric="v1") -> int:
+    quotes = tuple(Quote(c, "q", True, "exact", (0, 1)) for c in chunk_ids)
+    ext = Extraction(status="strong", quotes=quotes, rationale="r", checks_passed=True, failures=())
+    return record_assessment(
+        engine,
+        entity_id=entity_id,
+        criterion_id=criterion,
+        extraction=ext,
+        route=Route("accept", "high", "ok"),
+        rubric_version=rubric,
+        extractor_model="x",
+        verifier_model="y",
+        run_id=run_id,
     )
 
 
@@ -138,3 +180,73 @@ def test_named_run_without_snapshots_for_entity(engine):
         diff_entity_runs(engine, 1, base_run_id=r1, head_run_id=r2)
     with pytest.raises(SnapshotDiffError, match="run 777 has no snapshots"):
         diff_entity_runs(engine, 1, base_run_id=777, head_run_id=r1)
+
+
+def test_equal_base_and_head_is_its_own_error(engine):
+    r1, r2 = add_run(engine), add_run(engine)
+    snap(engine, r1, "https://e/a", b"1")
+    snap(engine, r2, "https://e/a", b"2")
+    with pytest.raises(SnapshotDiffError, match="^base and head run are the same$"):
+        diff_entity_runs(engine, 1, base_run_id=r1, head_run_id=r1)
+    with pytest.raises(SnapshotDiffError, match="^base and head run are the same$"):
+        stale_assessments(engine, 1, base_run_id=r2, head_run_id=r2)
+
+
+def test_base_alone_at_newest_run_never_diffs_in_reverse(engine):
+    r1, r2 = add_run(engine), add_run(engine)
+    snap(engine, r1, "https://e/a", b"1")
+    snap(engine, r2, "https://e/a", b"2")
+    msg = f"^no run newer than base run {r2} has snapshots for entity 1$"
+    with pytest.raises(SnapshotDiffError, match=msg):
+        diff_entity_runs(engine, 1, base_run_id=r2)
+    with pytest.raises(SnapshotDiffError, match=msg):
+        stale_assessments(engine, 1, base_run_id=r2)
+
+
+def stale_fixture(engine):
+    base, head = add_run(engine), add_run(engine)
+    ids = {}
+    for name, old, new in [
+        ("changed", b"1", b"2"),
+        ("same", b"s", b"s"),
+        ("gone", b"g", None),
+        ("other", b"o", b"p"),
+    ]:
+        url = f"https://e/{name}"
+        ids[name] = chunk(engine, snap(engine, base, url, old))
+        if new is not None:
+            snap(engine, head, url, new)
+    ids["added"] = chunk(engine, snap(engine, head, "https://e/added", b"n"))
+    return base, head, ids
+
+
+def test_stale_assessments_changed_and_removed_only(engine):
+    base, head, c = stale_fixture(engine)
+    a_changed = assess(engine, base, "c2", [c["changed"]])
+    a_removed = assess(engine, base, "c1", [c["gone"]], rubric="v2")
+    assess(engine, base, "c3", [c["same"], c["added"]])
+    assess(engine, base, "c4", [])  # no evidence at all
+    a_multi = assess(engine, base, "c1", [c["other"], c["same"], c["changed"], c["other"]])
+    other_snap = snap(engine, base, "https://e/changed", b"zz", entity_id=2)
+    assess(engine, base, "c9", [chunk(engine, other_snap)], entity_id=2)
+    plan = stale_assessments(engine, 1)
+    assert (plan.diff.base_run_id, plan.diff.head_run_id) == (base, head)
+    assert plan.current == 5
+    got = [
+        (s.criterion_id, s.rubric_version, s.assessment_id, [(u.status, u.url) for u in s.urls])
+        for s in plan.stale
+    ]
+    assert got == [
+        ("c1", "v1", a_multi, [("changed", "https://e/changed"), ("changed", "https://e/other")]),
+        ("c1", "v2", a_removed, [("removed", "https://e/gone")]),
+        ("c2", "v1", a_changed, [("changed", "https://e/changed")]),
+    ]
+
+
+def test_evidence_without_url_ignored(engine):
+    base, _head, _c = stale_fixture(engine)
+    orphan = chunk(engine, 99999)  # chunk whose snapshot row is absent -> url None
+    assess(engine, base, "c1", [orphan, 424242])  # and a chunk id with no row at all
+    plan = stale_assessments(engine, 1)
+    assert plan.stale == []
+    assert plan.current == 1
