@@ -1,4 +1,4 @@
-"""GP-01: core/ carries no `_example` domain words unless allowlisted (ratchet)."""
+"""GP-01/GP-02: core/ and app/ carry no `_example` domain words unless allowlisted (ratchet)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "scopes" / "_example"
 ALLOWLIST = ROOT / "tests" / "fixtures" / "core_genericity_allowlist.toml"
 LOG = ROOT / "docs" / "genericity-log.md"
+SCANNED = ("core", "app")
 VERDICTS = {"generic-keep", "leaked-follow-up"}
 
 
@@ -37,7 +38,8 @@ def _scan(root: Path, terms: set[str]) -> set[tuple[str, str]]:
     """Return (root-relative file, term) for each word-bounded, case-insensitive hit."""
     pats = {t: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(t)}(?![A-Za-z0-9_])", re.I) for t in terms}
     hits: set[tuple[str, str]] = set()
-    for path in sorted((root / "core").rglob("*.py")):
+    paths = [p for d in SCANNED for p in sorted((root / d).rglob("*.py"))]
+    for path in paths:
         src = path.read_text(encoding="utf-8")
         rel = path.relative_to(root).as_posix()
         hits.update((rel, t) for t, p in pats.items() if p.search(src))
@@ -109,6 +111,13 @@ class NegativeCaseTest(unittest.TestCase):
     def test_word_bounded(self) -> None:
         root = self._tree("agencyx = my_agency = 1\n")
         self.assertEqual(_scan(root, {"agency"}), set())
+
+    def test_unlisted_hit_in_app_fails(self) -> None:
+        root = self._tree("x = 1\n")
+        (root / "app").mkdir()
+        (root / "app" / "fake.py").write_text('KIND = "freelancer_network"\n')
+        problems = _problems(_scan(root, _example_terms()), set())
+        self.assertEqual(problems, ["unlisted hit: app/fake.py -> 'freelancer_network'"])
 
 
 if __name__ == "__main__":
