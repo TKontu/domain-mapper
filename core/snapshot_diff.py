@@ -51,11 +51,13 @@ class SnapshotDiff:
         return out
 
 
-def _latest_hashes(session: Session, entity_id: int, run_id: int) -> dict[str, str]:
+def _latest_rows(session: Session, entity_id: int, run_id: int) -> dict[str, tuple[str, str]]:
+    """Latest snapshot per URL in one run: ``url -> (sha256, final_url)``."""
     ranked = (
         sa.select(
             SnapshotRow.url,
             SnapshotRow.sha256,
+            SnapshotRow.final_url,
             sa.func.row_number()
             .over(
                 partition_by=SnapshotRow.url,
@@ -66,8 +68,10 @@ def _latest_hashes(session: Session, entity_id: int, run_id: int) -> dict[str, s
         .where(SnapshotRow.entity_id == entity_id, SnapshotRow.run_id == run_id)
         .subquery()
     )
-    rows = session.execute(sa.select(ranked.c.url, ranked.c.sha256).where(ranked.c.rn == 1))
-    return {url: sha for url, sha in rows}
+    rows = session.execute(
+        sa.select(ranked.c.url, ranked.c.sha256, ranked.c.final_url).where(ranked.c.rn == 1)
+    )
+    return {url: (sha, final) for url, sha, final in rows}
 
 
 def _runs_with_snapshots(session: Session, entity_id: int) -> list[int]:
@@ -86,6 +90,16 @@ def diff_entity_runs(
     base_run_id: int | None = None,
     head_run_id: int | None = None,
 ) -> SnapshotDiff:
+    """See :func:`_diff_with_final_urls`; returns only the diff."""
+    return _diff_with_final_urls(engine, entity_id, base_run_id, head_run_id)[0]
+
+
+def _diff_with_final_urls(
+    engine: Engine,
+    entity_id: int,
+    base_run_id: int | None,
+    head_run_id: int | None,
+) -> tuple[SnapshotDiff, dict[str, set[str]]]:
     """Compare the latest snapshot per URL of ``entity_id`` in two runs; read-only.
 
     Unset runs default to the most recent runs holding snapshots for the entity: the head
@@ -115,8 +129,14 @@ def diff_entity_runs(
             base = next((r for r in runs if r < head), None)
         if head is None or base is None or base == head:
             raise SnapshotDiffError(f"entity {entity_id} has fewer than two runs with snapshots")
-        base_hashes = _latest_hashes(session, entity_id, base)
-        head_hashes = _latest_hashes(session, entity_id, head)
+        base_rows = _latest_rows(session, entity_id, base)
+        head_rows = _latest_rows(session, entity_id, head)
+    base_hashes = {u: sha for u, (sha, _f) in base_rows.items()}
+    head_hashes = {u: sha for u, (sha, _f) in head_rows.items()}
+    final_urls: dict[str, set[str]] = {}
+    for rows in (base_rows, head_rows):
+        for u, (_sha, final) in rows.items():
+            final_urls.setdefault(u, set()).add(final)
     urls = []
     for url in sorted(base_hashes.keys() | head_hashes.keys()):
         if url not in head_hashes:
@@ -128,7 +148,8 @@ def diff_entity_runs(
         else:
             status = "changed"
         urls.append(UrlDiff(url=url, status=status))
-    return SnapshotDiff(entity_id=entity_id, base_run_id=base, head_run_id=head, urls=urls)
+    diff = SnapshotDiff(entity_id=entity_id, base_run_id=base, head_run_id=head, urls=urls)
+    return diff, final_urls
 
 
 STALE_STATUSES = frozenset({"changed", "removed"})
@@ -160,14 +181,24 @@ def stale_assessments(
     Runs :func:`diff_entity_runs` (same run selection and errors), then streams the entity's
     current assessments. Evidence without a URL is ignored; each stale assessment lists its
     triggering URLs once, sorted. Result sorted by criterion id then rubric version.
+
+    SD-03: evidence cites a snapshot's ``final_url``, so an evidence URL matches a changed or
+    removed URL when it equals that URL or its ``final_url`` in the base or head run (exact
+    match only). The reported trigger is always the diffed snapshot ``url``.
     """
-    diff = diff_entity_runs(engine, entity_id, base_run_id, head_run_id)
+    diff, final_urls = _diff_with_final_urls(engine, entity_id, base_run_id, head_run_id)
     flagged = {d.url: d.status for d in diff.urls if d.status in STALE_STATUSES}
+    trigger: dict[str, set[str]] = {}
+    for url in flagged:
+        for alias in {url} | final_urls.get(url, set()):
+            trigger.setdefault(alias, set()).add(url)
     stale: list[StaleAssessment] = []
     current = 0
     for assessment in iter_current_assessments(engine, entity_id=entity_id):
         current += 1
-        hits = sorted({ev.url for ev in assessment.evidence if ev.url in flagged})
+        hits = sorted(
+            {u for ev in assessment.evidence if ev.url is not None for u in trigger.get(ev.url, ())}
+        )
         if hits:
             stale.append(
                 StaleAssessment(
