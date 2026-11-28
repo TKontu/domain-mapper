@@ -99,6 +99,55 @@ class RoundTests(unittest.TestCase):
             "## Next action\nRead the backlog and select executable work.\n"
         )
 
+    GATE = [
+        "uv run pytest -q && uv run ruff check . && uv run ruff format --check . "
+        "&& uv run mypy core app"
+    ]
+
+    def gate_result(self, head, checks=None):
+        data = {
+            "status": "result-ready",
+            "head_sha": head,
+            "checks": checks
+            if checks is not None
+            else [{"command": self.GATE, "status": "passed", "evidence": "local gate"}],
+        }
+        path = self.repo / ".agent-runs/gate.json"
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_reconcile_result_stores_passing_gate_evidence_by_head(self):
+        self.start()
+        head = "c" * 40  # need not equal the round base
+        self.cli("reconcile-result", "R1", "--head", head, "--result", str(self.gate_result(head)))
+        stored = json.loads((self.repo / f".agent-runs/R1/reconcile-{head[:12]}.json").read_text())
+        self.assertEqual(stored["head_sha"], head)
+        self.assertEqual(stored["checks"][0]["status"], "passed")
+
+    def test_reconcile_result_rejects_incomplete_or_unpassed_gate(self):
+        self.start()
+        head = "c" * 40
+        cases = {
+            "missing mypy": [
+                {"command": ["uv run pytest -q"], "status": "passed"},
+                {"command": ["uv run ruff check ."], "status": "passed"},
+                {"command": ["uv run ruff format --check ."], "status": "passed"},
+            ],
+            "skipped": [{"command": self.GATE, "status": "skipped", "evidence": "x"}],
+            "empty": [],
+        }
+        for label, checks in cases.items():
+            with self.subTest(label):
+                path = self.gate_result(head, checks)
+                self.cli("reconcile-result", "R1", "--head", head, "--result", str(path), ok=False)
+        self.cli(
+            "reconcile-result", "R1", "--head", "abc", "--result", str(self.gate_result("abc")),
+            ok=False,
+        )
+        other = self.gate_result("d" * 40)
+        self.cli("reconcile-result", "R1", "--head", head, "--result", str(other), ok=False)
+        self.assertEqual(list((self.repo / ".agent-runs/R1").glob("reconcile-*")), [])
+
     def test_close_rejects_incomplete_handoff_without_closing_round(self):
         self.start()
         self.cli("resolve", "R1", "A1", "--outcome", "cancelled", "--evidence", "Stopped")

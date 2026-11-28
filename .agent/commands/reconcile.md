@@ -18,7 +18,8 @@ Record residuals and the actual behavior change, including none for documentatio
 Leave durable reconciliation evidence in tracked project state: update existing backlog/details or
 decision records with outcomes, evidence, remaining work and next action. The reconciliation PR may
 already capture this; do not create a separate report just to close the round. Get any required
-review/merge for the record updates and retain a durable evidence reference.
+review/merge for the record updates and retain a durable evidence reference. For a records-only
+reconcile PR, store the local gate at its head with `scripts/round.py reconcile-result` (MG-02).
 ## Progress review (every round)
 
 Before the handoff, judge whether the loop is moving toward the frontier, not only whether this
