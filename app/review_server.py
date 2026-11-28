@@ -50,15 +50,13 @@ def _check_bind(host: str, allow_any_lan: bool) -> None:
         if not allow_any_lan:
             raise _BindRefused(f"refusing wildcard bind {host}; pass --allow-any-lan")
         return
+    if not isinstance(addr, ipaddress.IPv4Address):
+        raise _BindRefused(f"refusing non-IPv4 bind address {host}; server is IPv4 only")
     if addr.is_loopback or addr.is_link_local:
         return
-    if isinstance(addr, ipaddress.IPv4Address):
-        if any(
-            addr in ipaddress.ip_network(n)
-            for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-        ):
-            return
-    elif addr in ipaddress.ip_network("fc00::/7"):
+    if any(
+        addr in ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    ):
         return
     raise _BindRefused(f"refusing non-private bind address {host}")
 
@@ -188,7 +186,22 @@ def _alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    return stat.rpartition(")")[2].split()[:1] != ["Z"]  # a zombie has exited
+
+
+def _is_server(pid: int) -> bool:
+    """True only if pid is alive and its cmdline shows it is this review server."""
+    if not _alive(pid):
+        return False
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return "app.review_server" in raw.replace(b"\0", b" ").decode("utf-8", "replace")
 
 
 def _serve(root: Path, host: str, port: int) -> int:
@@ -211,7 +224,7 @@ def _serve(root: Path, host: str, port: int) -> int:
 
 def _start(root: Path, args: argparse.Namespace) -> int:
     info = _read_pid(root)
-    if info and _alive(info["pid"]):
+    if info and _is_server(info["pid"]):
         print(f"already running pid {info['pid']} on {info.get('host')}:{info.get('port')}")
         return 1
     _pid_path(root).unlink(missing_ok=True)
@@ -244,7 +257,7 @@ def _start(root: Path, args: argparse.Namespace) -> int:
 
 def _status(root: Path) -> int:
     info = _read_pid(root)
-    if info and _alive(info["pid"]):
+    if info and _is_server(info["pid"]):
         print(f"running pid {info['pid']} on http://{info.get('host')}:{info.get('port')}/")
         return 0
     print("not running")
@@ -253,14 +266,18 @@ def _status(root: Path) -> int:
 
 def _stop(root: Path) -> int:
     info = _read_pid(root)
-    if not info or not _alive(info["pid"]):
+    if not info or not _is_server(info["pid"]):
         _pid_path(root).unlink(missing_ok=True)
         print("not running")
         return 1
     os.kill(info["pid"], signal.SIGTERM)
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and _alive(info["pid"]) and _pid_path(root).exists():
+    while time.monotonic() < deadline and _alive(info["pid"]):
         time.sleep(0.05)
+    if _alive(info["pid"]):
+        msg = f"pid {info['pid']} still alive after SIGTERM; not removing pid file"
+        print(msg, file=sys.stderr)
+        return 1
     _pid_path(root).unlink(missing_ok=True)
     print(f"stopped pid {info['pid']}")
     return 0

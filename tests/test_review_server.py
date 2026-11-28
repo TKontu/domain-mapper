@@ -108,13 +108,15 @@ def test_post_unregistered_page_404(server: tuple[Path, int]) -> None:
 
 
 @pytest.mark.parametrize(
-    "host", ["127.0.0.1", "10.1.2.3", "172.16.5.5", "192.168.1.10", "169.254.1.1", "::1"]
+    "host", ["127.0.0.1", "10.1.2.3", "172.16.5.5", "192.168.1.10", "169.254.1.1"]
 )
 def test_private_binds_allowed(host: str) -> None:
     rs._check_bind(host, allow_any_lan=False)
 
 
-@pytest.mark.parametrize("host", ["8.8.8.8", "172.32.0.1", "2001:4860::1", "example.org"])
+@pytest.mark.parametrize(
+    "host", ["8.8.8.8", "172.32.0.1", "2001:4860::1", "::1", "fd00::1", "example.org"]
+)
 def test_public_bind_refused(host: str) -> None:
     with pytest.raises(rs._BindRefused):
         rs._check_bind(host, allow_any_lan=True)
@@ -148,3 +150,20 @@ def test_start_status_stop_round_trip(root: Path) -> None:
     assert stopped.returncode == 0
     assert not (root / ".review_server.pid").exists()
     assert _cli("status", "--root", str(root)).returncode == 1
+
+
+def test_stop_and_status_ignore_foreign_pid(root: Path) -> None:
+    proc = subprocess.Popen(["sleep", "30"])
+    pid_file = root / ".review_server.pid"
+    try:
+        pid_file.write_text(json.dumps({"pid": proc.pid, "host": "127.0.0.1", "port": 1}))
+        status = _cli("status", "--root", str(root))
+        assert status.returncode == 1 and "not running" in status.stdout
+        assert pid_file.exists()
+        stopped = _cli("stop", "--root", str(root))
+        assert stopped.returncode == 1 and "not running" in stopped.stdout
+        assert not pid_file.exists()
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait()
