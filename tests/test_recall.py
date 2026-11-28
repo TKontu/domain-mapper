@@ -295,3 +295,34 @@ def test_cli_prints_and_saves_sanitised_name(engine, monkeypatch) -> None:
     assert lines == ["Acme Corp\thttps://acme.example/", "saved 1 candidates"]
     assert lines[0].count("\t") == 1
     assert [r.name for r in candidates(engine)] == ["Acme Corp"]
+
+
+def test_dedup_by_crawl_key_first_url_kept_verbatim(pack) -> None:
+    llm = FakeLLM(
+        proposals(
+            ("A1", "https://Example.org/"),
+            ("A2", "http://example.org"),
+            ("A3", "https://example.org/#frag"),
+            ("A4", "https://example.org/?q=1"),
+            ("B1", "https://other.example/a/"),
+            ("B2", "https://other.example/a"),
+        )
+    )
+    rows = recall_candidates(llm, pack, segment="agency", country="XA", limit=10, run_id=1)
+    assert [(r.name, r.url) for r in rows] == [
+        ("A1", "https://Example.org/"),
+        ("B1", "https://other.example/a/"),
+    ]
+
+
+def test_limit_counts_deduplicated_rows(pack) -> None:
+    llm = FakeLLM(
+        proposals(
+            ("A1", "https://example.org/"),
+            ("A2", "http://EXAMPLE.org"),
+            ("B", "https://b.example/"),
+            ("C", "https://c.example/"),
+        )
+    )
+    rows = recall_candidates(llm, pack, segment="agency", country="XA", limit=2, run_id=1)
+    assert [r.url for r in rows] == ["https://example.org/", "https://b.example/"]

@@ -2,7 +2,8 @@
 
 One structured LLM call (``purpose="recall"``) asks for providers of one scope segment in one
 country. The model's output is untrusted data: it is schema-checked field by field, only
-http(s) URLs are kept, duplicates by URL are dropped and the result is capped at ``limit``.
+http(s) URLs are kept, duplicates by ``core.links.crawl_key`` are dropped (the first URL is
+kept as given) and the result is capped at ``limit``.
 Candidates are tagged ``channel="llm_recall"`` — an unverified channel; Resolve or another
 channel confirms them later. Pure: no database access; the caller stores the rows.
 
@@ -19,6 +20,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 from core.candidate_store import NewCandidate
+from core.links import crawl_key
 from core.scope_pack import ScopePack
 
 
@@ -167,9 +169,10 @@ def recall_candidates(
     seen: set[str] = set()
     rows: list[NewCandidate] = []
     for name, url in pairs:
-        if not _is_http_url(url) or url in seen:
+        key = crawl_key(url) if _is_http_url(url) else None
+        if key is None or key in seen:
             continue
-        seen.add(url)
+        seen.add(key)
         rows.append(
             NewCandidate(
                 name=name or url,
