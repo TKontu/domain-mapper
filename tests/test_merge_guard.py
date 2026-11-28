@@ -237,3 +237,74 @@ class LedgerGateTests(LedgerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+RECORDS = [{"path": "todo.md"}, {"path": "docs/items/MG-02.md"}, {"path": "docs/runs/r1/x.md"}]
+
+
+def write_reconcile(root, result, head=HEAD, round_id="199"):
+    """Write reconcile evidence the way `round.py reconcile-result` lays it out."""
+    base = Path(root) / round_id
+    base.mkdir(parents=True, exist_ok=True)
+    (base / f"reconcile-{head[:12]}.json").write_text(json.dumps(result))
+
+
+class RecordsOnlyTests(LedgerCase):
+    """MG-02: a records-only reconcile PR merges on reconcile evidence at its exact head."""
+
+    results = ()  # no ledger result: reconcile PRs are cut after the round's merges
+
+    def test_records_only_pr_with_reconcile_evidence_at_head_merges(self):
+        write_reconcile(self.ledger, passing())
+        gh = FakeGh(files=RECORDS + [{"path": "docs/reconcile-199.md"}])
+        self.assertEqual(mg.guard(7, HEAD, run=gh), 0)
+        self.assertEqual(len(gh.merge_calls()), 1)
+
+    def test_records_only_pr_without_evidence_is_refused(self):
+        gh = FakeGh(files=RECORDS)
+        self.assertNotEqual(mg.guard(7, HEAD, run=gh), 0)
+        self.assertEqual(gh.merge_calls(), [])
+
+    def test_evidence_for_a_different_head_is_refused(self):
+        other = "b" * 40
+        write_reconcile(self.ledger, passing(head=other), head=other)
+        # Even a file named for HEAD must carry HEAD itself.
+        write_reconcile(self.ledger, passing(head=other), round_id="198")
+        gh = FakeGh(files=RECORDS)
+        self.assertNotEqual(mg.guard(7, HEAD, run=gh), 0)
+        self.assertEqual(gh.merge_calls(), [])
+
+    def test_failed_or_skipped_check_in_evidence_is_refused(self):
+        for status in ("failed", "skipped"):
+            with self.subTest(status=status):
+                write_reconcile(
+                    self.ledger,
+                    passing(checks=[{"command": [GATE], "status": status, "evidence": "x"}]),
+                )
+                gh = FakeGh(files=RECORDS)
+                self.assertNotEqual(mg.guard(7, HEAD, run=gh), 0)
+                self.assertEqual(gh.merge_calls(), [])
+
+    def test_failed_ci_still_refuses(self):
+        write_reconcile(self.ledger, passing())
+        gh = FakeGh(files=RECORDS, statusCheckRollup=[check_run("FAILURE")])
+        self.assertNotEqual(mg.guard(7, HEAD, run=gh), 0)
+        self.assertEqual(gh.merge_calls(), [])
+
+    def test_one_non_record_file_still_needs_the_ledger_result(self):
+        write_reconcile(self.ledger, passing())
+        for path in ("core/pipeline.py", "docs/itemsX.md", "README.md", "sub/todo.md"):
+            with self.subTest(path=path):
+                gh = FakeGh(files=RECORDS + [{"path": path}])
+                self.assertNotEqual(mg.guard(7, HEAD, run=gh), 0)
+                self.assertEqual(gh.merge_calls(), [])
+
+    def test_protected_path_still_refused(self):
+        write_reconcile(self.ledger, passing())
+        gh = FakeGh(files=RECORDS + [{"path": "docs/decisions.md"}])
+        self.assertNotEqual(mg.guard(7, HEAD, run=gh), 0)
+        self.assertEqual(gh.merge_calls(), [])
+
+    def test_empty_file_list_is_not_records_only(self):
+        write_reconcile(self.ledger, passing())
+        self.assertNotEqual(mg.guard(7, HEAD, run=FakeGh(files=[])), 0)

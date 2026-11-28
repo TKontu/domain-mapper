@@ -8,7 +8,8 @@ from a ready verdict. Resolve conflicts deliberately and renew affected checks; 
 
 Merge serially with `python3 scripts/merge_guard.py PR --head FULL_REVIEWED_HEAD` (raw `gh pr merge`
 is denied; decision D-002 in `docs/decisions.md`). It refuses drafts, moved heads, unmergeable or
-off-base PRs and operator-owned paths; park those as owed to the operator. Verify each actual merge and refresh the
+off-base PRs and operator-owned paths; park those as owed to the operator. A records-only
+reconcile PR merges on `python3 scripts/round.py reconcile-result ROUND --head SHA --result FILE` (MG-02). Verify each actual merge and refresh the
 local default branch between merges. Reassess remaining work if shared assumptions changed. Then:
 
 ```sh

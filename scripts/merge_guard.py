@@ -12,6 +12,9 @@ scripts/round.py) holds a result for exactly the reviewed head whose checks all 
 cover pytest, ruff check, ruff format --check and mypy. A CI check that concluded failed also
 refuses; pending, in-progress or absent CI does not block. Review itself stays the planner's
 /review-round duty; this script cannot see it, nor whether a PR decides an [H] item.
+Records-only PRs (MG-02): when every changed file is a reconciliation record (RECORD_PATHS), a
+passing complete result stored by `scripts/round.py reconcile-result` for exactly that head, in
+any round, also satisfies the local-gate rule. Any other file falls back to the ledger rule.
 """
 
 import argparse
@@ -34,6 +37,8 @@ OPERATOR_PATHS = (
     ".claude/*",
     "scripts/merge_guard.py",
 )
+# MG-02: reconciliation records; a PR touching only these may merge on reconcile evidence.
+RECORD_PATHS = ("todo.md", "docs/items/*", "docs/runs/*", "docs/reconcile*")
 LEDGER = ROOT / ".agent-runs"
 # Gate components a recorded result must cover, matched on the joined command text.
 GATE_COMPONENTS = ("pytest", "ruff check", "ruff format --check", "mypy")
@@ -132,6 +137,25 @@ def _ledger_problems(head: str, ledger: Path) -> list[str]:
     return [f"no passing complete local-gate result at {head}: " + "; ".join(gap) for gap in gaps]
 
 
+def records_only(record: dict) -> bool:
+    paths = [f["path"] for f in record.get("files") or []]
+    return bool(paths) and all(
+        any(fnmatch.fnmatchcase(path, pattern) for pattern in RECORD_PATHS) for path in paths
+    )
+
+
+def _reconcile_passes(head: str, ledger: Path) -> bool:
+    """A stored reconcile result for exactly this head, in any round, with a complete gate."""
+    for path in sorted(ledger.glob(f"*/reconcile-{head[:12]}.json")):
+        try:
+            result = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(result, dict) and result.get("head_sha") == head and not _result_gaps(result):
+            return True
+    return False
+
+
 def _ci_problems(record: dict) -> list[str]:
     failed = []
     for entry in record.get("statusCheckRollup") or []:
@@ -157,7 +181,9 @@ def guard(
     branch = branch or default_branch()
     record = view(pr, run)
     found = problems(record, head, branch)
-    found += _ledger_problems(head, ledger or LEDGER)
+    ledger = ledger or LEDGER
+    if not (records_only(record) and _reconcile_passes(head, ledger)):
+        found += _ledger_problems(head, ledger)
     found += _ci_problems(record)
     if found:
         for problem in found:

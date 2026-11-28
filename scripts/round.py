@@ -12,6 +12,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 FULL_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+# Local-gate components reconcile evidence must cover (MG-02), matched on joined command text.
+GATE_COMPONENTS = ("pytest", "ruff check", "ruff format --check", "mypy")
 
 
 def require(condition, message):
@@ -216,6 +218,21 @@ def resolve(repo, root, manifest, args):
     assignment["resolution"] = args.evidence
 
 
+def reconcile_result(root, args):
+    """MG-02: store local-gate evidence for a records-only reconcile head; no base equality."""
+    require(FULL_SHA.fullmatch(args.head or ""), "--head must be a full commit SHA")
+    data = read(Path(args.result))
+    require(data.get("head_sha", args.head) == args.head, "Result head does not match --head")
+    checks = data.get("checks")
+    require(isinstance(checks, list) and checks, "Result needs gate checks")
+    not_passed = [c for c in checks if c.get("status") != "passed"]
+    require(not not_passed, "Not all gate checks passed")
+    joined = " ".join(" ".join(" ".join(c.get("command") or []) for c in checks).split())
+    missing = [name for name in GATE_COMPONENTS if name not in joined]
+    require(not missing, "Result is missing gate checks: " + ", ".join(missing))
+    save(root / f"reconcile-{args.head[:12]}.json", dict(data, head_sha=args.head))
+
+
 def validate_handoff(handoff):
     """Shape checks shared by close and check-handoff; Main-SHA identity is close's job."""
     require(
@@ -294,6 +311,12 @@ def parser():
     actions.add_parser(
         "check-handoff", help="Validate a handoff's shape without touching any round"
     ).add_argument("handoff", type=Path)
+    reconcile = actions.add_parser(
+        "reconcile-result", help="Store passing local-gate evidence for a reconcile PR head"
+    )
+    reconcile.add_argument("round")
+    reconcile.add_argument("--head", required=True)
+    reconcile.add_argument("--result", required=True)
     for name in ("init", "assign", "record", "resolve", "close", "status"):
         sub = actions.add_parser(name)
         sub.add_argument("round")
@@ -350,6 +373,10 @@ def main():
             )
             if args.action == "status":
                 print(json.dumps(manifest, indent=2))
+                return 0
+            if args.action == "reconcile-result":
+                reconcile_result(root, args)
+                print(f"{args.round}: {args.action} recorded")
                 return 0
             require(manifest["state"] == "open", "Round is closed")
             if args.action == "assign":
