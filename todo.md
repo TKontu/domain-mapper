@@ -208,8 +208,8 @@ The private scope repo is already published (initial commit `d5714f3`).
 ## Phase 2 — Quality & human-in-the-loop
 
 - [ ] Eval harness: per-criterion accuracy, Cohen's κ, silent-rate, false-"strong" rate; discovery recall vs. a reference list
-  - [ ] **EV-01** → [docs/items/EV-01.md](docs/items/EV-01.md) pure per-criterion metrics module (accuracy, κ, silent-rate, false-strong rate) — partial 2026-11-28: merged PR #389 at 9927e01 (main 45b091c, round 187/A1; planner gate at head: ruff, format, mypy clean, pytest 1892 passed 5 skipped; CI pass); seen only in unit tests; unwired until EV-02 (gold-set loader + eval CLI) runs it on a labelled set
-  - [ ] **EV-02** eval-harness CLI + gold-set loader wiring `core.eval_metrics.compute_metrics` (needs an expert-labelled gold set, (H))
+  - [ ] **EV-01** → [docs/items/EV-01.md](docs/items/EV-01.md) pure per-criterion metrics module (accuracy, κ, silent-rate, false-strong rate) — partial 2026-11-28: merged PR #389 at 9927e01 (main 45b091c, round 187/A1; planner gate at head: ruff, format, mypy clean, pytest 1892 passed 5 skipped; CI pass); seen only in unit tests; wired by EV-02 (`landscape eval`); not yet run on a real labelled set
+  - [ ] **EV-02** → [docs/items/EV-02.md](docs/items/EV-02.md) eval-harness CLI (`landscape eval`) + gold-set loader (`core/gold_set.py`) wiring `core.eval_metrics.compute_metrics`; engine harness only, the expert-labelled real gold set stays (H)
 - [ ] `eval/thresholds.yaml` (overridable per scope) + release gate in `publish`
 - [ ] Review UI: queue ordered by priority (disagreement × impact), accept/override with note, keyboard-driven
 - [ ] Feed review decisions back as few-shot examples / rubric clarifications (versioned)

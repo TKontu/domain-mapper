@@ -134,6 +134,8 @@ from core.chunk_store import ChunkRow
 from core.config import Settings, load_settings
 from core.embed_store import EmbedStats, EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, Entity, EntityRef, iter_entities
+from core.eval_metrics import OVERALL, compute_metrics
+from core.gold_set import GoldSetError, load_gold_set
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
 from core.links import crawl_key, extract_links
@@ -1103,6 +1105,72 @@ def run_assessments(
         )
         for ev in row.evidence:
             typer.echo(f"  evidence chunk {ev.chunk_id} grounded {'yes' if ev.grounded else 'no'}")
+
+
+def _fmt_metric(value: float | None) -> str:
+    return "-" if value is None else f"{value:.3f}"
+
+
+def run_eval(scope: Path, rubric_version: str | None, gold: Path | None) -> None:
+    """Score current assessments against a gold set (EV-02) and print EV-01 metrics.
+
+    Gold labels (:func:`core.gold_set.load_gold_set`, default ``<scope>/gold/labels.jsonl``)
+    are paired with the current assessment of the same (entity, criterion); entities resolve
+    by (scope id, primary domain). Labels with no current assessment are counted as
+    ``unmatched N`` and excluded, never auto-labelled. Prints one line per criterion (sorted),
+    then ``overall``. Memory: dicts keyed by gold labels only (bounded, ~30 entities x
+    criteria); entities and assessments are read in batches. With no ``--rubric-version`` and
+    several versions current for one pair, the newest assessment is used. A missing gold file,
+    a gold-set error, a pack error or a database error exits 2.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    path = gold if gold is not None else scope / "gold" / "labels.jsonl"
+    statuses = {s.id for s in pack.rubric.status_scale}
+    valued = [s for s in pack.rubric.status_scale if s.value is not None]
+    top_status = max(valued, key=lambda s: s.value or 0).id if valued else ""
+    by_domain: dict[str, dict[str, str]] = {}
+    try:
+        for label in load_gold_set(path, statuses):
+            by_domain.setdefault(label.primary_domain, {})[label.criterion_id] = label.status
+    except FileNotFoundError:
+        typer.echo(f"error: gold file not found: {path}", err=True)
+        raise typer.Exit(2) from None
+    except (GoldSetError, OSError, UnicodeDecodeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    total = sum(len(v) for v in by_domain.values())
+    human: dict[tuple[int, str], str] = {}
+    auto: dict[tuple[int, str], CurrentAssessment] = {}
+    engine = _open_engine(settings)
+    try:
+        for ref in iter_entities(engine, pack.scope.id):
+            for criterion_id, status in by_domain.get(ref.primary_domain, {}).items():
+                human[(ref.id, criterion_id)] = status
+        if human:
+            entity_ids = sorted({key[0] for key in human})
+            for row in iter_current_assessments(
+                engine, entity_ids=entity_ids, rubric_version=rubric_version
+            ):
+                key = (row.entity_id, row.criterion_id)
+                if key in human:
+                    prev = auto.get(key)
+                    if prev is None or (row.created_at, row.id) > (prev.created_at, prev.id):
+                        auto[key] = row
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    typer.echo(f"unmatched {total - len(auto)}")
+    pairs = ((key[1], row.status, human[key]) for key, row in auto.items())
+    kwargs = {"top_status": top_status} if top_status else {}
+    for m in compute_metrics(pairs, **kwargs):
+        name = "overall" if m.criterion_id == OVERALL else m.criterion_id
+        typer.echo(
+            f"{name} n {m.n} accuracy {_fmt_metric(m.accuracy)} kappa {_fmt_metric(m.kappa)}"
+            f" silent_rate {_fmt_metric(m.silent_rate)}"
+            f" false_strong_rate {_fmt_metric(m.false_strong_rate)}"
+        )
 
 
 def _parse_attribute_text(attribute: Attribute, text: str) -> object:
@@ -2787,6 +2855,20 @@ def assessments(
 ) -> None:
     """Print the latest assessment per (entity, criterion, rubric version) and its evidence."""
     run_assessments(scope, entity_id, criterion, rubric_version)
+
+
+@app.command(name="eval", help="Score current assessments against a gold set (EV-01 metrics).")
+def eval_(
+    scope: ScopeOpt,
+    rubric_version: Annotated[
+        str | None, typer.Option("--rubric-version", help="Rubric version.")
+    ] = None,
+    gold: Annotated[
+        Path | None, typer.Option("--gold", help="Gold JSONL; default <scope>/gold/labels.jsonl.")
+    ] = None,
+) -> None:
+    """Print per-criterion and overall metrics of current assessments vs. gold labels."""
+    run_eval(scope, rubric_version, gold)
 
 
 @app.command(name="attribute-set", help="Record one manual attribute value for an entity.")
