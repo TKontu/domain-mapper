@@ -446,6 +446,14 @@ class AnthropicTests(LlmAdapterTestCase):
         self.assertEqual(result.parsed, {"status": "in"})
         self.assertEqual(result.text, "ok")
 
+    def test_refusal_stop_reason_raises_before_content_is_read(self) -> None:
+        body = anthropic_payload([{"type": "text", "text": "x"}])
+        body["stop_reason"] = "refusal"
+        transport = FakeTransport(json_response(body))
+        llm = self.anthropic(transport)
+        with self.assertRaisesRegex(LlmError, "refus"):
+            llm.complete(PROMPT, purpose="classify", run_id=self.run_id, json_schema=SCHEMA)
+
     def test_schema_without_a_tool_use_block_raises_typed_error(self) -> None:
         transport = FakeTransport(
             json_response(anthropic_payload([{"type": "text", "text": "no tool"}]))

@@ -448,6 +448,10 @@ class AnthropicLLM(_BaseHttpLLM):
             usage.tokens_out = tokens_out
             usage.cost = cost
 
+            # A refusal carries no usable answer; fail before reading content (tokens and
+            # cost above are still logged).
+            if payload.get("stop_reason") == "refusal":
+                raise LlmError("model refused the request (stop_reason refusal)")
             blocks = payload.get("content")
             if not isinstance(blocks, list):
                 raise LlmError("response has no content blocks")
