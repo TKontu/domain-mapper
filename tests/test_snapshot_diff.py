@@ -44,9 +44,9 @@ def add_run(engine: Engine) -> int:
         return run.id
 
 
-def snap(engine, run_id, url, body, entity_id=1, minutes=0) -> int:
+def snap(engine, run_id, url, body, entity_id=1, minutes=0, final_url=None) -> int:
     result = FetchResult(
-        final_url=url,
+        final_url=final_url or url,
         status=200,
         content_type="text/html",
         body_bytes=body,
@@ -250,3 +250,37 @@ def test_evidence_without_url_ignored(engine):
     plan = stale_assessments(engine, 1)
     assert plan.stale == []
     assert plan.current == 1
+
+
+def test_stale_matches_evidence_citing_final_url(engine):
+    base, head = add_run(engine), add_run(engine)
+    # changed URL redirected in base run; evidence cites the base final_url
+    c_changed = chunk(engine, snap(engine, base, "https://e/a", b"1", final_url="https://e/a2"))
+    snap(engine, head, "https://e/a", b"2", final_url="https://e/a3")
+    # removed URL matched via its base-run final_url
+    c_gone = chunk(engine, snap(engine, base, "https://e/g", b"g", final_url="https://e/g2"))
+    # unchanged and added URLs with final_urls: never flagged
+    c_same = chunk(engine, snap(engine, base, "https://e/s", b"s", final_url="https://e/s2"))
+    snap(engine, head, "https://e/s", b"s", final_url="https://e/s2")
+    c_added = chunk(engine, snap(engine, head, "https://e/n", b"n", final_url="https://e/n2"))
+    # final_url equal to url: listed once
+    c_plain = chunk(engine, snap(engine, base, "https://e/p", b"p"))
+    snap(engine, head, "https://e/p", b"q")
+    a1 = assess(engine, base, "c1", [c_changed])
+    a2 = assess(engine, base, "c2", [c_gone])
+    assess(engine, base, "c3", [c_same, c_added])
+    a4 = assess(engine, base, "c4", [c_plain, c_plain])
+    # head-run final_url of the changed URL also matches, deduped with the snapshot url
+    c_head = chunk(engine, snap(engine, head, "https://e/x", b"x", final_url="https://e/a3"))
+    a5 = assess(engine, head, "c5", [c_head, c_changed])
+    plan = stale_assessments(engine, 1)
+    got = [(s.criterion_id, s.assessment_id, statuses(s.urls)) for s in plan.stale]
+    assert got == [
+        ("c1", a1, [("changed", "https://e/a")]),
+        ("c2", a2, [("removed", "https://e/g")]),
+        ("c4", a4, [("changed", "https://e/p")]),
+        ("c5", a5, [("changed", "https://e/a")]),
+    ]
+    assert [d.url for d in plan.diff.urls] == [
+        "https://e/a", "https://e/g", "https://e/n", "https://e/p", "https://e/s", "https://e/x"
+    ]

@@ -301,6 +301,8 @@ The private scope repo is already published (initial commit `d5714f3`).
   - [ ] **SD-01** → [docs/items/SD-01.md](docs/items/SD-01.md) read-only per-URL snapshot diff of one entity across two crawl runs (`landscape snapshot-diff`) — partial 2026-11-28: merged PR #412 at 770518b (main b25e55e, round 198/A1; review-lens APPROVE; planner gate 2037 passed, 5 skipped; CI pass); seen on a local copy of the M1-01 run DB only the too-few-runs path (exit 2; no entity there has two crawl runs); needs a DB with two crawl runs of one entity to show a real diff; review nits: equal --base-run/--head-run gets the too-few-runs message, --base-run alone at the newest run diffs in reverse
     - SD-01 review nits fixed by SD-02.
   - [ ] **SD-02** → [docs/items/SD-02.md](docs/items/SD-02.md) read-only list of current assessments a snapshot diff makes stale (evidence URL changed/removed) (`landscape reassess-plan`); fixes SD-01 run-selection nits — partial 2026-11-28: merged PR #414 at 603222d (main 076d0be, round 199/A1; planner review APPROVE; planner gate 2048 passed, 5 skipped; CI pass); not yet seen on a DB with two crawl runs of one entity; residual: diff keys on snapshot url while evidence cites final_url, so redirected pages match only when equal
+    - SD-02 redirect residual fixed by SD-03.
+  - [ ] **SD-03** → [docs/items/SD-03.md](docs/items/SD-03.md) `reassess-plan` also matches evidence citing a changed/removed snapshot's final_url (base or head run); trigger stays the snapshot url
 - [ ] Changelog page (status changes, new/closed providers, certification changes)
 - [ ] Alerts: crawl failures, budget overrun, review backlog
 - [ ] Backups (DB + snapshots)
