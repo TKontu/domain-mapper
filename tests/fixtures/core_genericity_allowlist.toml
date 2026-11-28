@@ -1,4 +1,4 @@
-# GP-01 core genericity allowlist. Each hit: file, term, verdict, reason.
+# GP-01/GP-02 core and app genericity allowlist. Each hit: file, term, verdict, reason.
 # Must agree entry for entry with docs/genericity-log.md (tests/test_core_genericity.py).
 
 [[hit]]
@@ -24,3 +24,9 @@ file = "core/scope_pack.py"
 term = "terms"
 verdict = "generic-keep"
 reason = "vocabulary/presence terms schema fields; generic word, coincides with the _example topic id"
+
+[[hit]]
+file = "app/cli.py"
+term = "terms"
+verdict = "generic-keep"
+reason = "local name for serialised scope presence_terms; generic word, coincides with the _example topic id"
