@@ -33,7 +33,7 @@ A scope pack (YAML) declares one landscape:
 - **Rubric** — topics (mosaic rows), criteria (cells), a status scale with its own polarity, and evidence rules.
 - **Attributes, weight profiles and view configuration.**
 
-The public repository ships only [`scopes/_example/`](scopes/_example/), a small illustrative pack. Real scope packs are private checkouts under `scopes/<name>/` and are gitignored here (see [scopes/README.md](scopes/README.md)).
+The public repository ships only [`scopes/_example/`](scopes/_example/), a small illustrative pack. Real scope packs are private checkouts under `scopes/<name>/` and are gitignored here (see [scopes/README.md](scopes/README.md)). To start a new pack, follow [docs/new-scope.md](docs/new-scope.md).
 
 ---
 

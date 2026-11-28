@@ -11,6 +11,8 @@ profiles, views). See [ARCHITECTURE.md §3](../ARCHITECTURE.md#3-scope-pack).
 
 ## Using a private scope
 
+To write a new pack from an empty directory, see [docs/new-scope.md](../docs/new-scope.md).
+
 ```sh
 git clone <private-scope-repo-url> scopes/<name>
 landscape validate --scope scopes/<name>
