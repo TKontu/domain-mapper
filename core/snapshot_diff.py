@@ -7,6 +7,10 @@ classifies every URL as ``changed``, ``unchanged``, ``added`` (head only) or ``r
 (base only). By default the two most recent runs (highest ids) that hold snapshots for
 the entity are compared. Selection happens in SQL per (run, url) for that one entity; no
 whole-table load, no writes, no body diff.
+
+:func:`stale_assessments` (SD-02) maps a diff onto the entity's current assessments: one
+is stale when any of its evidence URLs is ``changed`` or ``removed``. Production caller:
+``app.cli.run_reassess_plan``.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from core.assessment_store import iter_current_assessments
 from core.snapshot_store import SnapshotRow
 
 STATUSES = ("changed", "unchanged", "added", "removed")
@@ -84,18 +89,27 @@ def diff_entity_runs(
     """Compare the latest snapshot per URL of ``entity_id`` in two runs; read-only.
 
     Unset runs default to the most recent runs holding snapshots for the entity: the head
-    is the newest (other than an explicit base), the base the newest run older than the head.
-    Raises :class:`SnapshotDiffError` when fewer than two such runs exist or a named run
-    has no snapshots for the entity.
+    is the newest (newer than an explicit base), the base the newest run older than the head.
+    Raises :class:`SnapshotDiffError` when fewer than two such runs exist, a named run has no
+    snapshots for the entity, base and head are the same run, or an explicit base has no newer
+    run (never diffs in reverse).
     """
     with Session(engine) as session:
         runs = _runs_with_snapshots(session, entity_id)
         for named in (base_run_id, head_run_id):
             if named is not None and named not in runs:
                 raise SnapshotDiffError(f"run {named} has no snapshots for entity {entity_id}")
+        if base_run_id is not None and base_run_id == head_run_id:
+            raise SnapshotDiffError("base and head run are the same")
         head = head_run_id
+        if head is None and base_run_id is not None:
+            head = next((r for r in runs if r > base_run_id), None)
+            if head is None:
+                raise SnapshotDiffError(
+                    f"no run newer than base run {base_run_id} has snapshots for entity {entity_id}"
+                )
         if head is None:
-            head = next((r for r in runs if r != base_run_id), None)
+            head = runs[0] if runs else None
         base = base_run_id
         if base is None and head is not None:
             base = next((r for r in runs if r < head), None)
@@ -115,3 +129,53 @@ def diff_entity_runs(
             status = "changed"
         urls.append(UrlDiff(url=url, status=status))
     return SnapshotDiff(entity_id=entity_id, base_run_id=base, head_run_id=head, urls=urls)
+
+
+STALE_STATUSES = frozenset({"changed", "removed"})
+
+
+@dataclass(frozen=True)
+class StaleAssessment:
+    assessment_id: int
+    criterion_id: str
+    rubric_version: str
+    urls: list[UrlDiff]
+
+
+@dataclass(frozen=True)
+class StalePlan:
+    diff: SnapshotDiff
+    stale: list[StaleAssessment]
+    current: int
+
+
+def stale_assessments(
+    engine: Engine,
+    entity_id: int,
+    base_run_id: int | None = None,
+    head_run_id: int | None = None,
+) -> StalePlan:
+    """Current assessments of ``entity_id`` citing a changed or removed URL; read-only.
+
+    Runs :func:`diff_entity_runs` (same run selection and errors), then streams the entity's
+    current assessments. Evidence without a URL is ignored; each stale assessment lists its
+    triggering URLs once, sorted. Result sorted by criterion id then rubric version.
+    """
+    diff = diff_entity_runs(engine, entity_id, base_run_id, head_run_id)
+    flagged = {d.url: d.status for d in diff.urls if d.status in STALE_STATUSES}
+    stale: list[StaleAssessment] = []
+    current = 0
+    for assessment in iter_current_assessments(engine, entity_id=entity_id):
+        current += 1
+        hits = sorted({ev.url for ev in assessment.evidence if ev.url in flagged})
+        if hits:
+            stale.append(
+                StaleAssessment(
+                    assessment_id=assessment.id,
+                    criterion_id=assessment.criterion_id,
+                    rubric_version=assessment.rubric_version,
+                    urls=[UrlDiff(url=u, status=flagged[u]) for u in hits],
+                )
+            )
+    stale.sort(key=lambda s: (s.criterion_id, s.rubric_version))
+    return StalePlan(diff=diff, stale=stale, current=current)
