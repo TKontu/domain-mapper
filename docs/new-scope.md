@@ -114,3 +114,5 @@ landscape schema --file rubric.yaml         # print one file's schema
 ```
 
 `landscape validate` prints the first error as `<file>: <field path>: <message>`.
+
+Core genericity (no `_example` domain words in `core/`) is checked by a test; see [genericity-log.md](genericity-log.md).
