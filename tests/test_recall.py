@@ -253,3 +253,45 @@ def test_cli_bad_inputs_exit_2_before_llm(engine, monkeypatch, args) -> None:
     assert result.exit_code == 2, result.output
     assert llm.calls == []
     assert runs(engine) == []
+
+
+# --- name sanitising ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Acme\tCorp",
+        "Acme\nCorp",
+        "Acme\r\nCorp",
+        "Acme\x00Corp",
+        "Acme Corp",
+        "  Acme \t​  Corp\x7f ",
+    ],
+)
+def test_recalled_name_is_single_line_single_space(pack, raw) -> None:
+    llm = FakeLLM(proposals((raw, "https://acme.example/")))
+    (row,) = recall_candidates(llm, pack, segment="agency", country="XA", limit=5, run_id=1)
+    assert row.name == "Acme Corp"
+
+
+def test_recalled_name_capped_at_200(pack) -> None:
+    llm = FakeLLM(proposals(("x" * 500, "https://acme.example/")))
+    (row,) = recall_candidates(llm, pack, segment="agency", country="XA", limit=5, run_id=1)
+    assert row.name == "x" * 200
+
+
+def test_control_only_name_falls_back_to_url(pack) -> None:
+    llm = FakeLLM(proposals((" \t\n\x00  ", "https://acme.example/")))
+    (row,) = recall_candidates(llm, pack, segment="agency", country="XA", limit=5, run_id=1)
+    assert row.name == "https://acme.example/"
+
+
+def test_cli_prints_and_saves_sanitised_name(engine, monkeypatch) -> None:
+    use_llm(monkeypatch, FakeLLM(proposals(("Acme\t\r\nCorp\x00", "https://acme.example/"))))
+    result = invoke("--segment", "agency", "--country", "XA", "--save")
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines == ["Acme Corp\thttps://acme.example/", "saved 1 candidates"]
+    assert lines[0].count("\t") == 1
+    assert [r.name for r in candidates(engine)] == ["Acme Corp"]
