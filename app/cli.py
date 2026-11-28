@@ -1963,6 +1963,8 @@ def run_mosaic(
     entity_dir: Path | None = None,
     segments: list[str] | None = None,
     layers: list[str] | None = None,
+    gate_report: Path | None = None,
+    hide_experimental: bool = False,
 ) -> None:
     """Write the FE-01 mosaic page for ``scores`` and ``export`` JSON Lines to ``out``.
 
@@ -1974,7 +1976,13 @@ def run_mosaic(
     entity pages) and the page heading names the filter by label; an unknown id exits 2.
     ``layers`` (FE-04) filters the same way on each line's ``layers`` list (a line without one is
     dropped); with both, a line must match both. A layer is named by its label (FE-05), else its id.
+    ``gate_report`` (FE-06) labels criterion headers release/experimental/ungated; with
+    ``hide_experimental`` experimental criteria are omitted from mosaic and entity pages (topic
+    scores stay as exported). ``hide_experimental`` without a report, or a bad report, exits 2.
     """
+    if hide_experimental and gate_report is None:
+        typer.echo("error: --hide-experimental requires --gate-report", err=True)
+        raise typer.Exit(2)
     if not scope.is_dir():
         typer.echo(f"error: scope directory not found: {scope}", err=True)
         raise typer.Exit(2)
@@ -2001,6 +2009,16 @@ def run_mosaic(
         if not path.is_file():
             typer.echo(f"error: input file not found: {path}", err=True)
             raise typer.Exit(2)
+    release: Mapping[str, str] | None = None
+    hidden: frozenset[str] = frozenset()
+    if gate_report is not None:
+        try:
+            release = load_gate_report(gate_report)
+        except GateReportError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
+        if hide_experimental:
+            hidden = frozenset(c for c, label in release.items() if label == "experimental")
 
     def score_lines() -> Iterator[Mapping[str, Any]]:
         lines: Iterator[Mapping[str, Any]] = _iter_jsonl(scores)
@@ -2012,7 +2030,14 @@ def run_mosaic(
 
     try:
         if entity_dir is None:
-            page = render_mosaic(pack, score_lines(), _iter_jsonl(export), heading=heading)
+            page = render_mosaic(
+                pack,
+                score_lines(),
+                _iter_jsonl(export),
+                heading=heading,
+                release=release,
+                hidden=hidden,
+            )
         else:
             score_rows = list(score_lines())
             export_rows = list(_iter_jsonl(export))
@@ -2032,7 +2057,7 @@ def run_mosaic(
             by_entity.setdefault(str(row.get("entity_id")), {})[str(row.get("criterion_id"))] = row
         for line in score_rows:
             entity = str(line.get("entity_id"))
-            text = render_entity_page(pack, line, by_entity.get(entity, {}), back)
+            text = render_entity_page(pack, line, by_entity.get(entity, {}), back, hidden)
             _write_atomic(entity_dir / f"{entity_slug(entity)}.html", text)
         page = render_mosaic(
             pack,
@@ -2040,6 +2065,8 @@ def run_mosaic(
             export_rows,
             lambda e: f"{rel_dir}/{entity_slug(e)}.html",
             heading=heading,
+            release=release,
+            hidden=hidden,
         )
     _write_atomic(out, page)
     typer.echo(f"wrote mosaic to {out}")
@@ -3138,9 +3165,19 @@ def mosaic(
         list[str] | None,
         typer.Option("--layer", help="Keep only entities in this layer id (repeatable)."),
     ] = None,
+    gate_report: Annotated[
+        Path | None,
+        typer.Option("--gate-report", help="EV-04 gate report JSON; label criterion headers."),
+    ] = None,
+    hide_experimental: Annotated[
+        bool,
+        typer.Option("--hide-experimental", help="Omit experimental criteria (needs report)."),
+    ] = False,
 ) -> None:
     """Write one self-contained mosaic HTML page (FE-01) to ``--out``; entity pages (FE-02)."""
-    run_mosaic(scope, scores, export, out, entity_dir, segment, layer)
+    run_mosaic(
+        scope, scores, export, out, entity_dir, segment, layer, gate_report, hide_experimental
+    )
 
 
 @app.command(name="export", help="Export the current assessment view as JSON Lines or CSV.")
