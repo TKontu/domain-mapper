@@ -192,6 +192,7 @@ from core.screen_store import (
     load_entity_text,
     record_screen_result,
 )
+from core.snapshot_diff import SnapshotDiffError, diff_entity_runs
 from core.snapshot_store import SnapshotRow
 from core.source_catalogue import SeedSummary, Source, seed_sources
 from core.verify import route, verify_extraction
@@ -3430,6 +3431,39 @@ def cost_report(
 ) -> None:
     """Aggregate ``llm_call`` rows per (run.stage, purpose, model); read-only (CO-01)."""
     run_cost_report(run_id)
+
+
+def run_snapshot_diff(entity_id: int, base_run_id: int | None, head_run_id: int | None) -> None:
+    """Print one ``<status>\turl`` line per URL plus a ``total`` line (SD-01); read-only."""
+    try:
+        settings = load_settings()
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    engine = _open_engine(settings)
+    try:
+        diff = diff_entity_runs(engine, entity_id, base_run_id, head_run_id)
+    except SnapshotDiffError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, None, exc)
+    finally:
+        engine.dispose()
+    for item in diff.urls:
+        typer.echo(f"{item.status}\t{item.url}")
+    counts = diff.counts()
+    typer.echo("total " + " ".join(f"{k} {v}" for k, v in counts.items()))
+
+
+@app.command(name="snapshot-diff", help="Compare one entity's snapshots per URL across two runs.")
+def snapshot_diff(
+    entity_id: Annotated[int, typer.Option("--entity", help="Entity id.")],
+    base_run: Annotated[int | None, typer.Option("--base-run", help="Base run id.")] = None,
+    head_run: Annotated[int | None, typer.Option("--head-run", help="Head run id.")] = None,
+) -> None:
+    """Classify URLs as changed/unchanged/added/removed by sha256 (SD-01)."""
+    run_snapshot_diff(entity_id, base_run, head_run)
 
 
 def main() -> None:

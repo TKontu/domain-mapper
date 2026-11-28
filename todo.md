@@ -298,6 +298,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 
 - [ ] Scheduled re-crawls (cadence per layer from the scope pack)
 - [ ] Snapshot diffing → selective re-assessment
+  - [ ] **SD-01** → [docs/items/SD-01.md](docs/items/SD-01.md) read-only per-URL snapshot diff of one entity across two crawl runs (`landscape snapshot-diff`) — PR open (assignment 198/A1); unseen on a real crawl database
 - [ ] Changelog page (status changes, new/closed providers, certification changes)
 - [ ] Alerts: crawl failures, budget overrun, review backlog
 - [ ] Backups (DB + snapshots)
