@@ -484,3 +484,37 @@ class BackoffLoopTests(unittest.TestCase):
         self.assertEqual(self.begun, [])
         self.assertLess(sum(self.slept), CFG.backoff_schedule_s[0])
         self.assertTrue((self.tmp / "HALT").exists())
+
+
+class DryRunPipeTest(unittest.TestCase):
+    """`run --dry-run` returns promptly with no stdin and piped output (SV-04)."""
+
+    def _dry_run(self, *extra):
+        import subprocess
+
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "round_supervisor.py"),
+                "run",
+                "--dry-run",
+                *extra,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            cwd=ROOT,
+        )
+
+    def test_dry_run_exits_with_piped_output(self):
+        proc = self._dry_run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("backoff_schedule_s", proc.stdout)
+
+    def test_dry_run_with_set_tuple(self):
+        proc = self._dry_run("--set", "backoff_schedule_s=60,120")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("backoff_schedule_s", proc.stdout)
+        self.assertIn("(60, 120)", proc.stdout)
