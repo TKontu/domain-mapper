@@ -418,7 +418,7 @@ class AnthropicTests(LlmAdapterTestCase):
         self.assertEqual(result.tokens_out, 5)
         self.assertFalse(result.cache_hit)
 
-    def test_schema_uses_a_forced_tool(self) -> None:
+    def test_schema_offers_the_result_tool_with_auto_choice(self) -> None:
         transport = FakeTransport(
             json_response(
                 anthropic_payload(
@@ -441,7 +441,8 @@ class AnthropicTests(LlmAdapterTestCase):
         body = json.loads(transport.calls[0].body)
         self.assertEqual(body["tools"][0]["name"], "emit_result")
         self.assertEqual(body["tools"][0]["input_schema"], SCHEMA)
-        self.assertEqual(body["tool_choice"], {"type": "tool", "name": "emit_result"})
+        self.assertEqual(body["tool_choice"], {"type": "auto"})
+        self.assertIn("emit_result", body["messages"][0]["content"])
         self.assertEqual(result.parsed, {"status": "in"})
         self.assertEqual(result.text, "ok")
 

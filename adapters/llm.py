@@ -46,7 +46,7 @@ DEFAULT_TIMEOUT_SECONDS: Final = 60.0
 DEFAULT_ANTHROPIC_BASE_URL: Final = "https://api.anthropic.com"
 DEFAULT_MAX_TOKENS: Final = 1024
 ANTHROPIC_VERSION: Final = "2023-06-01"
-# The forced tool's name; the response's ``tool_use`` block carries the object.
+# The result tool's name; the response's ``tool_use`` block carries the object.
 RESULT_TOOL_NAME: Final = "emit_result"
 
 SchemaMode = Literal["response_format", "guided_json"]
@@ -371,7 +371,7 @@ class OpenAICompatibleLLM(_BaseHttpLLM):
 
 
 class AnthropicLLM(_BaseHttpLLM):
-    """Anthropic Messages client; structured output uses a forced tool."""
+    """Anthropic Messages client; structured output uses an offered tool (tool_choice auto)."""
 
     def __init__(
         self,
@@ -406,6 +406,11 @@ class AnthropicLLM(_BaseHttpLLM):
         }
 
     def _payload(self, prompt: str, json_schema: Mapping[str, object] | None) -> dict[str, object]:
+        if json_schema is not None:
+            # Some cloud models reject a forced tool_choice ("tool"/"any") with HTTP 400, so
+            # the tool is offered with "auto" and the prompt asks for it; a reply without a
+            # tool_use block still raises LlmSchemaError (see _tool_input).
+            prompt = f"{prompt}\n\nReturn your answer by calling the {RESULT_TOOL_NAME} tool."
         payload: dict[str, object] = {
             "model": self.model,
             "max_tokens": self._max_tokens,
@@ -419,7 +424,7 @@ class AnthropicLLM(_BaseHttpLLM):
                     "input_schema": dict(json_schema),
                 }
             ]
-            payload["tool_choice"] = {"type": "tool", "name": RESULT_TOOL_NAME}
+            payload["tool_choice"] = {"type": "auto"}
         return payload
 
     def complete(
