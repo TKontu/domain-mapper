@@ -612,8 +612,9 @@ class _Crawler:
         self.limiter = HostRateLimiter(CRAWL_MIN_INTERVAL_S, time.monotonic, time.sleep)
         limiter = self.limiter
 
-        def fetch_robots(robots_url: str) -> tuple[int, bytes]:
-            # Called only when RobotsPolicy actually fetches (not cached): one wait per real GET.
+        def fetch_robots(robots_url: str) -> tuple[int, bytes, str | None]:
+            # Called only when RobotsPolicy actually fetches (not cached): one wait per real GET,
+            # including each robots redirect hop (CR-19).
             limiter.wait(robots_url)
             return get_robots(robots_url, user_agent=USER_AGENT, timeout_s=_ROBOTS_TIMEOUT_S)
 

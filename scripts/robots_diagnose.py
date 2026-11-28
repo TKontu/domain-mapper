@@ -88,7 +88,8 @@ def entity_urls(db: Path) -> list[str]:
 
 
 def _live_fetch(robots_url: str) -> tuple[int, bytes]:
-    return get_robots(robots_url, user_agent=USER_AGENT, timeout_s=TIMEOUT_S)
+    status, body, _location = get_robots(robots_url, user_agent=USER_AGENT, timeout_s=TIMEOUT_S)
+    return status, body
 
 
 def main(argv: Sequence[str] | None = None, *, fetch: Fetch = _live_fetch) -> int:

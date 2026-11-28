@@ -17,7 +17,10 @@ Endpoints (bound to ``127.0.0.1`` only):
   empty body and later scrapes succeed, so the caller's retry seam is exercised over a real socket.
 * ``GET /robots.txt`` answers an allow-all policy (with ``crawl_delay`` it also
   announces ``Crawl-delay: <seconds>``), because the CLI fetches robots
-  directly from the target host rather than through the fetcher.
+  directly from the target host rather than through the fetcher. With
+  ``robots_redirect`` (CR-19) ``/robots.txt`` instead answers ``301``/``302`` with
+  ``Location: /robots-final.txt`` (which serves that policy), or ``"loop"``
+  bounces between ``/robots.txt`` and ``/robots-loop.txt`` forever.
 * every other path or method answers 404; a ``/v1/scrape`` body that is not a JSON
   object with an http(s) ``url`` answers 400.
 
@@ -48,6 +51,9 @@ _HOST: Final = "127.0.0.1"
 _ROBOTS: Final = b"User-agent: *\nAllow: /\n"
 _MAX_BODY_BYTES: Final = 1 << 20
 _SCRAPE_PATH: Final = "/v1/scrape"
+_ROBOTS_REDIRECTS: Final = ("301", "302", "loop")
+_ROBOTS_FINAL: Final = "/robots-final.txt"
+_ROBOTS_LOOP: Final = "/robots-loop.txt"
 
 
 def _fail_status(value: int | None) -> int | None:
@@ -77,6 +83,12 @@ def _robots(crawl_delay: float | None) -> bytes:
     return f"User-agent: *\nCrawl-delay: {crawl_delay!r}\nAllow: /\n".encode("ascii")
 
 
+def _robots_redirect(value: str | None) -> str | None:
+    if value is not None and value not in _ROBOTS_REDIRECTS:
+        raise ValueError(f"robots_redirect must be one of {', '.join(_ROBOTS_REDIRECTS)}")
+    return value
+
+
 def _port(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 65535:
         raise ValueError("port must be an integer in 0..65535")
@@ -88,9 +100,16 @@ class FakeFirecrawlServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, port: int, fail_first: int | None, crawl_delay: float | None = None) -> None:
+    def __init__(
+        self,
+        port: int,
+        fail_first: int | None,
+        crawl_delay: float | None = None,
+        robots_redirect: str | None = None,
+    ) -> None:
         self.fail_first = _fail_status(fail_first)
         self.robots_body = _robots(_crawl_delay(crawl_delay))
+        self.robots_redirect = _robots_redirect(robots_redirect)
         self._lock = threading.Lock()
         self._scrapes: dict[str, int] = {}
         super().__init__((_HOST, _port(port)), _Handler)
@@ -104,10 +123,13 @@ class FakeFirecrawlServer(ThreadingHTTPServer):
 
 
 def make_server(
-    port: int = 0, fail_first: int | None = None, crawl_delay: float | None = None
+    port: int = 0,
+    fail_first: int | None = None,
+    crawl_delay: float | None = None,
+    robots_redirect: str | None = None,
 ) -> FakeFirecrawlServer:
     """Build (but do not start) a server on ``127.0.0.1``; ``port=0`` picks one."""
-    return FakeFirecrawlServer(port, fail_first, crawl_delay)
+    return FakeFirecrawlServer(port, fail_first, crawl_delay, robots_redirect)
 
 
 def _scrape_body(url: str) -> bytes:
@@ -142,10 +164,26 @@ class _Handler(BaseHTTPRequestHandler):
         """Stay silent: a live lane's log is the CLI's, not per-request noise."""
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
-        if urlsplit(self.path).path == "/robots.txt":
+        path = urlsplit(self.path).path
+        mode = self.server.robots_redirect
+        if path == "/robots.txt" and mode is None:
+            self._send(200, self.server.robots_body, "text/plain; charset=utf-8")
+        elif path == "/robots.txt" and mode == "loop":
+            self._redirect(302, _ROBOTS_LOOP)
+        elif path == "/robots.txt" and mode is not None:
+            self._redirect(int(mode), _ROBOTS_FINAL)
+        elif path == _ROBOTS_LOOP and mode == "loop":
+            self._redirect(302, "/robots.txt")
+        elif path == _ROBOTS_FINAL and mode in ("301", "302"):
             self._send(200, self.server.robots_body, "text/plain; charset=utf-8")
         else:
             self._not_found()
+
+    def _redirect(self, status: int, location: str) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler naming
         if urlsplit(self.path).path != _SCRAPE_PATH:
@@ -234,10 +272,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="SECONDS",
         help="announce this Crawl-delay (finite, > 0) in robots.txt",
     )
+    parser.add_argument(
+        "--robots-redirect",
+        default=None,
+        metavar="MODE",
+        help="robots.txt answers a redirect: 301, 302 (to a final body) or loop",
+    )
     args = parser.parse_args(argv)
     try:
         server = make_server(
-            port=args.port, fail_first=args.fail_first, crawl_delay=args.crawl_delay
+            port=args.port,
+            fail_first=args.fail_first,
+            crawl_delay=args.crawl_delay,
+            robots_redirect=args.robots_redirect,
         )
     except ValueError as exc:
         parser.error(str(exc))

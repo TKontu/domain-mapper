@@ -36,7 +36,7 @@ class FakeRobots:
         self._responses = dict(responses or {})
         self.calls: list[str] = []
 
-    def __call__(self, url: str) -> tuple[int, bytes]:
+    def __call__(self, url: str) -> tuple[int, bytes] | tuple[int, bytes, str | None]:
         self.calls.append(url)
         response = self._responses.get(url, (404, b""))
         if isinstance(response, list):
@@ -128,10 +128,11 @@ def test_missing_robots_allows_everything(status: int) -> None:
     assert policy.allowed("https://example.com/anything") is True
 
 
-@pytest.mark.parametrize("status", [401, 403])
-def test_unauthorised_robots_disallows_everything(status: int) -> None:
-    policy, _ = make_policy(b"User-agent: *\nAllow: /\n", status=status)
-    assert policy.allowed("https://example.com/anything") is False
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 429, 451])
+def test_any_4xx_robots_allows_everything(status: int) -> None:
+    # CR-19 / RFC 9309 §2.3.1.3: any 4xx (incl. 401/403) means "no robots.txt".
+    policy, _ = make_policy(b"User-agent: *\nDisallow: /\n", status=status)
+    assert policy.allowed("https://example.com/anything") is True
 
 
 @pytest.mark.parametrize("status", [301, 500, 503])
@@ -492,3 +493,106 @@ def test_default_bound_is_1024() -> None:
     assert len(fetch.calls) == 1025
     policy.allowed("https://h0.example.com/")
     assert len(fetch.calls) == 1026
+
+
+# --- CR-19: RFC 9309 §2.3.1 redirects -------------------------------------------------------
+
+REDIRECT_BODY = b"User-agent: *\nCrawl-delay: 2.5\nDisallow: /private\n"
+
+
+def _chain(n: int, final: object = (200, REDIRECT_BODY), status: int = 302) -> FakeRobots:
+    """``ROBOTS_URL`` redirects ``n`` times through ``/r1..rn`` before ``final``."""
+    responses: dict[str, object] = {}
+    current = ROBOTS_URL
+    for i in range(1, n + 1):
+        target = f"https://example.com/r{i}"
+        responses[current] = (status, b"", target)
+        current = target
+    responses[current] = final
+    return FakeRobots(responses)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_redirect_to_200_applies_rules_crawl_delay_and_disallow(status: int) -> None:
+    fetch = _chain(1, status=status)
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    assert policy.allowed("https://example.com/public") is True
+    assert policy.allowed("https://example.com/private/x") is False
+    assert policy.crawl_delay("https://example.com/") == 2.5
+    assert fetch.calls == [ROBOTS_URL, "https://example.com/r1"]
+
+
+def test_redirect_to_other_host_rules_apply_to_original_host_and_cache() -> None:
+    fetch = FakeRobots(
+        {
+            ROBOTS_URL: (301, b"", "https://www.example.org/robots.txt"),
+            "https://www.example.org/robots.txt": (200, REDIRECT_BODY),
+        }
+    )
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    assert policy.allowed("https://example.com/private") is False
+    assert policy.allowed("https://example.com/ok") is True
+    assert policy.crawl_delay("https://example.com/") == 2.5
+    assert fetch.calls == [ROBOTS_URL, "https://www.example.org/robots.txt"]
+
+
+def test_chain_of_five_redirects_is_followed() -> None:
+    policy = RobotsPolicy(_chain(5), USER_AGENT)
+    assert policy.allowed("https://example.com/ok") is True
+    assert policy.allowed("https://example.com/private") is False
+
+
+def test_six_redirects_disallow_all() -> None:
+    fetch = _chain(6)
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    assert policy.allowed("https://example.com/ok") is False
+    assert len(fetch.calls) == 6
+
+
+def test_redirect_loop_disallows_all() -> None:
+    fetch = FakeRobots(
+        {
+            ROBOTS_URL: (302, b"", "https://example.com/r1"),
+            "https://example.com/r1": (302, b"", ROBOTS_URL),
+        }
+    )
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    assert policy.allowed("https://example.com/ok") is False
+    assert fetch.calls == [ROBOTS_URL, "https://example.com/r1"]
+
+
+def test_relative_location_resolves_against_current_robots_url() -> None:
+    fetch = FakeRobots(
+        {
+            ROBOTS_URL: (301, b"", "/sub/robots.txt"),
+            "https://example.com/sub/robots.txt": (302, b"", "next.txt"),
+            "https://example.com/sub/next.txt": (200, REDIRECT_BODY),
+        }
+    )
+    policy = RobotsPolicy(fetch, USER_AGENT)
+    assert policy.allowed("https://example.com/private") is False
+    assert policy.allowed("https://example.com/ok") is True
+    assert fetch.calls[-1] == "https://example.com/sub/next.txt"
+
+
+@pytest.mark.parametrize("location", [None, "", "   ", "ftp://example.com/robots.txt", "http://"])
+def test_missing_or_invalid_location_disallows_all(location: str | None) -> None:
+    policy = RobotsPolicy(FakeRobots({ROBOTS_URL: (301, b"", location)}), USER_AGENT)
+    assert policy.allowed("https://example.com/ok") is False
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+def test_4xx_after_redirect_allows_all(status: int) -> None:
+    policy = RobotsPolicy(_chain(2, final=(status, b"")), USER_AGENT)
+    assert policy.allowed("https://example.com/private") is True
+
+
+@pytest.mark.parametrize("final", [(500, b""), OSError("reset")])
+def test_5xx_or_exception_after_redirect_disallows_all(final: object) -> None:
+    policy = RobotsPolicy(_chain(1, final=final), USER_AGENT)
+    assert policy.allowed("https://example.com/ok") is False
+
+
+def test_non_redirect_3xx_disallows_all() -> None:
+    policy = RobotsPolicy(FakeRobots({ROBOTS_URL: (304, b"", "/x")}), USER_AGENT)
+    assert policy.allowed("https://example.com/ok") is False
