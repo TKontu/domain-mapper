@@ -135,7 +135,16 @@ from core.config import Settings, load_settings
 from core.embed_store import EmbedStats, EmbedStoreError, embed_pending_chunks
 from core.entity_store import STATUS_UNSCREENED, Entity, EntityRef, iter_entities
 from core.eval_metrics import OVERALL, compute_metrics
-from core.eval_thresholds import Thresholds, ThresholdsError, check_gate, load_thresholds
+from core.eval_thresholds import (
+    UNGATED,
+    GateReportError,
+    Thresholds,
+    ThresholdsError,
+    check_gate,
+    gate_report,
+    load_gate_report,
+    load_thresholds,
+)
 from core.gold_set import GoldSetError, load_gold_set
 from core.ingest import IngestResult, NonSuccessStatusError, ingest_page
 from core.keyword_search import search_chunks
@@ -1121,6 +1130,7 @@ def run_eval(
     gold: Path | None,
     gate: bool = False,
     thresholds_path: Path | None = None,
+    gate_out: Path | None = None,
 ) -> None:
     """Score current assessments against a gold set (EV-02) and print EV-01 metrics.
 
@@ -1138,7 +1148,14 @@ def run_eval(
     ``thresholds_path`` or ``<scope>/eval/thresholds.yaml``; after the metric lines prints
     ``gate <criterion> pass|fail <reasons>`` (sorted) and ``gate overall pass|fail``, exiting 1
     on any failure. A missing engine file or a ``ThresholdsError`` exits 2.
+
+    EV-04 ``gate_out``: after the gate lines writes :func:`core.eval_thresholds.gate_report`
+    as JSON atomically (``<FILE>.tmp`` then rename), also on failure (exit stays 1).
+    ``gate_out`` without ``gate`` exits 2 before any setup or database read.
     """
+    if gate_out is not None and not gate:
+        typer.echo("error: --gate-out requires --gate", err=True)
+        raise typer.Exit(2)
     settings = _load(scope)
     pack = _load_pack_or_exit(scope)
     limits: Thresholds | None = None
@@ -1209,6 +1226,8 @@ def run_eval(
             typer.echo(f"gate {r.criterion_id} {suffix}")
         ok = all(r.passed for r in results)
         typer.echo(f"gate overall {'pass' if ok else 'fail'}")
+        if gate_out is not None:
+            _write_atomic(gate_out, json.dumps(gate_report(results), indent=2) + "\n")
         if not ok:
             raise typer.Exit(1)
 
@@ -2102,6 +2121,7 @@ def run_export(
     entity_id: int | None,
     criterion_id: str | None,
     rubric_version: str | None,
+    gate_report_path: Path | None = None,
 ) -> None:
     """Write the current view (AS-11) to ``out``; read-only, exit 2 on bad setup.
 
@@ -2112,11 +2132,23 @@ def run_export(
     so a failed export leaves no ``PATH``. Bad input or an unwritable output directory exits 2;
     an empty view writes an empty file (CSV: header only) and prints
     ``exported 0 assessments to PATH``.
+
+    EV-04 ``gate_report_path``: loaded (:func:`core.eval_thresholds.load_gate_report`) before
+    any output; each JSON object gains ``release`` and CSV a trailing ``release`` column (the
+    criterion's verdict, ``ungated`` when absent). A bad report exits 2 naming the file only.
+    Without it the output is unchanged.
     """
     if format not in EXPORT_FORMATS:
         known = ", ".join(EXPORT_FORMATS)
         typer.echo(f"error: unsupported format {format} (known: {known})", err=True)
         raise typer.Exit(2)
+    releases: Mapping[str, str] | None = None
+    if gate_report_path is not None:
+        try:
+            releases = load_gate_report(gate_report_path)
+        except GateReportError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
     settings = _load(scope)
     tmp = Path(f"{out}.tmp")
     count = 0
@@ -2129,7 +2161,10 @@ def run_export(
         with handle:
             writer = csv.writer(handle, lineterminator="\n") if format == "csv" else None
             if writer is not None:
-                writer.writerow(EXPORT_CSV_HEADER)
+                header = list(EXPORT_CSV_HEADER)
+                if releases is not None:
+                    header.append("release")
+                writer.writerow(header)
             engine = _open_engine(settings)
             try:
                 for row in iter_current_assessments(
@@ -2138,10 +2173,17 @@ def run_export(
                     criterion_id=criterion_id,
                     rubric_version=rubric_version,
                 ):
+                    label = None if releases is None else releases.get(row.criterion_id, UNGATED)
                     if writer is not None:
-                        writer.writerow(_export_csv_row(row))
+                        cells = _export_csv_row(row)
+                        if label is not None:
+                            cells.append(_csv_cell(label))
+                        writer.writerow(cells)
                     else:
-                        handle.write(json.dumps(_export_object(row), ensure_ascii=False) + "\n")
+                        obj = _export_object(row)
+                        if label is not None:
+                            obj["release"] = label
+                        handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
                     count += 1
             except SQLAlchemyError as exc:
                 _exit_database_unavailable(engine, None, exc)
@@ -2913,9 +2955,15 @@ def eval_(
         Path | None,
         typer.Option("--thresholds", help="Override file; default <scope>/eval/thresholds.yaml."),
     ] = None,
+    gate_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--gate-out", help="Write the per-criterion gate verdict JSON (needs --gate)."
+        ),
+    ] = None,
 ) -> None:
     """Print per-criterion and overall metrics of current assessments vs. gold labels."""
-    run_eval(scope, rubric_version, gold, gate, thresholds)
+    run_eval(scope, rubric_version, gold, gate, thresholds, gate_out)
 
 
 @app.command(name="attribute-set", help="Record one manual attribute value for an entity.")
@@ -3105,9 +3153,13 @@ def export(
     rubric_version: Annotated[
         str | None, typer.Option("--rubric-version", help="Rubric version.")
     ] = None,
+    gate_report_file: Annotated[
+        Path | None,
+        typer.Option("--gate-report", help="Gate report JSON; label rows release/experimental."),
+    ] = None,
 ) -> None:
     """Write one JSON Lines object or CSV row per current assessment to ``--out``."""
-    run_export(scope, format, out, entity_id, criterion, rubric_version)
+    run_export(scope, format, out, entity_id, criterion, rubric_version, gate_report_file)
 
 
 @app.command(name="validate", help="Validate a scope pack and print a summary.")

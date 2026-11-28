@@ -229,3 +229,32 @@ def test_gate_explicit_missing_override_exit_2(engine, tmp_path):
     result = run("--gold", path, "--gate", "--thresholds", str(tmp_path / "nope.yaml"))
     assert result.exit_code == 2
     assert "thresholds file not found" in result.output
+
+
+def test_gate_out_writes_report_and_exits_1(engine, tmp_path):
+    out = tmp_path / "gate.json"
+    result = run("--gold", _gate_fixture(engine, tmp_path), "--gate", "--gate-out", str(out))
+    assert result.exit_code == 1, result.output
+    assert result.output.splitlines()[-1] == "gate overall fail"
+    assert json.loads(out.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "overall": "fail",
+        "criteria": {
+            "iso17100": {"release": "release", "reasons": []},
+            "public_terms": {"release": "experimental", "reasons": ["accuracy<0.8", "kappa<0.6"]},
+        },
+    }
+    assert not Path(f"{out}.tmp").exists()
+
+
+def test_gate_out_without_gate_exits_2_before_db(tmp_path, monkeypatch):
+    for key in list(os.environ):
+        if key.startswith("DM_"):
+            monkeypatch.delenv(key)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DM_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/none")
+    out = tmp_path / "gate.json"
+    result = run("--gold", str(tmp_path / "g.jsonl"), "--gate-out", str(out))
+    assert result.exit_code == 2
+    assert "--gate-out requires --gate" in result.output
+    assert not out.exists()
