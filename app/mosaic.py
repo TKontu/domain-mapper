@@ -40,6 +40,16 @@ def _ratio(value: object) -> str:
     return "-" if not isinstance(value, int | float) else f"{float(value):.2f}"
 
 
+def _hidden_mark(count: int) -> tuple[str, str]:
+    """Return (attributes, suffix) marking a topic score that includes ``count`` hidden criteria."""
+    if not count:
+        return "", ""
+    return (
+        f' data-hidden-criteria="{count}" title="includes {count} hidden experimental criteria"',
+        _e(" *"),
+    )
+
+
 def _link(url: object) -> str:
     text = _e(url)
     if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
@@ -92,7 +102,8 @@ def render_mosaic(
     the output is unchanged from FE-01. ``heading`` (FE-03) adds an escaped ``<h2>`` line, e.g.
     the active segment filter; ``None`` leaves the output unchanged. ``release`` (FE-06) maps
     criterion id to its gate label: headers gain ``data-release`` (absent id: ``ungated``) and an
-    experimental header a visible marker. Criteria in ``hidden`` get no header and no cells.
+    experimental header a visible marker. Criteria in ``hidden`` get no header and no cells; a
+    topic score cell that includes hidden criteria is marked (FE-07), values are not recomputed.
     """
     scale = {s.id: (s.label, s.color) for s in pack.rubric.status_scale}
     cells: dict[tuple[str, str], Mapping[str, Any]] = {}
@@ -100,6 +111,7 @@ def render_mosaic(
         cells[(str(row.get("entity_id")), str(row.get("criterion_id")))] = row
     topics = pack.rubric.topics
     shown = {t.id: [c for c in t.criteria if c.id not in hidden] for t in topics}
+    marks = {t.id: _hidden_mark(len(t.criteria) - len(shown[t.id])) for t in topics}
     out = [
         "<!DOCTYPE html>",
         '<html><head><meta charset="utf-8">',
@@ -139,8 +151,10 @@ def render_mosaic(
         out.append(f'<tr data-entity="{_e(entity)}"><th>{head}</th>')
         for topic in topics:
             ts = by_topic.get(topic.id, {})
+            attrs, mark = marks[topic.id]
             out.append(
-                f'<td class="topic">{_ratio(ts.get("score"))} / {_ratio(ts.get("coverage"))}</td>'
+                f'<td class="topic"{attrs}>{_ratio(ts.get("score"))} / '
+                f"{_ratio(ts.get('coverage'))}{mark}</td>"
             )
             for c in shown[topic.id]:
                 out.append(_cell(cells.get((entity, c.id)), scale))
@@ -214,9 +228,11 @@ def render_entity_page(
     ]
     for topic in pack.rubric.topics:
         ts = by_topic.get(topic.id, {})
+        attrs, mark = _hidden_mark(sum(1 for c in topic.criteria if c.id in hidden))
         out.append(
-            f'<tr data-topic="{_e(topic.id)}"><th class="topic" colspan="6">{_e(topic.label)}: '
-            f"{_ratio(ts.get('score'))} / {_ratio(ts.get('coverage'))}</th></tr>"
+            f'<tr data-topic="{_e(topic.id)}"><th class="topic" colspan="6"{attrs}>'
+            f"{_e(topic.label)}: {_ratio(ts.get('score'))} / {_ratio(ts.get('coverage'))}"
+            f"{mark}</th></tr>"
         )
         for c in topic.criteria:
             if c.id in hidden:
