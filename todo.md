@@ -270,6 +270,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 ## Phase 5 — Genericity proof
 
 - [ ] Run `scopes/_example/` end to end with **zero changes to `core/`** — log every place it was tempted
+  - [ ] **GP-01** → [docs/items/GP-01.md](docs/items/GP-01.md) genericity test: core/ source carries no `_example` domain terms except an allowlisted, logged set (ratchet)
 - [ ] Refactor any leaked domain logic into scope pack or adapters
 - [x] "New scope" guide in `docs/`
   - [x] **NS-01** → [docs/items/NS-01.md](docs/items/NS-01.md) `docs/new-scope.md`: empty dir → pack that `landscape validate` accepts; a test keeps its minimal example valid — done 2026-11-28: merged PR #358 at 1b5271a (main 12cf18d, round 174/A1; planner review APPROVE; planner gate 1839 passed, 5 skipped at head; CI pass); seen: tests/test_new_scope_guide.py builds the guide's minimal pack and `landscape validate` exits 0 in that gate run; residuals: domain-word check is a short list, optional-file field names checked by hand
