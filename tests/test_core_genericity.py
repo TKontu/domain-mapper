@@ -1,4 +1,4 @@
-"""GP-01/GP-02: core/ and app/ carry no `_example` domain words unless allowlisted (ratchet)."""
+"""GP-01/GP-02/GP-03: core/, app/ and scripts/ carry no `_example` domain words unless allowlisted (ratchet)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "scopes" / "_example"
 ALLOWLIST = ROOT / "tests" / "fixtures" / "core_genericity_allowlist.toml"
 LOG = ROOT / "docs" / "genericity-log.md"
-SCANNED = ("core", "app")
+SCANNED = ("core", "app", "scripts")
 VERDICTS = {"generic-keep", "leaked-follow-up"}
 
 
@@ -118,6 +118,13 @@ class NegativeCaseTest(unittest.TestCase):
         (root / "app" / "fake.py").write_text('KIND = "freelancer_network"\n')
         problems = _problems(_scan(root, _example_terms()), set())
         self.assertEqual(problems, ["unlisted hit: app/fake.py -> 'freelancer_network'"])
+
+    def test_unlisted_hit_in_scripts_fails(self) -> None:
+        root = self._tree("x = 1\n")
+        (root / "scripts").mkdir()
+        (root / "scripts" / "fake.py").write_text('PACK = "iso17100"\n')
+        problems = _problems(_scan(root, _example_terms()), set())
+        self.assertEqual(problems, ["unlisted hit: scripts/fake.py -> 'iso17100'"])
 
 
 if __name__ == "__main__":

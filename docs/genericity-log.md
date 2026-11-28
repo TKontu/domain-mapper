@@ -16,5 +16,13 @@ Verdicts: `generic-keep` (a generic word that merely coincides with an `_example
 | `core/presence_extract.py` | `terms` | generic-keep | `presence_terms` schema field |
 | `core/retrieve.py` | `terms` | generic-keep | docstring on tokenised query terms |
 | `core/scope_pack.py` | `terms` | generic-keep | vocabulary / presence terms schema fields |
+| `scripts/example_m1_run.py` | `agency` | generic-keep | offline harness driving the _example pack; uses its segment/vocabulary ids |
+| `scripts/example_m1_run.py` | `freelancer_network` | generic-keep | offline harness driving the _example pack; uses its segment id |
+| `scripts/example_m1_run.py` | `iso17100` | generic-keep | offline harness driving the _example pack; uses its criterion id |
+| `scripts/example_m1_run.py` | `public_terms` | generic-keep | offline harness driving the _example pack; uses its criterion id |
+| `scripts/example_m1_run.py` | `terms` | generic-keep | offline harness driving the _example pack; uses its topic id |
+| `scripts/live_m1_run.py` | `agency` | generic-keep | neutral seed chunk text for the live smoke run; not domain logic |
+| `scripts/live_m1_run.py` | `terms` | generic-keep | neutral seed chunk text (terms of service) for the live smoke run; not domain logic |
+| `scripts/live_m1_run.py` | `translation agency` | generic-keep | neutral seed chunk text for the live smoke run; not domain logic |
 
-No leaked domain logic found at round 175 (core/) or round 176 (app/).
+No leaked domain logic found at round 175 (core/) or round 176 (app/) or round 177 (scripts/).

@@ -30,3 +30,51 @@ file = "app/cli.py"
 term = "terms"
 verdict = "generic-keep"
 reason = "local name for serialised scope presence_terms; generic word, coincides with the _example topic id"
+
+[[hit]]
+file = "scripts/example_m1_run.py"
+term = "agency"
+verdict = "generic-keep"
+reason = "offline harness driving the _example pack; uses its segment/vocabulary ids"
+
+[[hit]]
+file = "scripts/example_m1_run.py"
+term = "freelancer_network"
+verdict = "generic-keep"
+reason = "offline harness driving the _example pack; uses its segment id"
+
+[[hit]]
+file = "scripts/example_m1_run.py"
+term = "iso17100"
+verdict = "generic-keep"
+reason = "offline harness driving the _example pack; uses its criterion id"
+
+[[hit]]
+file = "scripts/example_m1_run.py"
+term = "public_terms"
+verdict = "generic-keep"
+reason = "offline harness driving the _example pack; uses its criterion id"
+
+[[hit]]
+file = "scripts/example_m1_run.py"
+term = "terms"
+verdict = "generic-keep"
+reason = "offline harness driving the _example pack; uses its topic id"
+
+[[hit]]
+file = "scripts/live_m1_run.py"
+term = "agency"
+verdict = "generic-keep"
+reason = "neutral seed chunk text for the live smoke run; not domain logic"
+
+[[hit]]
+file = "scripts/live_m1_run.py"
+term = "terms"
+verdict = "generic-keep"
+reason = "neutral seed chunk text (\"terms of service\") for the live smoke run; not domain logic"
+
+[[hit]]
+file = "scripts/live_m1_run.py"
+term = "translation agency"
+verdict = "generic-keep"
+reason = "neutral seed chunk text for the live smoke run; not domain logic"
