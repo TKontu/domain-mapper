@@ -208,6 +208,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 ## Phase 2 — Quality & human-in-the-loop
 
 - [ ] Eval harness: per-criterion accuracy, Cohen's κ, silent-rate, false-"strong" rate; discovery recall vs. a reference list
+  - [ ] **EV-01** → [docs/items/EV-01.md](docs/items/EV-01.md) pure per-criterion metrics module (accuracy, κ, silent-rate, false-strong rate)
 - [ ] `eval/thresholds.yaml` (overridable per scope) + release gate in `publish`
 - [ ] Review UI: queue ordered by priority (disagreement × impact), accept/override with note, keyboard-driven
 - [ ] Feed review decisions back as few-shot examples / rubric clarifications (versioned)

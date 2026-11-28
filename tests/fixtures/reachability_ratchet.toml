@@ -10,5 +10,6 @@
 "adapters/registers.py::ProfessionalRegister" = "unwired by design until AD-04: register/tender/publication interfaces and in-memory fakes await per-country implementations used by Discover/Enrich/Claim verification"
 "adapters/registers.py::PublicationSource" = "unwired by design until AD-04: register/tender/publication interfaces and in-memory fakes await per-country implementations used by Discover/Enrich/Claim verification"
 "adapters/registers.py::TenderSource" = "unwired by design until AD-04: register/tender/publication interfaces and in-memory fakes await per-country implementations used by Discover/Enrich/Claim verification"
+"core/eval_metrics.py::compute_metrics" = "unwired by design until EV-02: eval-harness CLI / gold-set loader wires per-criterion metrics"
 "core/grounding.py::is_negation_quote" = "unwired by design until GR-01: precomputed-map, negation and fuzzy-verify grounding helpers have no stage caller yet"
 "core/grounding.py::verify_quote_in_source" = "unwired by design until GR-01: precomputed-map, negation and fuzzy-verify grounding helpers have no stage caller yet"
