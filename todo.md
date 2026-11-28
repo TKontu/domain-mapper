@@ -272,6 +272,7 @@ The private scope repo is already published (initial commit `d5714f3`).
 - [ ] Run `scopes/_example/` end to end with **zero changes to `core/`** — log every place it was tempted
 - [ ] Refactor any leaked domain logic into scope pack or adapters
 - [ ] "New scope" guide in `docs/`
+  - [ ] **NS-01** → [docs/items/NS-01.md](docs/items/NS-01.md) `docs/new-scope.md`: empty dir → pack that `landscape validate` accepts; a test keeps its minimal example valid — assigned round 174/A1
 
 **Milestone M5:** two scopes running from the same engine.
 
