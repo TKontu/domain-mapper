@@ -153,6 +153,7 @@ from core.eval_thresholds import (
     load_gate_report,
     load_thresholds,
 )
+from core.gold_import import import_labels
 from core.gold_pages import write_gold_pages
 from core.gold_pick import (
     CLEAN_PURPOSE,
@@ -3587,6 +3588,27 @@ def gold_pages(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from None
     typer.echo(f"wrote {len(registry)} pages to {root}")
+
+
+@app.command(name="gold-import", help="Import GS-02 review answers as gold labels (GS-04).")
+def gold_import(
+    scope: ScopeOpt,
+    root: Annotated[Path, typer.Option("--root", help="GS-02 review root with answers.json.")],
+    cells: Annotated[Path, typer.Option("--cells", help="GS-01 cells.jsonl (blind file).")],
+    out: Annotated[Path, typer.Option("--out", help="Directory for labels.jsonl + notes.")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing labels.jsonl.")
+    ] = False,
+) -> None:
+    """Write <out>/labels.jsonl (core.gold_set format) and <out>/label_notes.jsonl."""
+    pack = _load_pack_or_exit(scope)
+    statuses = {s.id for s in pack.rubric.status_scale}
+    try:
+        summary = import_labels(root, cells, out, statuses, force=force)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"imported {summary.imported} unanswered {summary.unanswered} to {out}")
 
 
 def run_snapshot_diff(entity_id: int, base_run_id: int | None, head_run_id: int | None) -> None:
