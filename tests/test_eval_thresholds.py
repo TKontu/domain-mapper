@@ -1,13 +1,22 @@
-"""Tests for ``core.eval_thresholds`` (EV-03); tmp_path YAML only."""
+"""Tests for ``core.eval_thresholds`` (EV-03, EV-04 gate report); tmp_path YAML only."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from core.eval_metrics import OVERALL, CriterionMetrics
-from core.eval_thresholds import ThresholdsError, check_gate, load_thresholds
+from core.eval_thresholds import (
+    GateReportError,
+    GateResult,
+    ThresholdsError,
+    check_gate,
+    gate_report,
+    load_gate_report,
+    load_thresholds,
+)
 
 REPO_ENGINE = Path(__file__).resolve().parent.parent / "eval" / "thresholds.yaml"
 
@@ -153,3 +162,65 @@ def test_omitted_key_means_no_check(tmp_path):
     t = load_thresholds(engine, None)
     (r,) = check_gate([CriterionMetrics("c", 0, None, None, None, None)], t)
     assert r.passed
+
+
+# --- EV-04: gate report ---------------------------------------------------------------------
+
+def _results():
+    return [
+        GateResult("b", False, ("n<10", "accuracy<0.8")),
+        GateResult("a", True, ()),
+    ]
+
+
+def test_gate_report_shape_sorted_and_round_trip(tmp_path):
+    report = gate_report(_results())
+    assert report == {
+        "version": 1,
+        "overall": "fail",
+        "criteria": {
+            "a": {"release": "release", "reasons": []},
+            "b": {"release": "experimental", "reasons": ["n<10", "accuracy<0.8"]},
+        },
+    }
+    assert list(report["criteria"]) == ["a", "b"]
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    assert load_gate_report(path) == {"a": "release", "b": "experimental"}
+
+
+def test_gate_report_all_pass_overall_pass():
+    assert gate_report([GateResult("a", True, ())])["overall"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not json",
+        "[]",
+        '{"version": 2, "overall": "pass", "criteria": {}}',
+        '{"version": 1, "overall": "maybe", "criteria": {}}',
+        '{"version": 1, "overall": "pass", "criteria": []}',
+        '{"version": 1, "overall": "pass", "criteria": {"a": "release"}}',
+        '{"version": 1, "overall": "pass", "criteria": {"a": {"release": "secret-x", "reasons": []}}}',
+        '{"version": 1, "overall": "pass", "criteria": {"a": {"release": "release", "reasons": "x"}}}',
+        '{"version": 1, "overall": "pass", "criteria": {"a": {"release": "release", "reasons": [1]}}}',
+        '{"version": true, "overall": "pass", "criteria": {}}',
+    ],
+)
+def test_load_gate_report_errors_name_file_not_content(tmp_path, text):
+    path = tmp_path / "r.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(GateReportError) as exc:
+        load_gate_report(path)
+    assert str(path) in str(exc.value)
+    assert "secret-x" not in str(exc.value)
+
+
+def test_load_gate_report_missing_and_bad_encoding(tmp_path):
+    with pytest.raises(GateReportError):
+        load_gate_report(tmp_path / "none.json")
+    bad = tmp_path / "b.json"
+    bad.write_bytes(b"\xff\xfe\x00")
+    with pytest.raises(GateReportError):
+        load_gate_report(bad)
