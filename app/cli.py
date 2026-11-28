@@ -153,6 +153,7 @@ from core.eval_thresholds import (
     load_gate_report,
     load_thresholds,
 )
+from core.gold_pages import write_gold_pages
 from core.gold_pick import (
     CLEAN_PURPOSE,
     CLEAN_SCHEMA,
@@ -3570,6 +3571,22 @@ def gold_pick(
 ) -> None:
     """Write cells.jsonl (blind) and cells.key.jsonl (model status) for labelling."""
     run_gold_pick(scope, db, out, entities, per_entity, clean, backend)
+
+
+@app.command(name="gold-pages", help="Write blind review pages for a gold-set cells file (GS-03).")
+def gold_pages(
+    scope: ScopeOpt,
+    cells: Annotated[Path, typer.Option("--cells", help="GS-01 cells.jsonl (blind file).")],
+    root: Annotated[Path, typer.Option("--root", help="GS-02 review-server root to write.")],
+) -> None:
+    """Write pages/<cell_id>.html, pages.json and INSTRUCTIONS.md; never reads the key file."""
+    pack = _load_pack_or_exit(scope)
+    try:
+        registry = write_gold_pages(pack, cells, root)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"wrote {len(registry)} pages to {root}")
 
 
 def run_snapshot_diff(entity_id: int, base_run_id: int | None, head_run_id: int | None) -> None:
