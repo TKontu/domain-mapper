@@ -7,12 +7,16 @@ The only merge path for planners: raw `gh pr merge` stays denied in .claude/sett
 It merges only when the PR is open, not a draft, mergeable, targets the default branch, still
 has exactly the reviewed head, and touches no operator-owned path. GitHub re-checks the head
 at merge time (--match-head-commit), and the merge is confirmed by re-reading the PR.
-Review and the gate are the planner's /review-round and /merge-round duties; this script cannot
-see them, nor whether a PR decides an [H] item.
+Local tests decide (MG-01): it also refuses unless the round ledger (.agent-runs/, written by
+scripts/round.py) holds a result for exactly the reviewed head whose checks all passed and together
+cover pytest, ruff check, ruff format --check and mypy. A CI check that concluded failed also
+refuses; pending, in-progress or absent CI does not block. Review itself stays the planner's
+/review-round duty; this script cannot see it, nor whether a PR decides an [H] item.
 """
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import re
 import subprocess
@@ -30,6 +34,10 @@ OPERATOR_PATHS = (
     ".claude/*",
     "scripts/merge_guard.py",
 )
+LEDGER = ROOT / ".agent-runs"
+# Gate components a recorded result must cover, matched on the joined command text.
+GATE_COMPONENTS = ("pytest", "ruff check", "ruff format --check", "mypy")
+FAILED_CI = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 Run = Callable[[Sequence[str]], tuple[int, str]]
 
 
@@ -47,7 +55,7 @@ def default_branch() -> str:
 
 
 def view(pr: int, run: Run) -> dict:
-    fields = "state,isDraft,mergeable,headRefOid,baseRefName,files"
+    fields = "state,isDraft,mergeable,headRefOid,baseRefName,files,statusCheckRollup"
     rc, out = run(["gh", "pr", "view", str(pr), "--json", fields])
     if rc:
         raise RuntimeError(f"gh pr view {pr} failed: {out[:300]}")
@@ -76,12 +84,81 @@ def problems(record: dict, head: str, branch: str) -> list[str]:
     return found
 
 
-def guard(pr: int, head: str, *, run: Run = _run, branch: str | None = None) -> int:
+def _round_module():
+    spec = importlib.util.spec_from_file_location("round_ledger", ROOT / "scripts" / "round.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _ledger_results(ledger: Path) -> list[dict]:
+    """Every result recorded in any round manifest under the ledger root."""
+    ledger_io = _round_module()
+    found = []
+    for manifest_path in sorted(ledger.glob("*/round.json")):
+        root = manifest_path.parent
+        try:
+            manifest = ledger_io.read(manifest_path)
+            for assignment in (manifest.get("assignments") or {}).values():
+                for relative in assignment.get("results") or []:
+                    found.append(ledger_io.read(ledger_io.inside(root, relative)))
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+    return found
+
+
+def _result_gaps(result: dict) -> list[str]:
+    checks = result.get("checks") or []
+    gaps = [
+        f"check {' '.join(c.get('command') or [])!r} is {c.get('status')}"
+        for c in checks
+        if c.get("status") != "passed"
+    ]
+    text = " ".join(" ".join(c.get("command") or []) for c in checks)
+    text = " ".join(text.split())
+    gaps += [f"missing {name}" for name in GATE_COMPONENTS if name not in text]
+    return gaps
+
+
+def _ledger_problems(head: str, ledger: Path) -> list[str]:
+    """A passing complete result at the exact head suffices, even if others at it did not pass."""
+    at_head = [r for r in _ledger_results(ledger) if r.get("head_sha") == head]
+    if not at_head:
+        return [f"no local-gate result recorded in {ledger} for head {head}"]
+    gaps = [_result_gaps(result) for result in at_head]
+    if any(not gap for gap in gaps):
+        return []
+    return [f"no passing complete local-gate result at {head}: " + "; ".join(gap) for gap in gaps]
+
+
+def _ci_problems(record: dict) -> list[str]:
+    failed = []
+    for entry in record.get("statusCheckRollup") or []:
+        if entry.get("__typename") == "StatusContext" or "state" in entry:
+            outcome = (entry.get("state") or "").upper()
+            name = entry.get("context")
+            bad = outcome in {"FAILURE", "ERROR"}
+        else:
+            outcome = (entry.get("conclusion") or "").upper()
+            name = entry.get("name")
+            bad = outcome in FAILED_CI
+        if bad:
+            failed.append(f"CI check {name} concluded {outcome}")
+    return failed
+
+
+def guard(
+    pr: int, head: str, *, run: Run = _run, branch: str | None = None, ledger: Path | None = None
+) -> int:
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         print("refusing: --head must be the full 40-character reviewed SHA", file=sys.stderr)
         return 2
     branch = branch or default_branch()
-    found = problems(view(pr, run), head, branch)
+    record = view(pr, run)
+    found = problems(record, head, branch)
+    found += _ledger_problems(head, ledger or LEDGER)
+    found += _ci_problems(record)
     if found:
         for problem in found:
             print(f"refusing PR #{pr}: {problem}", file=sys.stderr)
