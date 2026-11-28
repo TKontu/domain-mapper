@@ -888,7 +888,11 @@ def dry_run(cfg: Config) -> int:
     print(f"root={ROOT}\nstate={STATE}\ntranscripts={PROJECT_LOGS} exists={PROJECT_LOGS.is_dir()}")
     print(f"config={dataclasses.asdict(cfg)}")
     print(f"claude args={PERMISSION_ARGS}")
-    agents = Herdr().agents()
+    try:
+        agents = Herdr().agents()
+    except RuntimeError as exc:  # no herdr binary (e.g. CI): dry-run stays read-only and exits 0
+        print(f"herdr unavailable: {exc}")
+        agents = []
     print("named agents:", [a.get("name") for a in agents if a.get("name")])
     holder = next((a for a in agents if a.get("name") == AGENT), None)
     print(f"names={NAMES}")
