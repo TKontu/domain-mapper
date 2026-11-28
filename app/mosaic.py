@@ -16,6 +16,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from html import escape
 from typing import Any
 
+from core.eval_thresholds import UNGATED
 from core.scope_pack import ScopePack
 
 _STYLE = """
@@ -82,18 +83,23 @@ def render_mosaic(
     export_lines: Iterable[Mapping[str, Any]],
     entity_href: Callable[[str], str] | None = None,
     heading: str | None = None,
+    release: Mapping[str, str] | None = None,
+    hidden: Collection[str] = (),
 ) -> str:
     """Return the mosaic page as one HTML string; production caller is ``landscape mosaic``.
 
     ``entity_href`` (FE-02) maps an entity id to a relative link for its row header; without it
     the output is unchanged from FE-01. ``heading`` (FE-03) adds an escaped ``<h2>`` line, e.g.
-    the active segment filter; ``None`` leaves the output unchanged.
+    the active segment filter; ``None`` leaves the output unchanged. ``release`` (FE-06) maps
+    criterion id to its gate label: headers gain ``data-release`` (absent id: ``ungated``) and an
+    experimental header a visible marker. Criteria in ``hidden`` get no header and no cells.
     """
     scale = {s.id: (s.label, s.color) for s in pack.rubric.status_scale}
     cells: dict[tuple[str, str], Mapping[str, Any]] = {}
     for row in export_lines:
         cells[(str(row.get("entity_id")), str(row.get("criterion_id")))] = row
     topics = pack.rubric.topics
+    shown = {t.id: [c for c in t.criteria if c.id not in hidden] for t in topics}
     out = [
         "<!DOCTYPE html>",
         '<html><head><meta charset="utf-8">',
@@ -105,14 +111,24 @@ def render_mosaic(
     ]
     for topic in topics:
         out.append(
-            f'<th class="topic" colspan="{len(topic.criteria) + 1}"'
+            f'<th class="topic" colspan="{len(shown[topic.id]) + 1}"'
             f' data-topic="{_e(topic.id)}">{_e(topic.label)}</th>'
         )
     out.append("</tr><tr>")
     for topic in topics:
         out.append('<th class="topic">score / coverage</th>')
-        for c in topic.criteria:
-            out.append(f'<th data-criterion="{_e(c.id)}" title="{_e(c.question)}">{_e(c.id)}</th>')
+        for c in shown[topic.id]:
+            if release is None:
+                out.append(
+                    f'<th data-criterion="{_e(c.id)}" title="{_e(c.question)}">{_e(c.id)}</th>'
+                )
+                continue
+            label = release.get(c.id, UNGATED)
+            mark = " (experimental)" if label == "experimental" else ""
+            out.append(
+                f'<th data-criterion="{_e(c.id)}" data-release="{_e(label)}"'
+                f' title="{_e(c.question)}">{_e(c.id)}{_e(mark)}</th>'
+            )
     out.append("</tr></thead><tbody>")
     for line in scores_lines:
         entity = str(line.get("entity_id"))
@@ -126,7 +142,7 @@ def render_mosaic(
             out.append(
                 f'<td class="topic">{_ratio(ts.get("score"))} / {_ratio(ts.get("coverage"))}</td>'
             )
-            for c in topic.criteria:
+            for c in shown[topic.id]:
                 out.append(_cell(cells.get((entity, c.id)), scale))
         out.append("</tr>")
     out.append("</tbody></table></body></html>\n")
@@ -175,11 +191,13 @@ def render_entity_page(
     scores_line: Mapping[str, Any],
     cells_for_entity: Mapping[str, Mapping[str, Any]],
     mosaic_href: str,
+    hidden: Collection[str] = (),
 ) -> str:
     """Return one entity's page (FE-02): topic score/coverage, then every criterion in rubric order.
 
     ``cells_for_entity`` maps criterion id to its export line; a criterion without one is shown as
     a "not assessed" row. ``mosaic_href`` is the relative link back to the mosaic page.
+    Criteria in ``hidden`` (FE-06 ``--hide-experimental``) are skipped.
     """
     scale = {s.id: (s.label, s.color) for s in pack.rubric.status_scale}
     entity = str(scores_line.get("entity_id"))
@@ -201,6 +219,8 @@ def render_entity_page(
             f"{_ratio(ts.get('score'))} / {_ratio(ts.get('coverage'))}</th></tr>"
         )
         for c in topic.criteria:
+            if c.id in hidden:
+                continue
             row = cells_for_entity.get(c.id)
             first = f'<td>{_e(topic.id)}</td><td title="{_e(c.question)}">{_e(c.id)}</td>'
             if row is None:
