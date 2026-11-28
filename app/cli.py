@@ -148,6 +148,8 @@ from core.presence_store import (
     presences_many,
     record_presence,
 )
+from core.recall import MAX_LIMIT as RECALL_MAX_LIMIT
+from core.recall import RecallError, recall_candidates, validate_request
 from core.resolve import ApplySummary, apply_resolution, group_candidates
 from core.retrieve import _with_texts, retrieve_evidence
 from core.runs import (
@@ -3079,6 +3081,79 @@ def web_search(
         typer.echo(f"error: database unavailable ({type(exc).__name__})", err=True)
         raise typer.Exit(2) from None
     typer.echo(f"saved {saved} candidates")
+
+
+def _make_recall_llm(settings: Settings, db: DbTarget) -> LLM:
+    """Build the model used for LLM recall (DS-03); the test seam for a fake adapter."""
+    return build_llm(
+        settings,
+        "local",
+        db=db,
+        budget_usd=settings.llm_budget_usd,
+        timeout=settings.llm_timeout_s,
+        max_tokens=settings.local_max_tokens,
+    )
+
+
+def run_recall(scope: Path, segment: str, country: str, limit: int, save: bool) -> None:
+    """One ``recall`` LLM call; print ``name\turl`` lines; with ``save`` store candidate rows.
+
+    Exits 2 on bad input/setup before any LLM call, 1 on invalid model output or a failed call
+    (nothing saved). The call is logged under its own ``recall`` run row, like ``screen``.
+    """
+    settings = _load(scope)
+    pack = _load_pack_or_exit(scope)
+    try:
+        validate_request(pack, segment=segment, country=country, limit=limit)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from None
+
+    engine = _open_engine(settings)
+    run_id: int | None = None
+    saved: int | None = None
+    try:
+        try:
+            llm = _make_recall_llm(settings, engine)
+        except (ValueError, LlmError) as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from None
+        run_id = _open_run(engine, "recall")
+        try:
+            rows = recall_candidates(
+                llm, pack, segment=segment, country=country, limit=limit, run_id=run_id
+            )
+        except (RecallError, LlmError) as exc:  # messages never carry model output
+            _close_run(engine, run_id, FAILED)
+            typer.echo(f"error {type(exc).__name__}: {exc}", err=True)
+            raise typer.Exit(1) from None
+        for row in rows:
+            typer.echo(f"{row.name}\t{row.url}")
+        saved = record_candidates(engine, rows) if save else None
+        _close_run(engine, run_id, FINISHED)
+    except SQLAlchemyError as exc:
+        _exit_database_unavailable(engine, run_id, exc)
+    finally:
+        engine.dispose()
+    if saved is not None:
+        typer.echo(f"saved {saved} candidates")
+
+
+@app.command(name="recall", help="Ask the LLM for candidate providers (unverified channel).")
+def recall(
+    scope: ScopeOpt,
+    segment: Annotated[str, typer.Option("--segment", help="Scope segment id.")],
+    country: Annotated[str, typer.Option("--country", help="Country code in the scope.")],
+    limit: Annotated[int, typer.Option("--limit", help="Max candidates (1-100).")] = 20,
+    save: Annotated[
+        bool, typer.Option("--save", help="Persist results as candidate rows.")
+    ] = False,
+) -> None:
+    """Print one ``name\turl`` line per recalled candidate (DS-03)."""
+    if not 1 <= limit <= RECALL_MAX_LIMIT:
+        typer.echo(f"error: --limit must be between 1 and {RECALL_MAX_LIMIT}", err=True)
+        raise typer.Exit(2)
+    run_recall(scope, segment, country, limit, save)
 
 
 def _cost_line(row: CostSummaryRow) -> str:
