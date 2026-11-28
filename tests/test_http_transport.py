@@ -88,7 +88,7 @@ def test_post_rejects_non_http() -> None:
 
 
 def test_robots_get_caps_body_and_sends_user_agent(base: str) -> None:
-    status, body = get_robots(base + "/robots.txt", user_agent="ua-test", timeout_s=5)
+    status, body, _ = get_robots(base + "/robots.txt", user_agent="ua-test", timeout_s=5)
     assert status == 200
     assert len(body) == 512 * 1024
     assert _Handler.seen == {"ua": "ua-test"}
@@ -107,5 +107,15 @@ def test_post_does_not_follow_redirect(base: str) -> None:
 
 def test_robots_get_does_not_follow_redirect(base: str) -> None:
     _Handler.seen = {}
-    assert get_robots(base + "/moved/robots.txt", user_agent="ua", timeout_s=5) == (302, b"")
+    # CR-19: the 3xx surfaces with its Location so RobotsPolicy follows it hop by hop.
+    assert get_robots(base + "/moved/robots.txt", user_agent="ua", timeout_s=5) == (
+        302,
+        b"",
+        "/target",
+    )
     assert "followed" not in _Handler.seen
+
+
+def test_robots_get_non_redirect_has_no_location(base: str) -> None:
+    assert get_robots(base + "/missing/robots.txt", user_agent="ua", timeout_s=5)[2] is None
+    assert get_robots(base + "/robots.txt", user_agent="ua", timeout_s=5)[2] is None

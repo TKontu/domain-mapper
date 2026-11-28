@@ -7,17 +7,24 @@ fetch itself stays behind :mod:`adapters.fetcher`.
 
 :class:`RobotsPolicy` answers ``allowed(url)`` and reports the site's
 ``Crawl-delay``. It performs no I/O: the caller injects
-``fetch_robots(url) -> (status, body)``, so the same policy drives the real
-fetcher and the offline tests. Robots handling is deliberately conservative:
+``fetch_robots(url) -> (status, body)`` or ``(status, body, location)``, so
+the same policy drives the real fetcher and the offline tests. Status handling
+follows RFC 9309 §2.3.1 (CR-19):
 
 * one parse is cached per scheme + host + port for the life of the policy
   object (one crawl run); the cache is never evicted (residual: it grows by one
   entry per host crawled);
-* ``404``/``410`` mean "no robots.txt" → everything on that host is allowed;
-* ``401``/``403`` → nothing on that host is allowed;
-* any other non-2xx status (5xx, redirects, other 4xx, …) and any exception
-  raised by ``fetch_robots`` → nothing on that host is allowed, and that
-  decision is cached like a parse;
+* a ``301``/``302``/``303``/``307``/``308`` is followed to its ``location``
+  (relative values resolve against the current robots URL), each hop one
+  ``fetch_robots`` call, for at most :data:`MAX_ROBOTS_REDIRECTS` hops; the final
+  answer applies to the *original* origin (the cache key never changes). More
+  hops, a loop, a missing/invalid location or a non-http(s) target → nothing on
+  that host is allowed;
+* any ``4xx`` (incl. ``401``/``403``/``404``/``410``) means "no robots.txt" →
+  everything on that host is allowed;
+* ``5xx``, any other status and any exception raised by ``fetch_robots`` →
+  nothing on that host is allowed (no retry), and that decision is cached like a
+  parse;
 * at most :data:`MAX_ROBOTS_BYTES` of the body is decoded and parsed; rules
   beyond the cap are ignored rather than buffered. Invalid UTF-8 is replaced,
   never raised.
@@ -47,7 +54,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Final
-from urllib.parse import SplitResult, unquote, urlsplit
+from urllib.parse import SplitResult, unquote, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 #: Largest robots.txt body that is decoded and parsed (512 KiB).
@@ -57,11 +64,14 @@ MAX_ROBOTS_BYTES: Final = 512 * 1024
 ROBOTS_PATH: Final = "/robots.txt"
 
 _HTTP_SCHEMES: Final = frozenset({"http", "https"})
-_ALLOW_ALL_STATUSES: Final = frozenset({404, 410})
-_DISALLOW_ALL_STATUSES: Final = frozenset({401, 403})
+_REDIRECT_STATUSES: Final = frozenset({301, 302, 303, 307, 308})
 
-#: ``fetch_robots``: ``(robots_url) -> (status, body)``; may raise on failure.
-RobotsFetch = Callable[[str], tuple[int, bytes]]
+#: Most robots.txt redirects followed before the host counts as unreachable (RFC 9309).
+MAX_ROBOTS_REDIRECTS: Final = 5
+
+#: ``fetch_robots``: ``(robots_url) -> (status, body[, location])``; may raise on failure.
+#: ``location`` is the raw ``Location`` header of a redirect, ``None`` when absent.
+RobotsFetch = Callable[[str], tuple[int, bytes] | tuple[int, bytes, str | None]]
 
 
 class CrawlPolicyError(ValueError):
@@ -288,15 +298,29 @@ class RobotsPolicy:
         return rules
 
     def _load(self, robots_url: str) -> _HostRules:
-        try:
-            status, body = self._fetch_robots(robots_url)
-        except Exception:  # noqa: BLE001 - any transport failure is "disallow"
-            return _disallow_all()
-        if isinstance(status, bool) or not isinstance(status, int):
-            return _disallow_all()
-        if status in _ALLOW_ALL_STATUSES:
+        seen = {robots_url}
+        current = robots_url
+        for _hop in range(MAX_ROBOTS_REDIRECTS + 1):
+            try:
+                response = self._fetch_robots(current)
+                status, body = response[0], response[1]
+                location = response[2] if len(response) > 2 else None
+            except Exception:  # noqa: BLE001 - any transport failure is "disallow"
+                return _disallow_all()
+            if isinstance(status, bool) or not isinstance(status, int):
+                return _disallow_all()
+            if status not in _REDIRECT_STATUSES:
+                break
+            target = _redirect_target(current, location)
+            if target is None or target in seen:
+                return _disallow_all()
+            seen.add(target)
+            current = target
+        else:
+            return _disallow_all()  # more than MAX_ROBOTS_REDIRECTS hops
+        if 400 <= status < 500:
             return _allow_all()
-        if status in _DISALLOW_ALL_STATUSES or not 200 <= status < 300:
+        if not 200 <= status < 300:
             return _disallow_all()
         try:
             lines = _robots_text(body).splitlines()
@@ -306,6 +330,18 @@ class RobotsPolicy:
         except Exception:  # noqa: BLE001 - an unparsable body is "disallow"
             return _disallow_all()
         return _HostRules(parser=parser, delays=delays)
+
+
+def _redirect_target(current: str, location: object) -> str | None:
+    """The absolute http(s) URL ``location`` points to from ``current``, or None."""
+    if not isinstance(location, str) or not location.strip():
+        return None
+    try:
+        target = urljoin(current, location.strip())
+        _split_http(target)
+    except (CrawlPolicyError, ValueError):
+        return None
+    return target
 
 
 def _check_interval(value: object, name: str) -> float:

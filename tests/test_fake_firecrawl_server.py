@@ -29,9 +29,14 @@ def start() -> Iterator[StartServer]:
     servers: list[FakeFirecrawlServer] = []
 
     def _start(
-        *, fail_first: int | None = None, crawl_delay: float | None = None
+        *,
+        fail_first: int | None = None,
+        crawl_delay: float | None = None,
+        robots_redirect: str | None = None,
     ) -> tuple[FakeFirecrawlServer, str]:
-        server = make_server(port=0, fail_first=fail_first, crawl_delay=crawl_delay)
+        server = make_server(
+            port=0, fail_first=fail_first, crawl_delay=crawl_delay, robots_redirect=robots_redirect
+        )
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
         return server, f"http://127.0.0.1:{server.server_address[1]}"
@@ -55,7 +60,7 @@ def fetcher(base: str) -> FirecrawlFetcher:
 
 def test_robots_txt_allows_everything(start: StartServer) -> None:
     _, base = start()
-    assert get_robots(base + "/robots.txt", user_agent="test-agent", timeout_s=5) == (200, ROBOTS)
+    assert get_robots(base + "/robots.txt", user_agent="test-agent", timeout_s=5) == (200, ROBOTS, None)
 
 
 def test_scrape_root_returns_heading_and_same_host_links(start: StartServer) -> None:
@@ -176,7 +181,7 @@ def _robots_policy(base: str) -> RobotsPolicy:
 
 def test_crawl_delay_is_announced_and_parsed_as_a_decimal(start: StartServer) -> None:
     _, base = start(crawl_delay=1.5)
-    status, body = get_robots(base + "/robots.txt", user_agent="test-agent", timeout_s=5)
+    status, body, _ = get_robots(base + "/robots.txt", user_agent="test-agent", timeout_s=5)
     assert status == 200
     assert body == b"User-agent: *\nCrawl-delay: 1.5\nAllow: /\n"
     policy = _robots_policy(base)
@@ -200,3 +205,43 @@ def test_main_rejects_an_invalid_crawl_delay(capsys: pytest.CaptureFixture[str])
         main(["--crawl-delay", "0"])
     assert exc.value.code == 2
     assert "crawl_delay" in capsys.readouterr().err
+
+
+# --- CR-19: robots.txt redirect modes ------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode,status", [("301", 301), ("302", 302)])
+def test_robots_redirect_answers_location_to_final_body(
+    start: StartServer, mode: str, status: int
+) -> None:
+    _, base = start(robots_redirect=mode, crawl_delay=1.5)
+    got_status, body, location = get_robots(base + "/robots.txt", user_agent="ua", timeout_s=5)
+    assert (got_status, body, location) == (status, b"", "/robots-final.txt")
+    final = get_robots(base + "/robots-final.txt", user_agent="ua", timeout_s=5)
+    assert final == (200, b"User-agent: *\nCrawl-delay: 1.5\nAllow: /\n", None)
+    policy = _robots_policy(base)
+    assert policy.allowed(base + "/a")
+    assert policy.crawl_delay(base + "/a") == 1.5
+
+
+def test_robots_redirect_loop_disallows(start: StartServer) -> None:
+    _, base = start(robots_redirect="loop")
+    assert get_robots(base + "/robots.txt", user_agent="ua", timeout_s=5)[2] == "/robots-loop.txt"
+    assert get_robots(base + "/robots-loop.txt", user_agent="ua", timeout_s=5)[2] == "/robots.txt"
+    assert _robots_policy(base).allowed(base + "/a") is False
+
+
+def test_without_redirect_mode_robots_final_is_404(start: StartServer) -> None:
+    _, base = start()
+    assert get_robots(base + "/robots-final.txt", user_agent="ua", timeout_s=5)[0] == 404
+
+
+def test_make_server_rejects_an_unknown_robots_redirect() -> None:
+    with pytest.raises(ValueError, match="robots_redirect"):
+        make_server(port=0, robots_redirect="303")
+
+
+def test_main_rejects_an_unknown_robots_redirect(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--robots-redirect", "bogus"])
+    assert exc.value.code == 2
